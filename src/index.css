@@ -1,0 +1,153 @@
+/* ===== DELMY PARTY SRL — SISTEMA OPERATIVO ===== */
+/* Industrial Partner · Design System v1.0        */
+
+:root {
+  --bg:        #0c0e14;
+  --panel:     #111420;
+  --panel-2:   #161925;
+  --border:    #1e2133;
+  --border-2:  #252a40;
+  --accent:    #f0c040;
+  --accent-dim:#b89020;
+  --text:      #e8eaf0;
+  --text-2:    #8890a8;
+  --text-3:    #505870;
+
+  --verde:    #4ade80;
+  --ambar:    #f0c040;
+  --naranja:  #fb923c;
+  --rojo:     #f87171;
+  --azul:     #60a5fa;
+  --violeta:  #c084fc;
+
+  --font-mono: 'DM Mono', 'Courier New', monospace;
+  --font-syne: 'Syne', sans-serif;
+
+  --radius:   6px;
+  --radius-lg:10px;
+  --transition:150ms ease;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 14px;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  line-height: 1.5;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ─── Scrollbar ─── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+
+/* ─── Typography ─── */
+h1,h2,h3,h4 { font-family: var(--font-syne); font-weight: 700; }
+
+/* ─── Buttons ─── */
+button {
+  font-family: var(--font-mono);
+  cursor: pointer;
+  border: none;
+  outline: none;
+  transition: var(--transition);
+}
+
+/* ─── Inputs ─── */
+input, textarea, select {
+  font-family: var(--font-mono);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius);
+  outline: none;
+  transition: border-color var(--transition);
+}
+input:focus, textarea:focus, select:focus {
+  border-color: var(--accent);
+}
+
+/* ─── Utilities ─── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.badge-verde   { background: rgba(74,222,128,0.15); color: var(--verde); }
+.badge-ambar   { background: rgba(240,192,64,0.15);  color: var(--ambar); }
+.badge-naranja { background: rgba(251,146,60,0.15);  color: var(--naranja); }
+.badge-rojo    { background: rgba(248,113,113,0.15); color: var(--rojo); }
+.badge-azul    { background: rgba(96,165,250,0.15);  color: var(--azul); }
+.badge-violeta { background: rgba(192,132,252,0.15); color: var(--violeta); }
+.badge-gray    { background: rgba(80,88,112,0.3);    color: var(--text-2); }
+
+/* ─── Tables ─── */
+table { border-collapse: collapse; width: 100%; }
+th {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  font-weight: 500;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--text);
+}
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: rgba(30,33,51,0.6); }
+
+/* ─── Cards / Panels ─── */
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+/* ─── Animations ─── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-in { animation: fadeIn 200ms ease forwards; }
+
+@keyframes pulse {
+  0%,100% { opacity: 1; }
+  50%      { opacity: 0.5; }
+}
+.pulse { animation: pulse 2s ease infinite; }
+
+/* ─── Print ─── */
+@media print {
+  body { background: white; color: black; }
+  .no-print { display: none !important; }
+}
+
+/* ─── Mobile ─── */
+@media (max-width: 640px) {
+  html { font-size: 13px; }
+}
