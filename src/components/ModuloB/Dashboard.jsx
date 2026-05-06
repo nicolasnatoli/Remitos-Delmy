@@ -1,9 +1,9 @@
 import React, { useMemo } from 'react';
 import { usePedidos } from '../../hooks/usePedidos';
-import { getEstadoConfig, hoy, formatFecha, esEntrega, esError } from '../../utils/remitos';
+import { getEstadoConfig, hoy, esError } from '../../utils/remitos';
 
 export default function Dashboard({ remitos }) {
-  const { pedidosConEstado, entregas, todos } = usePedidos(remitos);
+  const { pedidosConEstado, entregas } = usePedidos(remitos);
   const hoyStr = hoy();
 
   const stats = useMemo(() => {
