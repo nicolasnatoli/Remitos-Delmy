@@ -7,6 +7,7 @@ import ModuloB  from './components/ModuloB/ModuloB';
 import ModuloCompras   from './components/ModuloC/ModuloCompras';
 import ModuloRecepcion from './components/ModuloC/ModuloRecepcion';
 import ModuloStock     from './components/ModuloC/ModuloStock';
+import SyncStatus      from './components/shared/SyncStatus';
 
 const NAV = [
   { id: 'compras',        icon: '🛒', label: 'Compras',       desc: 'OC y distribución'     },
@@ -114,8 +115,11 @@ export default function App() {
               {NAV.find(n=>n.id===modulo)?.desc}
             </div>
           </div>
-          <div style={{ fontSize:10, color:'var(--text-3)' }}>
-            {new Date().toLocaleDateString('es-AR',{weekday:'short',day:'numeric',month:'short'})}
+          <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+            <div style={{ fontSize:10, color:'var(--text-3)' }}>
+              {new Date().toLocaleDateString('es-AR',{weekday:'short',day:'numeric',month:'short'})}
+            </div>
+            <SyncStatus />
           </div>
         </header>
 
