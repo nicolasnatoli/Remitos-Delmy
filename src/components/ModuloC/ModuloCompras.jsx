@@ -266,18 +266,22 @@ export default function ModuloCompras(){
       }
       aplicarLineasDocumento(lineas,modo);
     } else {
-      // IA
-      const apiKey=localStorage.getItem('delmy_api_key')||'';
-      if(!apiKey){alert('Configurá la API Key de Anthropic para leer imágenes/PDF');return;}
+      // IA via servidor proxy (evita CORS)
       try{
+        const isPdf=file.type==='application/pdf'||file.name.toLowerCase().endsWith('.pdf');
         const reader=new FileReader();
         const b64=await new Promise(res=>{reader.onload=e=>res(e.target.result.split(',')[1]);reader.readAsDataURL(file);});
-        const mtype=file.type||'image/jpeg';
-        const res=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1500,messages:[{role:'user',content:[{type:'image',source:{type:'base64',media_type:mtype,data:b64}},{type:'text',text:'Extraé las líneas de detalle. Devolvé SOLO JSON array: [{"cod":"código","desc":"descripción","cant":número,"precio":número}]'}]}]})});
-        const data=await res.json();
-        const txt=data.content?.find(c=>c.type==='text')?.text||'';
-        const lineas=JSON.parse(txt.replace(/```json|```/g,'').trim());
-        aplicarLineasDocumento(lineas,modo);
+        const mtype=isPdf?'application/pdf':file.type||'image/jpeg';
+        const prompt='Extraé las líneas de detalle de esta factura o remito. Devolvé SOLO JSON (sin markdown):\n{\n  "proveedor": "nombre",\n  "nDocumento": "número",\n  "fecha": "DD/MM/YYYY",\n  "lineas": [{"cod":"código proveedor","desc":"descripción","cant":número,"precioUnit":número_o_0}]\n}';
+        const res=await fetch('/api/ia/extract',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base64:b64,mediaType:mtype,prompt})});
+        if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e.error||'Error: '+res.status);}
+        const result=await res.json();
+        const txt=result.text||'';
+        const parsed=JSON.parse(txt.replace(/```json|```/g,'').trim());
+        if(parsed.proveedor&&!OCdata.meta.proveedor){
+          setOCdata(prev=>({...prev,meta:{...prev.meta,proveedor:parsed.proveedor,documento:parsed.nDocumento||prev.meta.documento}}));
+        }
+        aplicarLineasDocumento((parsed.lineas||[]).map(l=>({cod:l.cod,desc:l.desc,cant:l.cant||0,precio:l.precioUnit||0})),modo);
       }catch(e){alert('Error IA: '+e.message);}
     }
   },[]);// eslint-disable-line

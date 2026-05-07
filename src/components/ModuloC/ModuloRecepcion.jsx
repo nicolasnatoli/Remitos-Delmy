@@ -99,34 +99,17 @@ export default function ModuloRecepcion(){
   };
 
   const procesarConIA=async(file)=>{
-    const apiKey=localStorage.getItem('delmy_api_key')||'';
-    if(!apiKey){alert('Configurá la API Key en el botón ⚠ API Key (esquina inferior izquierda)');return;}
     setIaStatus('Analizando documento con IA...');
     try{
       const isPdf=file.type==='application/pdf'||file.name.toLowerCase().endsWith('.pdf');
       const reader=new FileReader();
       const b64=await new Promise(res=>{reader.onload=e=>res(e.target.result.split(',')[1]);reader.readAsDataURL(file);});
       const mtype=isPdf?'application/pdf':file.type||'image/jpeg';
-      const prompt=`Analizá este documento (factura o remito de proveedor) y extraé:
-1. Proveedor, número de documento, fecha
-2. Líneas de detalle: código del proveedor, descripción, cantidad, precio unitario (si existe)
-
-Respondé SOLO con JSON (sin markdown):
-{
-  "proveedor": "nombre",
-  "nDocumento": "número",
-  "fecha": "DD/MM/YYYY",
-  "lineas": [
-    {"cod": "código proveedor", "desc": "descripción completa", "cant": número, "precioUnit": número_o_0}
-  ]
-}`;
-      const contentBlock=isPdf
-        ?{type:'document',source:{type:'base64',media_type:'application/pdf',data:b64}}
-        :{type:'image',source:{type:'base64',media_type:mtype,data:b64}};
-      const res=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:2000,messages:[{role:'user',content:[contentBlock,{type:'text',text:prompt}]}]})});
-      if(!res.ok)throw new Error('Error API: '+res.status);
-      const data=await res.json();
-      const txt=data.content?.find(c=>c.type==='text')?.text||'';
+      // Llamada via servidor (evita CORS)
+      const res=await fetch('/api/ia/extract',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base64:b64,mediaType:mtype})});
+      if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e.error||'Error servidor: '+res.status);}
+      const result=await res.json();
+      const txt=result.text||'';
       const parsed=JSON.parse(txt.replace(/```json|```/g,'').trim());
 
       // Cruzar códigos con la base

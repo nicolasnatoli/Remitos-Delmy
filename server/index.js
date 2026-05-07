@@ -117,6 +117,68 @@ app.delete('/api/store/:key', auth, async (req, res) => {
   catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+
+// ─── IA Proxy — extracción de documentos ─────────────────────────────────────
+app.post('/api/ia/extract', auth, async (req, res) => {
+  const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
+  if (!ANTHROPIC_KEY) {
+    return res.status(503).json({ error: 'ANTHROPIC_API_KEY no configurada en Railway' });
+  }
+  const { base64, mediaType, prompt } = req.body;
+  if (!base64 || !mediaType) {
+    return res.status(400).json({ error: 'Falta base64 o mediaType' });
+  }
+  try {
+    const isPdf = mediaType === 'application/pdf';
+    const contentBlock = isPdf
+      ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } }
+      : { type: 'image',    source: { type: 'base64', media_type: mediaType, data: base64 } };
+
+    const defaultPrompt = `Analizá este documento (factura o remito de proveedor) y extraé:
+1. Proveedor, número de documento, fecha
+2. Líneas de detalle: código del proveedor, descripción, cantidad, precio unitario (si existe)
+
+Respondé SOLO con JSON (sin markdown):
+{
+  "proveedor": "nombre",
+  "nDocumento": "número",
+  "fecha": "DD/MM/YYYY",
+  "lineas": [
+    {"cod": "código proveedor", "desc": "descripción completa", "cant": número, "precioUnit": número_o_0}
+  ]
+}`;
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 2000,
+        messages: [{
+          role: 'user',
+          content: [contentBlock, { type: 'text', text: prompt || defaultPrompt }],
+        }],
+      }),
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      return res.status(response.status).json({ error: err.error?.message || 'Error API Anthropic' });
+    }
+
+    const data = await response.json();
+    const text = data.content?.find(c => c.type === 'text')?.text || '';
+    res.json({ ok: true, text });
+  } catch (e) {
+    console.error('[IA Extract]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ─── Serve React build ────────────────────────────────────────────────────────
 const BUILD_DIR = path.join(__dirname, '..', 'build');
 app.use(express.static(BUILD_DIR));
