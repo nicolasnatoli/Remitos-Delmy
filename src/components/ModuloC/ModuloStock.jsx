@@ -1,321 +1,429 @@
-import React, { useState, useRef } from 'react';
+// ===== MÓDULO STOCK+ V2 =====
+import React, { useState, useCallback, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 
+const fn  = n => Number(n||0).toLocaleString('es-AR');
+// ─── Storage keys ─────────────────────────────────────────────────────────────
+const SK = {
+  art:'dm_art_v3', stk:'dm_stk_v3',
+  vs:'dm_vs_v3', vq:'dm_vq_v3', vm:'dm_vm_v3', vh:'dm_vh_v3',
+  plan:'dm_plan_v3', share:'dm_share_v3', meta:'dm_meta_v3',
+};
 
+// ─── Compactar/expandir ───────────────────────────────────────────────────────
+const compactArt  = e => { const o={}; for(const[k,a]of Object.entries(e))o[k]=`${a.prov}|${a.codp}|${a.desc}|${a.fam}|${a.cat||''}|${a.marca||''}|${a.costoReal||0}|${a.pvMin||0}|${a.mostrador||0}`; return o; };
+const expandArt   = c => { const o={}; for(const[k,s]of Object.entries(c||{})){const p=s.split('|');o[k]={prov:p[0]||'',codp:p[1]||'',desc:p[2]||'',fam:p[3]||'',cat:p[4]||'',marca:p[5]||'',costoReal:+p[6]||0,pvMin:+p[7]||0,mostrador:+p[8]||0};} return o; };
+const compactStk  = e => { const o={}; for(const[k,s]of Object.entries(e))o[k]=`${s.DM01||0},${s.DM03||0},${s.DMCN||0}`; return o; };
+const expandStk   = c => { const o={}; for(const[k,s]of Object.entries(c||{})){const p=s.split(',');o[k]={DM01:+p[0]||0,DM03:+p[1]||0,DMCN:+p[2]||0};} return o; };
+const compactVent = o => Object.entries(o).filter(([,v])=>v>0).map(([k,v])=>`${k}:${v}`).join('|');
+const expandVent  = s => { if(!s||typeof s!=='string')return{}; const o={}; s.replace(/^"|"$/g,'').split('|').forEach(p=>{const i=p.lastIndexOf(':');if(i>0)o[p.slice(0,i)]=+p.slice(i+1)||0;}); return o; };
+const compactPlan = e => { const o={}; for(const[k,p]of Object.entries(e))if(p.ac||p.d1||p.d3||p.dc)o[k]=`${p.ac||0},${p.d1||0},${p.d3||0},${p.dc||0}`; return o; };
+const expandPlan  = c => { const o={}; for(const[k,s]of Object.entries(c||{})){const p=s.split(',');o[k]={ac:+p[0]||0,d1:+p[1]||0,d3:+p[2]||0,dc:+p[3]||0};} return o; };
 
-export default function ModuloStock({ stockDb, stockMeta, setStock }) {
-  const [tab, setTab]   = useState('maestro');
-  const [loading, setLoading] = useState(false);
-  const [preview, setPreview] = useState(null);
-  const [busqueda, setBusqueda] = useState('');
-  const [filtProv, setFiltProv] = useState('');
-  const fileRef = useRef();
+function tryGet(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d;}catch{return d;}}
+function trySet(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch{}}
+function trySetRaw(k,v){try{localStorage.setItem(k,v);}catch{}}
 
-  const articulos = Object.entries(stockDb).map(([cod,v]) => ({ cod, ...v }));
-  const proveedores = [...new Set(articulos.map(a => a.proveedor).filter(Boolean))].sort();
+function loadMEM(){
+  const artC=tryGet(SK.art,null); const art=artC?expandArt(artC):{};
+  const stkC=tryGet(SK.stk,null); const stk=stkC?expandStk(stkC):{};
+  const vs=expandVent(localStorage.getItem(SK.vs)||'');
+  const vq=expandVent(localStorage.getItem(SK.vq)||'');
+  const vm=expandVent(localStorage.getItem(SK.vm)||'');
+  const vh=expandVent(localStorage.getItem(SK.vh)||'');
+  const sh=tryGet(SK.share,null); const planC=sh?.planC||tryGet(SK.plan,null);
+  const plan=planC?expandPlan(planC):{};
+  const meta=tryGet(SK.meta,{});
+  return {art,stk,vs,vq,vm,vh,plan,meta};
+}
 
-  const filtrados = articulos.filter(a => {
-    const q = busqueda.toLowerCase();
-    const matchQ = !busqueda || a.cod?.toLowerCase().includes(q) || a.desc?.toLowerCase().includes(q);
-    const matchP = !filtProv || a.proveedor === filtProv;
-    return matchQ && matchP;
-  });
+// ─── Parsers ──────────────────────────────────────────────────────────────────
+function parseFormatoProveedores(wb){
+  const ws=wb.Sheets[wb.SheetNames[0]];
+  const raw=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+  let hRow=2;
+  for(let i=0;i<Math.min(raw.length,8);i++){if(raw[i].some(c=>String(c).toLowerCase().includes('digo'))){hRow=i;break;}}
+  const hdrs=raw[hRow].map(h=>String(h||'').trim());
+  const fi=name=>hdrs.findIndex(h=>h.toLowerCase().includes(name.toLowerCase()));
+  const num=v=>{const n=parseFloat(String(v||'0').replace(/[$\s]/g,'').replace(',','.'));return isNaN(n)?0:n;};
+  const iCod=Math.max(0,fi('código')>=0?fi('código'):fi('codigo'));
+  const iProv=Math.max(1,fi('proveedor'));
+  const iCodP=fi('cod.prov')>=0?fi('cod.prov'):fi('codp')>=0?fi('codp'):2;
+  const iDesc=Math.max(3,fi('descripción')>=0?fi('descripción'):fi('descripcion'));
+  const iFam=Math.max(6,fi('familia'));
+  const iMarca=fi('marca'); const iCat=fi('categ');
+  const iMostrador=fi('01 - mostrador')>=0?fi('01 - mostrador'):fi('mostrador');
+  const iCostoReal=fi('costo real');
+  const iPVMin=fi('precio de venta mín')>=0?fi('precio de venta mín'):fi('venta minimo')>=0?fi('venta minimo'):fi('precio de venta min');
+  const artMap={};
+  for(let i=hRow+1;i<raw.length;i++){
+    const r=raw[i]; const cod=String(r[iCod]||'').trim(); if(!cod)continue;
+    if(!artMap[cod])artMap[cod]=[];
+    artMap[cod].push({prov:String(r[iProv]||'').trim(),codp:String(r[iCodP]||'').trim(),desc:String(r[iDesc]||'').trim(),fam:String(r[iFam]||'').trim(),marca:iMarca>=0?String(r[iMarca]||'').trim():'',cat:iCat>=0?String(r[iCat]||'').trim():'',mostrador:iMostrador>=0?num(r[iMostrador]):0,costoReal:iCostoReal>=0?num(r[iCostoReal]):0,pvMin:iPVMin>=0?num(r[iPVMin]):0});
+  }
+  const art={};
+  for(const[cod,entries]of Object.entries(artMap)){
+    entries.sort((a,b)=>{const sa=a.prov&&a.prov!=='SIN PROVEEDOR'?2:a.prov?1:0;const sb=b.prov&&b.prov!=='SIN PROVEEDOR'?2:b.prov?1:0;return sb-sa;});
+    art[cod]=entries[0];
+  }
+  return art;
+}
 
-  const handleFile = async (file) => {
-    if (!file) return;
-    setLoading(true);
-    try {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const wb = XLSX.read(e.target.result, { type:'array', cellDates:true });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:'' });
-
-        // Buscar fila de headers (la que tiene "código" o "cod")
-        let headerRow = 0;
-        for (let i = 0; i < Math.min(10, rows.length); i++) {
-          const str = rows[i].join(' ').toLowerCase();
-          if (str.includes('código') || str.includes('codigo') || str.includes('cod.')) {
-            headerRow = i; break;
-          }
-        }
-
-        // Mapear columnas dinámicamente
-        const headers = rows[headerRow].map(h => String(h).toLowerCase().trim());
-        const findCol = (...names) => {
-          for (const n of names) {
-            const idx = headers.findIndex(h => h.includes(n));
-            if (idx >= 0) return idx;
-          }
-          return -1;
-        };
-
-        const iCod   = findCol('código','codigo','cod');
-        const iDesc  = findCol('descripción','descripcion','desc');
-        const iProv  = findCol('proveedor','prov');
-        const iFam   = findCol('familia','rubro','categ');
-        const iPrecio= findCol('precio','price');
-        const iVenta = findCol('venta total','venta','ventas');
-        const iStock = findCol('stock','existencia','saldo');
-
-        const db = {};
-        for (let i = headerRow+1; i < rows.length; i++) {
-          const row = rows[i];
-          const cod = String(row[iCod] || '').trim();
-          if (!cod || cod === '' || cod.toLowerCase() === 'código') continue;
-          db[cod] = {
-            cod,
-            desc:      String(row[iDesc]  || '').trim(),
-            proveedor: String(row[iProv]  || '').trim(),
-            familia:   iFam   >= 0 ? String(row[iFam]   || '').trim() : '',
-            precio:    iPrecio>= 0 ? Number(row[iPrecio] || 0) : 0,
-            venta:     iVenta >= 0 ? Number(row[iVenta]  || 0) : 0,
-            stock:     iStock >= 0 ? Number(row[iStock]  || 0) : 0,
-          };
-        }
-
-        const meta = {
-          archivo: file.name,
-          fecha: new Date().toLocaleDateString('es-AR'),
-          total: Object.keys(db).length,
-          headerRow,
-        };
-
-        setPreview({ db, meta });
-        setLoading(false);
-      };
-      reader.onerror = () => setLoading(false);
-      reader.readAsArrayBuffer(file);
-    } catch(err) {
-      alert(`Error: ${err.message}`);
-      setLoading(false);
+function parseStk(wb){
+  const ws=wb.Sheets[wb.SheetNames[0]];
+  const raw=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+  const cl=v=>{let s=String(v===null||v===undefined?'':v).trim();return s.startsWith("'")?s.slice(1).trim():s;};
+  const num=v=>{const n=parseFloat(cl(v).replace(',','.'));return isNaN(n)?0:n;};
+  let hRow=2;
+  for(let i=0;i<Math.min(raw.length,8);i++){if(raw[i].map(v=>cl(v).toLowerCase()).some(s=>s==='código'||s==='codigo')){hRow=i;break;}}
+  const hdrs=raw[hRow].map(v=>cl(v));
+  const iCod=hdrs.findIndex(h=>h.toLowerCase()==='código'||h.toLowerCase()==='codigo');
+  const iDM01=hdrs.findIndex(h=>h.includes('01-'));
+  const iDM03=hdrs.findIndex(h=>h.includes('02-'));
+  const iDMCN=hdrs.findIndex(h=>h.includes('05-'));
+  const stk={};
+  if(iDM01>=0&&iDM03>=0&&iDMCN>=0){
+    for(let i=hRow+1;i<raw.length;i++){
+      const r=raw[i]; const cod=cl(r[iCod>=0?iCod:0]); if(!cod||cod.toLowerCase()==='código')continue;
+      stk[cod]={DM01:num(r[iDM03]),DM03:num(r[iDMCN]),DMCN:num(r[iDM01])};
     }
-  };
+  }
+  return stk;
+}
 
-  const handleConfirmar = () => {
-    if (!preview) return;
-    setStock(preview.db, preview.meta);
-    setPreview(null);
-    setTab('maestro');
-  };
+function parseVentas(wb){
+  const ws=wb.Sheets[wb.SheetNames[0]];
+  const raw=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+  let hRow=2;
+  for(let i=0;i<Math.min(raw.length,8);i++){if(raw[i].some(c=>String(c).toLowerCase().includes('digo'))){hRow=i;break;}}
+  const hdrs=raw[hRow].map(h=>String(h||'').toLowerCase().trim());
+  const iCod=Math.max(hdrs.findIndex(h=>h.includes('digo')),1);
+  const iVent=Math.max(hdrs.findIndex(h=>h.includes('venta total')),7);
+  const ventas={};
+  for(let i=hRow+1;i<raw.length;i++){const r=raw[i];const cod=String(r[iCod]||'').trim();if(!cod)continue;ventas[cod]=parseFloat(String(r[iVent]||'0').replace(',','.'))||0;}
+  return ventas;
+}
 
-  const stats = {
-    total:      articulos.length,
-    conStock:   articulos.filter(a => (a.stock||0) > 0).length,
-    sinStock:   articulos.filter(a => (a.stock||0) === 0).length,
-    conVentas:  articulos.filter(a => (a.venta||0) > 0).length,
-  };
+function getProveedores(art){
+  const pm={};
+  for(const[,a]of Object.entries(art)){const prov=a.prov&&a.prov.trim()?a.prov.trim():'SIN PROVEEDOR';if(!pm[prov])pm[prov]={n:0,fams:new Set()};pm[prov].n++;if(a.fam)pm[prov].fams.add(a.fam);}
+  return Object.entries(pm).sort((a,b)=>a[0].localeCompare(b[0])).map(([nombre,d])=>({nombre,n:d.n,fams:[...d.fams]}));
+}
+
+function getArts(mem,prov){
+  return Object.entries(mem.art)
+    .filter(([,a])=>(a.prov&&a.prov.trim()?a.prov.trim():'SIN PROVEEDOR')===prov)
+    .map(([cod,a])=>{
+      const s=mem.stk[cod]||{DM01:0,DM03:0,DMCN:0};
+      const p=mem.plan[cod]||{ac:0,d1:0,d3:0,dc:0};
+      return{cod,desc:a.desc,codp:a.codp,fam:a.fam,costoReal:a.costoReal||0,pvMin:a.pvMin||0,mostrador:a.mostrador||0,DM01:s.DM01,DM03:s.DM03,DMCN:s.DMCN,tot:s.DM01+s.DM03+s.DMCN,vs:mem.vs[cod]||0,vq:mem.vq[cod]||0,vm:mem.vm[cod]||0,vh:mem.vh[cod]||0,ac:p.ac,d1:p.d1,d3:p.d3,dc:p.dc};
+    });
+}
+
+// ─── Estilos inline compartidos ───────────────────────────────────────────────
+const css = {
+  card:   { background:'#111420', border:'1px solid #1e2133', borderRadius:5, overflow:'hidden', marginBottom:10 },
+  badge:  (ok) => ({ display:'inline-flex', alignItems:'center', padding:'2px 8px', borderRadius:3, fontSize:9, fontWeight:500, background:ok?'rgba(74,222,128,.12)':'rgba(248,113,113,.12)', color:ok?'#4ade80':'#f87171', border:`1px solid ${ok?'rgba(74,222,128,.3)':'rgba(248,113,113,.3)'}` }),
+  input:  { background:'#0c0e14', color:'#e8eaf0', border:'1px solid #1e2133', borderRadius:4, fontFamily:'DM Mono,monospace', outline:'none' },
+  btn:    (color) => ({ cursor:'pointer', fontFamily:'DM Mono,monospace', fontSize:10, borderRadius:4, padding:'3px 9px', border:`1px solid ${color||'#1e2133'}`, background:'transparent', color:color||'#e8eaf0', whiteSpace:'nowrap' }),
+};
+
+// ─── Componente principal ─────────────────────────────────────────────────────
+export default function ModuloStock() {
+  const [mem,       setMem]      = useState(loadMEM);
+  const [provSel,   setProvSel]  = useState(null);
+  const [showProv,  setShowProv] = useState(true);
+  const [provQ,     setProvQ]    = useState('');
+  const [filterQ,   setFilterQ]  = useState('');
+  const [filterFam, setFilterFam]= useState('');
+  const [soloComp,  setSoloComp] = useState(false);
+  const [sortCol,   setSortCol]  = useState('desc');
+  const [sortDir,   setSortDir]  = useState(1);
+  const [loading,   setLoading]  = useState({});
+
+  const loadFile = useCallback(async (tipo, file) => {
+    if(!file)return;
+    setLoading(p=>({...p,[tipo]:true}));
+    try{
+      const ab=await file.arrayBuffer();
+      const wb=XLSX.read(ab,{type:'array',cellDates:false});
+      setMem(prev=>{
+        const next={...prev};
+        if(tipo==='art'){next.art=parseFormatoProveedores(wb);trySet(SK.art,compactArt(next.art));next.meta={...next.meta,art:{f:file.name,n:Object.keys(next.art).length,t:Date.now()}};}
+        else if(tipo==='stk'){next.stk=parseStk(wb);trySet(SK.stk,compactStk(next.stk));next.meta={...next.meta,stk:{f:file.name,n:Object.keys(next.stk).length,t:Date.now()}};}
+        else{const v=parseVentas(wb);next[tipo]=v;trySetRaw(SK[tipo],compactVent(v));next.meta={...next.meta,[tipo]:{f:file.name,n:Object.keys(v).length,t:Date.now()}};}
+        trySet(SK.meta,next.meta);
+        trySet(SK.share,{planC:compactPlan(next.plan),t:Date.now()});
+        return next;
+      });
+    }catch(e){console.error('[Stock] loadFile:',e);}
+    finally{setLoading(p=>({...p,[tipo]:false}));}
+  },[]);
+
+  const updPlan = useCallback((cod,field,val)=>{
+    const v=Math.max(0,parseFloat(val)||0);
+    setMem(prev=>{
+      const plan={...prev.plan,[cod]:{...(prev.plan[cod]||{ac:0,d1:0,d3:0,dc:0}),[field]:v}};
+      if(field==='ac'&&!v)plan[cod]={ac:0,d1:0,d3:0,dc:0};
+      const compact=compactPlan(plan);
+      trySet(SK.plan,compact); trySet(SK.share,{planC:compact,t:Date.now()});
+      return{...prev,plan};
+    });
+  },[]);
+
+  const doReset = useCallback(()=>{
+    if(!window.confirm('¿Eliminar todos los datos?'))return;
+    Object.values(SK).forEach(k=>{try{localStorage.removeItem(k);}catch{}});
+    setMem({art:{},stk:{},vs:{},vq:{},vm:{},vh:{},plan:{},meta:{}});
+    setProvSel(null);setShowProv(true);
+  },[]);
+
+  const exportExcel = useCallback(()=>{
+    if(!provSel)return;
+    const arts=getArts(mem,provSel);
+    const hasV=Object.keys(mem.vs).length>0; const hasVh=Object.keys(mem.vh).length>0;
+    const hdrs=['Código','Cód.Prov','Descripción','Familia','Costo Real','PV Min','Mostrador','Stk Central','Stk Solano','Stk Varela','Stk Total'];
+    if(hasVh)hdrs.push('Prom.Hist.Sem');
+    if(hasV)hdrs.push('V.Semana','V.Quincena','V.Mes');
+    hdrs.push('A Comprar','→Central','→Solano','→Varela','→DP(auto)');
+    const rows=[hdrs];
+    arts.forEach(a=>{const p=mem.plan[a.cod]||{ac:0,d1:0,d3:0,dc:0};const dp=Math.max(0,p.ac-p.d1-p.d3-p.dc);const r=[a.cod,a.codp,a.desc,a.fam,a.costoReal,a.pvMin,a.mostrador,a.DMCN,a.DM01,a.DM03,a.DM01+a.DM03+a.DMCN];if(hasVh)r.push(a.vh);if(hasV)r.push(a.vs,a.vq,a.vm);r.push(p.ac||0,p.dc||0,p.d1||0,p.d3||0,dp);rows.push(r);});
+    const wb=XLSX.utils.book_new();const ws=XLSX.utils.aoa_to_sheet(rows);XLSX.utils.book_append_sheet(wb,ws,'Planilla');
+    XLSX.writeFile(wb,`planilla_${provSel}_${new Date().toISOString().slice(0,10)}.xlsx`);
+  },[mem,provSel]);
+
+  const enviarACompras = useCallback(()=>{
+    const n=Object.values(mem.plan).filter(p=>p.ac>0).length;
+    if(!n){alert('Completá al menos 1 cantidad a comprar');return;}
+    trySet(SK.share,{planC:compactPlan(mem.plan),t:Date.now()});
+    alert(`✓ ${n} artículos enviados a Compras`);
+  },[mem.plan]);
+
+  const sortBy = (col)=>{ if(sortCol===col)setSortDir(d=>d*-1); else{setSortCol(col);setSortDir(1);} };
+
+  const proveedores    = useMemo(()=>getProveedores(mem.art),[mem.art]);
+  const provsFiltrados = useMemo(()=>{const q=provQ.toLowerCase();return q?proveedores.filter(p=>p.nombre.toLowerCase().includes(q)):proveedores;},[proveedores,provQ]);
+  const hasArt = Object.keys(mem.art).length>0;
+  const hasV   = Object.keys(mem.vs).length>0||Object.keys(mem.vq).length>0||Object.keys(mem.vm).length>0;
+  const hasVh  = Object.keys(mem.vh).length>0;
+
+  const UZONES=[
+    {id:'art',icon:'📋',label:'ARTÍCULOS + PROVEEDORES',sub:'FormatoProveedores.xlsx'},
+    {id:'stk',icon:'📦',label:'STOCK POR SUCURSAL',sub:'StockDisponible.xlsx'},
+    {id:'vs', icon:'📊',label:'VENTAS SEMANA',sub:'7 días'},
+    {id:'vq', icon:'📊',label:'VENTAS QUINCENA',sub:'15 días'},
+    {id:'vm', icon:'📊',label:'VENTAS MES',sub:'30 días'},
+    {id:'vh', icon:'📈',label:'PROM. HISTÓRICO',sub:'Semanal histórico'},
+  ];
 
   return (
-    <div style={{ display:'flex', flexDirection:'column', height:'calc(100vh - 56px)' }}>
-      {/* Sub-tabs */}
-      <div style={{ background:'var(--panel)', borderBottom:'1px solid var(--border)', padding:'0 20px', display:'flex', gap:0 }}>
-        {[
-          { id:'maestro', label:'▤ Maestro de artículos' },
-          { id:'cargar',  label:'↑ Cargar planilla'      },
-        ].map(t => (
-          <button key={t.id} onClick={() => setTab(t.id)} style={{
-            background:'transparent',
-            color: tab===t.id ? 'var(--accent)' : 'var(--text-3)',
-            borderBottom: tab===t.id ? '2px solid var(--accent)' : '2px solid transparent',
-            borderTop:'none', borderLeft:'none', borderRight:'none',
-            padding:'12px 16px', fontSize:12, fontFamily:'var(--font-mono)',
-          }}>{t.label}</button>
-        ))}
-        <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:8 }}>
-          {stockMeta?.archivo && (
-            <span style={{ fontSize:11, color:'var(--text-3)' }}>
-              {stockMeta.archivo} · {stats.total} artículos
-            </span>
-          )}
+    <div style={{display:'flex',flexDirection:'column',height:'calc(100vh - 56px)',background:'#0c0e14'}}>
+
+      {/* Badges + acciones */}
+      <div style={{padding:'7px 14px',background:'#0d0f1a',borderBottom:'1px solid #1e2133',display:'flex',gap:6,flexWrap:'wrap',alignItems:'center',flexShrink:0}}>
+        {UZONES.map(u=>{
+          const loaded=mem.meta[u.id];
+          return <span key={u.id} style={css.badge(!!loaded)}>{u.label.split(' ')[0]}: {loaded?fn(loaded.n):'—'}</span>;
+        })}
+        <div style={{marginLeft:'auto',display:'flex',gap:6}}>
+          <button onClick={doReset}        style={css.btn('#6b7280')}>✕ Reset</button>
+          <button onClick={exportExcel}    style={{...css.btn('#2dd4bf'),background:'rgba(45,212,191,.1)'}}>↓ Excel</button>
+          <button onClick={enviarACompras} style={{...css.btn('#c084fc'),background:'rgba(192,132,252,.1)'}}>→ Compras</button>
         </div>
       </div>
 
-      <div style={{ flex:1, overflow:'auto', padding:20 }}>
+      {/* Zonas de carga */}
+      <div style={{padding:'8px 12px',background:'#0d0f1a',borderBottom:'1px solid #1e2133',display:'flex',gap:7,flexWrap:'wrap',flexShrink:0}}>
+        {UZONES.map(u=>(
+          <UZone key={u.id} {...u} loaded={!!mem.meta[u.id]} info={mem.meta[u.id]} loading={!!loading[u.id]} onFile={f=>loadFile(u.id,f)} />
+        ))}
+      </div>
 
-        {/* TAB: Cargar planilla */}
-        {tab === 'cargar' && (
-          <div style={{ maxWidth:700 }}>
-            <div className="card" style={{ padding:20 }}>
-              <div style={{ fontFamily:'var(--font-syne)', fontSize:16, fontWeight:700, marginBottom:6 }}>
-                Carga de planilla de stock/ventas
-              </div>
-              <div style={{ fontSize:12, color:'var(--text-3)', marginBottom:20 }}>
-                Formato aceptado: Excel (.xlsx/.xls) con columnas de código, descripción, proveedor, stock y ventas.
-                El sistema detecta automáticamente las columnas.
-              </div>
+      {/* Contenido */}
+      <div style={{flex:1,overflow:'auto',padding:14}}>
+        {!hasArt ? <EmptyStock /> :
+         (!provSel||showProv) ? (
+           <ProvSelector provs={provsFiltrados} total={proveedores.length} q={provQ} setQ={setProvQ} sel={provSel}
+             onSel={p=>{setProvSel(p);setProvQ(p);setShowProv(false);setFilterQ('');setFilterFam('');}} />
+         ) : (
+           <TablaProveedor mem={mem} provSel={provSel} hasV={hasV} hasVh={hasVh}
+             filterQ={filterQ} setFilterQ={setFilterQ} filterFam={filterFam} setFilterFam={setFilterFam}
+             soloComp={soloComp} setSoloComp={setSoloComp} sortCol={sortCol} sortDir={sortDir} sortBy={sortBy}
+             updPlan={updPlan} onBack={()=>{setShowProv(true);setProvSel(null);}} />
+         )
+        }
+      </div>
+    </div>
+  );
+}
 
-              <label
-                onDragOver={e=>e.preventDefault()}
-                onDrop={e=>{e.preventDefault();handleFile(e.dataTransfer.files[0]);}}
-                style={{
-                  display:'block', border:'2px dashed var(--border-2)', borderRadius:'var(--radius-lg)',
-                  padding:'40px 20px', textAlign:'center', cursor:'pointer', marginBottom:16,
-                }}
-              >
-                <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" style={{display:'none'}}
-                  onChange={e=>handleFile(e.target.files[0])} />
-                {loading
-                  ? <div className="pulse" style={{fontSize:14,color:'var(--accent)'}}>Procesando planilla...</div>
-                  : <div>
-                      <div style={{fontSize:32,marginBottom:8}}>📊</div>
-                      <div style={{fontSize:13,color:'var(--text-2)'}}>Arrastrá el archivo o hacé click para seleccionar</div>
-                      <div style={{fontSize:11,color:'var(--text-3)',marginTop:4}}>XLSX · XLS · CSV</div>
-                    </div>
-                }
-              </label>
+function UZone({id,icon,label,sub,loaded,info,loading,onFile}){
+  const ref=React.useRef();
+  return(
+    <div onClick={()=>ref.current.click()} style={{border:`2px dashed ${loaded?'rgba(74,222,128,.4)':'#1e2133'}`,background:loaded?'rgba(74,222,128,.04)':'transparent',borderRadius:4,padding:'7px 11px',display:'flex',alignItems:'center',gap:7,cursor:'pointer',minWidth:130,flex:'1 1 130px',transition:'all .15s'}}>
+      <input ref={ref} type="file" accept=".xlsx,.xls" style={{display:'none'}} onChange={e=>{onFile(e.target.files[0]);e.target.value='';}} />
+      <span style={{fontSize:14,flexShrink:0}}>{icon}</span>
+      <div>
+        <div style={{fontSize:9,fontWeight:500,letterSpacing:'.04em',color:loaded?'#4ade80':'#e8eaf0'}}>{loading?'⏳ Procesando...':(loaded?'✓ ':'')+label+(loaded&&info?` · ${fn(info.n)}`:'')}</div>
+        <div style={{fontSize:8,color:'#6b7280',marginTop:1}}>{sub}</div>
+      </div>
+    </div>
+  );
+}
 
-              {preview && (
-                <div style={{ background:'rgba(74,222,128,0.06)', border:'1px solid rgba(74,222,128,0.2)', borderRadius:'var(--radius)', padding:16 }}>
-                  <div style={{ fontFamily:'var(--font-syne)', fontSize:14, fontWeight:700, color:'var(--verde)', marginBottom:10 }}>
-                    ✓ Planilla procesada
-                  </div>
-                  <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:14 }}>
-                    <div style={{ textAlign:'center' }}>
-                      <div style={{ fontSize:10, color:'var(--text-3)', marginBottom:4 }}>ARTÍCULOS</div>
-                      <div style={{ fontFamily:'var(--font-syne)', fontSize:24, fontWeight:700, color:'var(--verde)' }}>{Object.keys(preview.db).length}</div>
-                    </div>
-                    <div style={{ textAlign:'center' }}>
-                      <div style={{ fontSize:10, color:'var(--text-3)', marginBottom:4 }}>CON STOCK</div>
-                      <div style={{ fontFamily:'var(--font-syne)', fontSize:24, fontWeight:700, color:'var(--accent)' }}>
-                        {Object.values(preview.db).filter(a=>(a.stock||0)>0).length}
-                      </div>
-                    </div>
-                    <div style={{ textAlign:'center' }}>
-                      <div style={{ fontSize:10, color:'var(--text-3)', marginBottom:4 }}>CON VENTAS</div>
-                      <div style={{ fontFamily:'var(--font-syne)', fontSize:24, fontWeight:700, color:'var(--azul)' }}>
-                        {Object.values(preview.db).filter(a=>(a.venta||0)>0).length}
-                      </div>
-                    </div>
-                  </div>
+function EmptyStock(){return(<div style={{textAlign:'center',padding:'50px 20px',color:'#6b7280'}}><div style={{fontSize:36,marginBottom:12}}>📋</div><div style={{fontSize:13,color:'#e8eaf0',marginBottom:6}}>Cargá las planillas para comenzar</div><div style={{fontSize:11,lineHeight:1.9}}>1. FormatoProveedores.xlsx<br/>2. StockDisponible.xlsx<br/>3. Planillas de ventas (opcional)</div></div>);}
 
-                  {/* Preview primeras filas */}
-                  <div style={{ overflowX:'auto', marginBottom:14 }}>
-                    <table>
-                      <thead>
-                        <tr><th>CÓDIGO</th><th>DESCRIPCIÓN</th><th>PROVEEDOR</th><th style={{textAlign:'right'}}>STOCK</th><th style={{textAlign:'right'}}>VENTAS</th><th style={{textAlign:'right'}}>PRECIO</th></tr>
-                      </thead>
-                      <tbody>
-                        {Object.values(preview.db).slice(0,5).map(a => (
-                          <tr key={a.cod}>
-                            <td style={{fontSize:11,color:'var(--text-2)',fontFamily:'var(--font-mono)'}}>{a.cod}</td>
-                            <td style={{fontSize:11}}>{a.desc}</td>
-                            <td style={{fontSize:11,color:'var(--text-3)'}}>{a.proveedor}</td>
-                            <td style={{textAlign:'right'}}>{a.stock}</td>
-                            <td style={{textAlign:'right',color:'var(--verde)'}}>{a.venta}</td>
-                            <td style={{textAlign:'right',color:'var(--accent)'}}>
-                              {a.precio?`$${Number(a.precio).toLocaleString('es-AR')}`:'—'}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  <div style={{ fontSize:11, color:'var(--text-3)', marginBottom:12 }}>...y {Math.max(0,Object.keys(preview.db).length-5)} más</div>
-
-                  <div style={{ display:'flex', gap:8 }}>
-                    <button onClick={()=>setPreview(null)} style={{ color:'var(--text-2)', background:'transparent', border:'1px solid var(--border)', borderRadius:'var(--radius)', padding:'7px 14px', fontSize:12 }}>
-                      Cancelar
-                    </button>
-                    <button onClick={handleConfirmar} style={{
-                      background:'var(--accent)', color:'#0c0e14', fontFamily:'var(--font-mono)',
-                      fontWeight:700, fontSize:13, padding:'8px 20px', borderRadius:'var(--radius)',
-                    }}>
-                      ✓ Confirmar y guardar
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
+function ProvSelector({provs,total,q,setQ,sel,onSel}){
+  return(
+    <div style={{background:'#111420',border:'1px solid #1e2133',borderRadius:5,overflow:'hidden'}}>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'7px 12px',borderBottom:'1px solid #1e2133'}}>
+        <span style={{fontSize:9,color:'#6b7280',letterSpacing:'.1em',textTransform:'uppercase'}}>SELECCIONAR PROVEEDOR</span>
+        <span style={{fontSize:9,color:'#6b7280'}}>{provs.length} de {total}</span>
+      </div>
+      <div style={{padding:'8px 10px'}}>
+        <input placeholder="Buscar proveedor..." value={q} onChange={e=>setQ(e.target.value)}
+          style={{width:'100%',fontSize:12,padding:'6px 10px',background:'#0c0e14',color:'#e8eaf0',border:'1px solid #1e2133',borderRadius:4,outline:'none',fontFamily:'DM Mono,monospace'}} />
+      </div>
+      <div style={{maxHeight:340,overflowY:'auto'}}>
+        {provs.map(p=>(
+          <div key={p.nombre} onClick={()=>onSel(p.nombre)}
+            style={{padding:'8px 12px',cursor:'pointer',borderBottom:'1px solid #181b27',borderLeft:`2px solid ${p.nombre===sel?'#f0c040':'transparent'}`,background:p.nombre===sel?'rgba(240,192,64,.06)':'transparent'}}>
+            <div style={{fontSize:11,color:'#e8eaf0'}}>{p.nombre}</div>
+            <div style={{fontSize:9,color:'#6b7280',marginTop:2}}>{p.n} artículos · {p.fams.slice(0,3).join(', ')}</div>
           </div>
-        )}
+        ))}
+        {provs.length===0&&<div style={{padding:20,textAlign:'center',color:'#6b7280',fontSize:11}}>Sin resultados</div>}
+      </div>
+    </div>
+  );
+}
 
-        {/* TAB: Maestro */}
-        {tab === 'maestro' && (
-          <div>
-            {articulos.length === 0 ? (
-              <div style={{ textAlign:'center', padding:60, color:'var(--text-3)' }}>
-                <div style={{ fontSize:36, marginBottom:12 }}>📋</div>
-                <div style={{ fontSize:14, color:'var(--text-2)', marginBottom:8 }}>Sin artículos cargados</div>
-                <div style={{ fontSize:12, marginBottom:20 }}>Cargá una planilla en la tab "↑ Cargar planilla"</div>
-                <button onClick={()=>setTab('cargar')} style={{
-                  background:'var(--accent)', color:'#0c0e14', fontFamily:'var(--font-mono)',
-                  fontWeight:600, fontSize:13, padding:'9px 20px', borderRadius:'var(--radius)',
-                }}>↑ Cargar planilla</button>
-              </div>
-            ) : (
-              <>
-                {/* KPIs */}
-                <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(130px,1fr))', gap:10, marginBottom:16 }}>
-                  {[
-                    { l:'TOTAL', v:stats.total, c:'var(--text)' },
-                    { l:'CON STOCK', v:stats.conStock, c:'var(--verde)' },
-                    { l:'SIN STOCK', v:stats.sinStock, c:'var(--rojo)' },
-                    { l:'CON VENTAS', v:stats.conVentas, c:'var(--azul)' },
-                  ].map(kpi => (
-                    <div key={kpi.l} className="card" style={{ padding:'12px 14px', textAlign:'center' }}>
-                      <div style={{ fontSize:9, color:'var(--text-3)', letterSpacing:'0.08em', marginBottom:4 }}>{kpi.l}</div>
-                      <div style={{ fontFamily:'var(--font-syne)', fontSize:24, fontWeight:700, color:kpi.c }}>{kpi.v}</div>
-                    </div>
-                  ))}
-                </div>
+function TablaProveedor({mem,provSel,hasV,hasVh,filterQ,setFilterQ,filterFam,setFilterFam,soloComp,setSoloComp,sortCol,sortDir,sortBy,updPlan,onBack}){
+  let arts=getArts(mem,provSel);
+  const fams=[...new Set(arts.map(a=>a.fam).filter(Boolean))].sort();
+  if(filterFam)arts=arts.filter(a=>a.fam===filterFam);
+  if(filterQ){const tokens=filterQ.toLowerCase().split(/\s+/).filter(Boolean);arts=arts.filter(a=>tokens.every(t=>(a.desc+a.cod+a.codp).toLowerCase().includes(t)));}
+  if(soloComp)arts=arts.filter(a=>a.ac>0);
+  arts.sort((a,b)=>{const va=a[sortCol]||0,vb=b[sortCol]||0;if(typeof va==='string')return sortDir*va.localeCompare(vb);return sortDir*(va-vb);});
 
-                {/* Filtros */}
-                <div style={{ display:'flex', gap:8, marginBottom:14, flexWrap:'wrap' }}>
-                  <input value={busqueda} onChange={e=>setBusqueda(e.target.value)}
-                    placeholder="Buscar por código o descripción..."
-                    style={{ flex:1, minWidth:200, padding:'6px 10px', fontSize:12 }} />
-                  <select value={filtProv} onChange={e=>setFiltProv(e.target.value)}
-                    style={{ padding:'6px 8px', fontSize:12 }}>
-                    <option value="">— Todos los proveedores —</option>
-                    {proveedores.map(p => <option key={p} value={p}>{p}</option>)}
-                  </select>
-                  {(busqueda||filtProv) && (
-                    <button onClick={()=>{setBusqueda('');setFiltProv('');}} style={{
-                      color:'var(--text-3)', background:'transparent', border:'1px solid var(--border)',
-                      borderRadius:'var(--radius)', padding:'6px 12px', fontSize:11,
-                    }}>✕ Limpiar</button>
-                  )}
-                </div>
+  const totCen=arts.reduce((s,a)=>s+a.DMCN,0);
+  const totSol=arts.reduce((s,a)=>s+a.DM01,0);
+  const totVar=arts.reduce((s,a)=>s+a.DM03,0);
+  const totComp=arts.reduce((s,a)=>s+a.ac,0);
+  const totDP=arts.reduce((s,a)=>s+Math.max(0,a.ac-a.d1-a.d3-a.dc),0);
 
-                {/* Tabla */}
-                <div className="card" style={{ overflowX:'auto' }}>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>CÓDIGO</th><th>DESCRIPCIÓN</th><th>PROVEEDOR</th><th>FAMILIA</th>
-                        <th style={{textAlign:'right'}}>STOCK</th>
-                        <th style={{textAlign:'right'}}>VENTAS</th>
-                        <th style={{textAlign:'right'}}>PRECIO</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filtrados.slice(0,200).map(a => (
-                        <tr key={a.cod}>
-                          <td style={{fontFamily:'var(--font-mono)',fontSize:11,color:'var(--text-2)'}}>{a.cod}</td>
-                          <td style={{fontSize:12}}>{a.desc}</td>
-                          <td style={{fontSize:11,color:'var(--text-3)'}}>{a.proveedor}</td>
-                          <td style={{fontSize:11}}>{a.familia || '—'}</td>
-                          <td style={{textAlign:'right',fontWeight:600,color:(a.stock||0)<=0?'var(--rojo)':'var(--verde)'}}>{a.stock??'—'}</td>
-                          <td style={{textAlign:'right',color:'var(--azul)'}}>{a.venta??'—'}</td>
-                          <td style={{textAlign:'right',color:'var(--accent)'}}>
-                            {a.precio?`$${Number(a.precio).toLocaleString('es-AR',{minimumFractionDigits:0})}`:'—'}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {filtrados.length > 200 && (
-                    <div style={{padding:'8px 12px',fontSize:11,color:'var(--text-3)',borderTop:'1px solid var(--border)'}}>
-                      Mostrando 200 de {filtrados.length} · Refiná la búsqueda
-                    </div>
-                  )}
-                </div>
-              </>
-            )}
+  const Th=({col,label,style})=>(
+    <th onClick={()=>sortBy(col)} style={{fontSize:9,color:sortCol===col?'#f0c040':'#6b7280',padding:'5px 7px',background:'#0d0f1a',borderBottom:'1px solid #1e2133',whiteSpace:'nowrap',textTransform:'uppercase',letterSpacing:'.06em',cursor:'pointer',...style}}>
+      {label}{sortCol===col?(sortDir>0?' ↑':' ↓'):''}
+    </th>
+  );
+
+  return(
+    <div>
+      {/* KPIs */}
+      <div style={{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:7,marginBottom:10}}>
+        {[{l:'ARTÍCULOS',v:fn(arts.length),c:'#e8eaf0'},{l:'CENTRAL',v:fn(totCen),c:'#2dd4bf'},{l:'SOLANO',v:fn(totSol),c:'#60a5fa'},{l:'VARELA',v:fn(totVar),c:'#4ade80'},{l:'A COMPRAR',v:fn(totComp),c:'#f0c040'},{l:'→ DP AUTO',v:fn(totDP),c:'#c084fc'}].map(k=>(
+          <div key={k.l} style={{background:'#111420',border:'1px solid #1e2133',borderRadius:4,padding:'8px 10px'}}>
+            <div style={{fontSize:8,color:'#6b7280',letterSpacing:'.07em',textTransform:'uppercase',marginBottom:3}}>{k.l}</div>
+            <div style={{fontFamily:'Syne,sans-serif',fontSize:17,fontWeight:700,color:k.c}}>{k.v}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Filtros */}
+      <div style={{display:'flex',gap:7,alignItems:'center',marginBottom:8,flexWrap:'wrap'}}>
+        <button onClick={onBack} style={{fontSize:10,padding:'4px 10px',color:'#6b7280',cursor:'pointer',background:'transparent',border:'1px solid #1e2133',borderRadius:4,fontFamily:'DM Mono,monospace'}}>← Proveedores</button>
+        <select value={filterFam} onChange={e=>setFilterFam(e.target.value)}
+          style={{fontSize:10,padding:'4px 8px',background:'#0c0e14',color:'#e8eaf0',border:'1px solid #1e2133',borderRadius:4,fontFamily:'DM Mono,monospace'}}>
+          <option value="">— Todas las familias —</option>
+          {fams.map(f=><option key={f} value={f}>{f}</option>)}
+        </select>
+        <input value={filterQ} onChange={e=>setFilterQ(e.target.value)} placeholder="Buscar artículo o código..."
+          style={{flex:1,minWidth:140,fontSize:11,padding:'4px 8px',background:'#0c0e14',color:'#e8eaf0',border:'1px solid #1e2133',borderRadius:4,outline:'none',fontFamily:'DM Mono,monospace'}} />
+        <label style={{display:'flex',alignItems:'center',gap:4,fontSize:10,cursor:'pointer',color:'#e8eaf0'}}>
+          <input type="checkbox" checked={soloComp} onChange={e=>setSoloComp(e.target.checked)} style={{accentColor:'#f0c040'}} />
+          Solo con compra
+        </label>
+        {hasV&&(
+          <div style={{display:'flex',gap:4,fontSize:8,color:'#6b7280',alignItems:'center'}}>
+            STOCK:
+            {[['#4ade80','#0c0e14','>MES'],['#f0c040','#0c0e14','>QUIN'],['#f87171','#fff','<SEM']].map(([bg,co,t])=>(
+              <span key={t} style={{background:bg,color:co,padding:'1px 5px',borderRadius:2,fontWeight:600}}>{t}</span>
+            ))}
           </div>
         )}
       </div>
+
+      {/* Tabla */}
+      <div style={{overflowX:'auto',background:'#111420',border:'1px solid #1e2133',borderRadius:5}}>
+        <table style={{borderCollapse:'collapse',width:'100%'}}>
+          <thead>
+            <tr>
+              <Th col="cod"  label="CÓDIGO"   style={{width:'11%'}} />
+              <th style={{fontSize:9,color:'#6b7280',padding:'5px 7px',background:'#0d0f1a',borderBottom:'1px solid #1e2133',textTransform:'uppercase',letterSpacing:'.06em',width:'9%'}}>CÓD.PROV</th>
+              <Th col="desc" label="DESCRIPCIÓN" />
+              <Th col="DMCN" label="CENTRAL"  style={{textAlign:'right',color:'#2dd4bf',width:68}} />
+              <Th col="DM01" label="SOLANO"   style={{textAlign:'right',color:'#60a5fa',width:68}} />
+              <Th col="DM03" label="VARELA"   style={{textAlign:'right',color:'#4ade80',width:68}} />
+              <Th col="tot"  label="TOTAL"    style={{textAlign:'right',width:68}} />
+              {hasVh&&<Th col="vh" label="HIST" style={{textAlign:'right',fontSize:8,width:58,color:'#6b7280'}} />}
+              {hasV&&<><Th col="vs" label="V.SEM" style={{textAlign:'right',width:58}} /><Th col="vq" label="V.QUIN" style={{textAlign:'right',fontSize:8,width:58,color:'#6b7280'}} /><Th col="vm" label="V.MES" style={{textAlign:'right',fontSize:8,width:58,color:'#6b7280'}} /></>}
+              <th style={{fontSize:9,color:'#f0c040',padding:'5px 7px',background:'#0d0f1a',borderBottom:'1px solid #1e2133',textAlign:'right',width:70,textTransform:'uppercase'}}>A COMPRAR</th>
+              <th style={{fontSize:8,color:'#2dd4bf',padding:'5px 7px',background:'#0d0f1a',borderBottom:'1px solid #1e2133',textAlign:'right',width:60,textTransform:'uppercase'}}>→CENTRAL</th>
+              <th style={{fontSize:8,color:'#60a5fa',padding:'5px 7px',background:'#0d0f1a',borderBottom:'1px solid #1e2133',textAlign:'right',width:60,textTransform:'uppercase'}}>→SOLANO</th>
+              <th style={{fontSize:8,color:'#4ade80',padding:'5px 7px',background:'#0d0f1a',borderBottom:'1px solid #1e2133',textAlign:'right',width:60,textTransform:'uppercase'}}>→VARELA</th>
+              <th style={{fontSize:8,color:'#c084fc',padding:'5px 7px',background:'#0d0f1a',borderBottom:'1px solid #1e2133',textAlign:'right',width:52,textTransform:'uppercase'}}>→DP</th>
+            </tr>
+          </thead>
+          <tbody>
+            {arts.length===0&&<tr><td colSpan={20} style={{textAlign:'center',padding:24,color:'#6b7280',fontSize:11}}>Sin artículos</td></tr>}
+            {arts.map(a=><ArtRow key={a.cod} art={a} mem={mem} hasV={hasV} hasVh={hasVh} updPlan={updPlan} />)}
+          </tbody>
+        </table>
+      </div>
+      <div style={{marginTop:7,fontSize:9,color:'#6b7280'}}>{arts.length} artículos · {arts.filter(a=>a.ac>0).length} con compra</div>
     </div>
+  );
+}
+
+function ArtRow({art,mem,hasV,hasVh,updPlan}){
+  const p=mem.plan[art.cod]||{ac:0,d1:0,d3:0,dc:0};
+  const dp=Math.max(0,p.ac-p.d1-p.d3-p.dc);
+  const over=(p.d1+p.d3+p.dc)>p.ac&&p.ac>0;
+  const vm=mem.vm[art.cod]||0,vq=mem.vq[art.cod]||0,vs=mem.vs[art.cod]||0;
+  const tot=art.DM01+art.DM03+art.DMCN;
+  let totColor='#e8eaf0';let totExtra={};
+  if(hasV&&(vm||vq||vs)){
+    if(tot>=vm&&vm>0)totColor='#4ade80';
+    else if(tot>=vq&&vq>0)totColor='#f0c040';
+    else if(tot>=vs&&vs>0){totColor='#f87171';totExtra={border:'1px solid #f87171',borderRadius:3,padding:'0 4px',background:'rgba(248,113,113,.1)'};}
+    else if(vs>0){totColor='#fff';totExtra={background:'#f87171',borderRadius:3,padding:'0 4px'};}
+  }
+  const td=(c,s)=><td style={{padding:'4px 7px',borderBottom:'1px solid #181b27',fontSize:10,verticalAlign:'middle',...s}}>{c}</td>;
+  const ic=(field,color)=>(
+    <input type="number" min="0" key={`${art.cod}-${field}-${p[field]}`} defaultValue={p[field]||''}
+      placeholder="—" disabled={field!=='ac'&&!p.ac}
+      onChange={e=>updPlan(art.cod,field,e.target.value)}
+      style={{width:54,padding:'2px 4px',fontSize:10,textAlign:'right',background:'#0c0e14',color:p[field]>0?color:'#e8eaf0',border:`1px solid ${p[field]>0?color:'#1e2133'}`,borderRadius:3,fontFamily:'DM Mono,monospace',outline:'none',WebkitAppearance:'none',MozAppearance:'textfield'}} />
+  );
+  return(
+    <tr style={{background:p.ac>0?'rgba(240,192,64,.02)':'transparent'}}>
+      {td(art.cod,{fontSize:9,color:'#60a5fa',fontFamily:'DM Mono,monospace'})}
+      {td(art.codp,{fontSize:9,color:'#6b7280'})}
+      {td(<span title={art.desc} style={{display:'block',maxWidth:190,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontSize:10}}>{art.desc}</span>)}
+      {td(art.DMCN||'—',{textAlign:'right',color:art.DMCN>0?'#2dd4bf':'#4b5563'})}
+      {td(art.DM01||'—',{textAlign:'right',color:art.DM01>0?'#60a5fa':'#4b5563'})}
+      {td(art.DM03||'—',{textAlign:'right',color:art.DM03>0?'#4ade80':'#4b5563'})}
+      {td(<span style={{display:'inline-block',color:totColor,...totExtra}}>{tot||'—'}</span>,{textAlign:'right'})}
+      {hasVh&&td(art.vh||'—',{textAlign:'right',color:'#6b7280'})}
+      {hasV&&td(art.vs||'—',{textAlign:'right',fontWeight:art.vs>0?500:400,color:art.vs>0?'#e8eaf0':'#4b5563'})}
+      {hasV&&td(art.vq||'—',{textAlign:'right',color:'#6b7280'})}
+      {hasV&&td(art.vm||'—',{textAlign:'right',color:'#6b7280'})}
+      {td(ic('ac','#f0c040'),{textAlign:'right',padding:'3px 5px'})}
+      {td(ic('dc','#2dd4bf'),{textAlign:'right',padding:'3px 5px'})}
+      {td(ic('d1','#60a5fa'),{textAlign:'right',padding:'3px 5px'})}
+      {td(ic('d3','#4ade80'),{textAlign:'right',padding:'3px 5px'})}
+      {td(over?'⚠':dp||'—',{textAlign:'right',fontWeight:500,color:over?'#f87171':dp>0?'#c084fc':'#4b5563'})}
+    </tr>
   );
 }
