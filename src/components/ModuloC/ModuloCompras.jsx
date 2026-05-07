@@ -178,19 +178,25 @@ export default function ModuloCompras(){
     const plan=expandPlan(planC);
     const pins=sh?.pins||tryGet(SK.pins,{});
     const prov=sh?.prov||'';
+    // Leer la base fresca del localStorage (no del estado que puede estar desactualizado)
+    const artC=tryGet(SK.art,null); const artFresh=artC?expandArt(artC):{};
+    const stkC=tryGet(SK.stk,null); const stkFresh=stkC?expandStk(stkC):{};
+    const vsFresh=expandVent(localStorage.getItem(SK.vs)||'');
+    const vqFresh=expandVent(localStorage.getItem(SK.vq)||'');
+    const vmFresh=expandVent(localStorage.getItem(SK.vm)||'');
     const lineas=[];
     for(const[cod,p]of Object.entries(plan)){
       if(!p.ac&&!pins[cod])continue;
-      const a=db.art[cod]||{desc:'',codp:'',prov:'',fam:'',cat:'',costoReal:0,pvMin:0,mostrador:0};
-      const s=db.stk[cod]||{DM01:0,DM03:0,DMCN:0};
+      const a=artFresh[cod]||{desc:'',codp:'',prov:'',fam:'',cat:'',costoReal:0,pvMin:0,mostrador:0};
+      const s=stkFresh[cod]||{DM01:0,DM03:0,DMCN:0};
       lineas.push({
         cod, codp:a.codp, desc:a.desc, prov:a.prov||prov, fam:a.fam, cat:a.cat||'',
         cantOC:p.ac||0, dc:p.dc||0, d1:p.d1||0, d3:p.d3||0,
-        // Costos desde la base — siempre presentes
+        // Costos desde la base fresca — siempre presentes
         costoReal:a.costoReal||0, pvMin:a.pvMin||0, mostrador:a.mostrador||0,
         precioDoc:0,  // se completa cuando llega la factura
         stkDMCN:s.DMCN, stkDM01:s.DM01, stkDM03:s.DM03,
-        vs:db.vs[cod]||0, vq:db.vq[cod]||0, vm:db.vm[cod]||0,
+        vs:vsFresh[cod]||0, vq:vqFresh[cod]||0, vm:vmFresh[cod]||0,
         reconocido:true, aprobado:false, rechazado:false,
         fijado:!!pins[cod],
       });
@@ -199,7 +205,7 @@ export default function ModuloCompras(){
     const id='oc_'+Date.now();
     const data={meta:{proveedor:prov,fecha:new Date().toISOString().slice(0,10),documento:'',origen:'Stock+'},lineas};
     setOCdata(data);setOCact(id);saveOC(id,data);setEtC('validacion');
-  },[db,saveOC]);
+  },[saveOC]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Importar planilla Excel ──────────────────────────────────────────────
   const importarPlanillaXLSX=useCallback(async(file)=>{
@@ -236,7 +242,7 @@ export default function ModuloCompras(){
     const id='oc_'+Date.now();
     const data={meta:{proveedor:prov,fecha:new Date().toISOString().slice(0,10),documento:'',origen:'Planilla: '+file.name},lineas};
     setOCdata(data);setOCact(id);saveOC(id,data);setEtC('validacion');
-  },[db,saveOC]);
+  },[saveOC]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Procesar documento (Excel/IA) ────────────────────────────────────────
   const procesarDocumento=useCallback(async(file,modo)=>{
