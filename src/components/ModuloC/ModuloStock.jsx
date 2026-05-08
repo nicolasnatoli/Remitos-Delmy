@@ -13,6 +13,8 @@ const SK = {
 
 // ─── Compactar/expandir ───────────────────────────────────────────────────────
 const compactArt  = e => { const o={}; for(const[k,a]of Object.entries(e)) o[k]=`${a.prov}|${a.codp}|${a.desc}|${a.fam}|${a.cat||''}|${a.marca||''}|${a.costoReal||0}|${a.pvMin||0}|${a.mostrador||0}`; return o; };
+const chunkSave = (key, obj) => { try { localStorage.setItem(key, JSON.stringify(obj)); } catch(e) { // localStorage full — save only articles with provider or price
+    const filtered = {}; for(const[k,v] of Object.entries(obj)) { const p=v.split('|'); if(p[0]||+p[6]>0) filtered[k]=v; } try { localStorage.setItem(key, JSON.stringify(filtered)); } catch(e2) { console.error('Storage full even after filter'); } } };
 const expandArt   = c => { const o={}; for(const[k,s]of Object.entries(c||{})){const p=s.split('|');o[k]={prov:p[0]||'',codp:p[1]||'',desc:p[2]||'',fam:p[3]||'',cat:p[4]||'',marca:p[5]||'',costoReal:+p[6]||0,pvMin:+p[7]||0,mostrador:+p[8]||0};} return o; };
 const compactStk  = e => { const o={}; for(const[k,s]of Object.entries(e)) o[k]=`${s.DM01||0},${s.DM03||0},${s.DMCN||0}`; return o; };
 const expandStk   = c => { const o={}; for(const[k,s]of Object.entries(c||{})){const p=s.split(',');o[k]={DM01:+p[0]||0,DM03:+p[1]||0,DMCN:+p[2]||0};} return o; };
@@ -190,7 +192,7 @@ export default function ModuloStock() {
       const wb=XLSX.read(ab,{type:'array',cellDates:false});
       setMem(prev=>{
         const next={...prev};
-        if(tipo==='art'){next.art=parseFormatoProveedores(wb);trySet(SK.art,compactArt(next.art));next.meta={...next.meta,art:{f:file.name,n:Object.keys(next.art).length,t:Date.now()}};}
+        if(tipo==='art'){next.art=parseFormatoProveedores(wb);chunkSave(SK.art,compactArt(next.art));next.meta={...next.meta,art:{f:file.name,n:Object.keys(next.art).length,t:Date.now()}};}
         else if(tipo==='stk'){next.stk=parseStk(wb);trySet(SK.stk,compactStk(next.stk));next.meta={...next.meta,stk:{f:file.name,n:Object.keys(next.stk).length,t:Date.now()}};}
         else{const v=parseVentas(wb);next[tipo]=v;trySetRaw(SK[tipo],compactVent(v));next.meta={...next.meta,[tipo]:{f:file.name,n:Object.keys(v).length,t:Date.now()}};}
         trySet(SK.meta,next.meta);
