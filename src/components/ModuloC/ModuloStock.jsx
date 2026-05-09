@@ -103,7 +103,7 @@ function getArts(mem,prov){
 }
 
 // ─── Input numérico — sin salto, blur/Enter confirma ─────────────────────────
-function NumInput({value, onChange, onCommit, color, disabled, width=54, placeholder='—'}){
+function NumInput({value, onChange, onCommit, onEnterFix, color, disabled, width=54, placeholder='—'}){
   const [local, setLocal] = useState(String(value||''));
   const ref = useRef();
   useEffect(()=>{ if(document.activeElement!==ref.current) setLocal(String(value||'')); },[value]);
@@ -130,8 +130,13 @@ function NumInput({value, onChange, onCommit, color, disabled, width=54, placeho
       }}
       onBlur={e  => { commit(local); setLocal(String(parseInt(local)||0||'')); }}
       onKeyDown={e => {
-        if(e.key==='Enter'){ commit(local); ref.current?.blur(); }
-        if(e.key==='Tab')  { /* dejar pasar sin mover */ }
+        if(e.key==='Enter'){
+          commit(local);
+          ref.current?.blur();
+          // Notificar para fijar la fila
+          if(onEnterFix) onEnterFix();
+        }
+        if(e.key==='Tab') { /* dejar pasar sin mover */ }
       }}
       style={{width,padding:'3px 5px',fontSize:10,textAlign:'right',
         background:'#0c0e14',
@@ -655,7 +660,8 @@ function ArtRow({art,mem,hasV,hasVh,updPlan,enLista,onToggle}){
       {hasV&&td(art.vq||'—',{textAlign:'right',color:'#6b7280'})}
       {hasV&&td(art.vm||'—',{textAlign:'right',color:'#6b7280'})}
       <td style={{textAlign:'right',padding:'2px 4px',borderBottom:'1px solid #181b27',verticalAlign:'middle'}}>
-        <NumInput value={p.ac} onChange={v=>updPlan(art.cod,'ac',v)} color='#f0c040' />
+        <NumInput value={p.ac} onChange={v=>updPlan(art.cod,'ac',v)} color='#f0c040'
+          onEnterFix={!enLista?()=>onToggle():undefined} />
       </td>
       <td style={{textAlign:'right',padding:'2px 4px',borderBottom:'1px solid #181b27',verticalAlign:'middle'}}>
         <NumInput value={p.dc} onChange={v=>updPlan(art.cod,'dc',v)} color='#2dd4bf' disabled={!p.ac&&!enLista} />
