@@ -1,8 +1,8 @@
 // ===== DB — capa de datos unificada =====
-// Redis para artículos (grande) · localStorage para el resto
+// Redis para todo lo que supera localStorage
 // Delmy Party SRL · Industrial Partner
 
-const SK = {
+export const SK = {
   art:    'dm_art_v3',
   stk:    'dm_stk_v3',
   vs:     'dm_vs_v3',
@@ -16,69 +16,96 @@ const SK = {
   ocs:    'dm_ocs_v3',
   rec:    'dm_rec_v3',
   nuevos: 'dm_nuevos_art',
+  lista:  'dm_lista_compra',  // listado activo de compra
 };
 
-// ─── localStorage sync ────────────────────────────────────────────────────────
-export function lsGet(k, d=null) {
-  try { const v=localStorage.getItem(k); return v?JSON.parse(v):d; } catch { return d; }
-}
-export function lsSet(k, v) {
-  try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch { return false; }
-}
-export function lsSetRaw(k, v) {
-  try { localStorage.setItem(k, v); return true; } catch { return false; }
-}
-export function lsGetRaw(k) {
-  try { return localStorage.getItem(k); } catch { return null; }
-}
+// ─── localStorage ─────────────────────────────────────────────────────────────
+export const lsGet    = (k,d=null)  => { try { const v=localStorage.getItem(k); return v?JSON.parse(v):d; } catch { return d; } };
+export const lsSet    = (k,v)       => { try { localStorage.setItem(k,JSON.stringify(v)); return true; } catch { return false; } };
+export const lsSetRaw = (k,v)       => { try { localStorage.setItem(k,v); return true; } catch { return false; } };
+export const lsGetRaw = (k)         => { try { return localStorage.getItem(k); } catch { return null; } };
+export const lsDel    = (k)         => { try { localStorage.removeItem(k); } catch {} };
 
-// ─── API (Redis via servidor) ─────────────────────────────────────────────────
+// ─── API Redis via servidor ───────────────────────────────────────────────────
 async function apiFetch(path, opts={}) {
-  const res = await fetch(path, {
-    ...opts,
-    headers: { 'Content-Type':'application/json', ...(opts.headers||{}) },
-  });
+  const res = await fetch(path, { ...opts, headers: { 'Content-Type':'application/json', ...(opts.headers||{}) } });
   if (!res.ok) { const e=await res.json().catch(()=>({})); throw new Error(e.error||`HTTP ${res.status}`); }
   return res.json();
 }
 
 export const api = {
-  get:   (key)       => apiFetch(`/api/store/${key}`),
-  set:   (key, val)  => apiFetch(`/api/store/${key}`,    { method:'POST',  body: JSON.stringify({value:val}) }),
-  merge: (key, val)  => apiFetch(`/api/store/${key}/merge`, { method:'POST', body: JSON.stringify({value:val}) }),
-  del:   (key)       => apiFetch(`/api/store/${key}`,    { method:'DELETE' }),
+  get:   (key)      => apiFetch(`/api/store/${key}`),
+  set:   (key, val) => apiFetch(`/api/store/${key}`,       { method:'POST',   body: JSON.stringify({value:val}) }),
+  del:   (key)      => apiFetch(`/api/store/${key}`,       { method:'DELETE'  }),
+  list:  ()         => apiFetch(`/api/store`),
 };
 
-// ─── Artículos — siempre via Redis (demasiado grande para localStorage) ───────
-export async function saveArt(artObj) {
-  // Guardar en Redis
+// ─── Artículos (Redis — grande) ───────────────────────────────────────────────
+export async function saveArt(artCompact) {
   try {
-    await api.set(SK.art, artObj);
-    // Cache local solo para la sesión actual (puede fallar por tamaño — no importa)
-    lsSet('dm_art_cache_ts', Date.now()); // solo timestamp como bandera
-    try { localStorage.setItem(SK.art, JSON.stringify(artObj)); } catch { /* muy grande, ok */ }
+    await api.set(SK.art, artCompact);
+    try { localStorage.setItem(SK.art, JSON.stringify(artCompact)); } catch { /* ok si no entra */ }
     return true;
-  } catch(e) {
-    console.error('[saveArt]', e.message);
-    return false;
-  }
+  } catch(e) { console.error('[saveArt]', e.message); return false; }
 }
 
 export async function loadArt() {
-  // 1. Intentar localStorage primero (rápido)
-  const local = lsGet(SK.art, null);
-  if (local && Object.keys(local).length > 0) return local;
-  // 2. Fallback a Redis
+  // 1. localStorage si tiene datos
+  try {
+    const local = localStorage.getItem(SK.art);
+    if (local) {
+      const obj = JSON.parse(local);
+      if (Object.keys(obj).length > 100) return obj;
+    }
+  } catch {}
+  // 2. Redis
   try {
     const { value, exists } = await api.get(SK.art);
-    if (exists && value) {
-      try { localStorage.setItem(SK.art, JSON.stringify(value)); } catch { /* ok */ }
+    if (exists && value && Object.keys(value).length > 0) {
+      try { localStorage.setItem(SK.art, JSON.stringify(value)); } catch {}
       return value;
     }
-  } catch(e) {
-    console.error('[loadArt]', e.message);
-  }
+  } catch(e) { console.error('[loadArt Redis]', e.message); }
   return {};
 }
 
-export { SK };
+// ─── Datos de stock/ventas (Redis — medianos) ─────────────────────────────────
+export async function saveMedium(key, value) {
+  try {
+    await api.set(key, value);
+    lsSet(key, value);
+    return true;
+  } catch(e) {
+    // Fallback solo localStorage
+    return lsSet(key, value);
+  }
+}
+
+export async function loadMedium(key, expandFn) {
+  // 1. localStorage
+  try {
+    const local = localStorage.getItem(key);
+    if (local) {
+      const obj = JSON.parse(local);
+      if (obj && Object.keys(obj).length > 0) return expandFn ? expandFn(obj) : obj;
+    }
+  } catch {}
+  // 2. Redis
+  try {
+    const { value, exists } = await api.get(key);
+    if (exists && value) {
+      try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+      return expandFn ? expandFn(value) : value;
+    }
+  } catch(e) { console.error(`[loadMedium ${key}]`, e.message); }
+  return {};
+}
+
+// ─── Meta / configuración pequeña (solo localStorage) ────────────────────────
+export const getMeta  = ()    => lsGet(SK.meta, {});
+export const saveMeta = (m)   => lsSet(SK.meta, m);
+
+// ─── Lista de compra activa ───────────────────────────────────────────────────
+export const getListaCompra  = ()  => lsGet(SK.lista, { prov:'', items:{}, ts:null });
+export const saveListaCompra = (l) => lsSet(SK.lista, l);
+export const clearListaCompra= ()  => lsDel(SK.lista);
