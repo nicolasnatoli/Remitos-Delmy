@@ -51,7 +51,7 @@ const ALLOWED = new Set([
   'delmy_proveedores','delmy_articulos',
   'dm_art_v3','dm_stk_v3','dm_vs_v3','dm_vq_v3','dm_vm_v3','dm_vh_v3',
   'dm_plan_v3','dm_share_v3','dm_meta_v3','dm_ocs_v3','dm_rec_v3',
-  'dm_nuevos_art',
+  'dm_nuevos_art','dm_pins_v3','dm_oc_estados',
 ]);
 
 // ─── API Routes ───────────────────────────────────────────────────────────────

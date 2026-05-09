@@ -1,21 +1,12 @@
-// ===== MÓDULO STOCK+ V3 =====
-import React, { useState, useCallback, useMemo, useRef } from 'react';
+// ===== MÓDULO STOCK+ V4 =====
+import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
+import { SK, lsGet, lsSet, lsSetRaw, lsGetRaw, saveArt, loadArt, api } from '../../utils/db';
 
 const fn = n => Number(n||0).toLocaleString('es-AR');
 
-const SK = {
-  art:'dm_art_v3', stk:'dm_stk_v3',
-  vs:'dm_vs_v3', vq:'dm_vq_v3', vm:'dm_vm_v3', vh:'dm_vh_v3',
-  plan:'dm_plan_v3', share:'dm_share_v3', meta:'dm_meta_v3',
-  pins:'dm_pins_v3',
-};
-
 // ─── Compactar/expandir ───────────────────────────────────────────────────────
 const compactArt  = e => { const o={}; for(const[k,a]of Object.entries(e)) o[k]=`${a.prov}|${a.codp}|${a.desc}|${a.fam}|${a.cat||''}|${a.marca||''}|${a.costoReal||0}|${a.pvMin||0}|${a.mostrador||0}`; return o; };
-const chunkSave = (key, obj) => { try { localStorage.setItem(key, JSON.stringify(obj)); } catch(e) { // localStorage full — save only articles with provider or price
-    const filtered = {}; for(const[k,v] of Object.entries(obj)) { const p=v.split('|'); if(p[0]||+p[6]>0) filtered[k]=v; } try { localStorage.setItem(key, JSON.stringify(filtered)); } catch(e2) { console.error('Storage full even after filter'); } } };
-const expandArt   = c => { const o={}; for(const[k,s]of Object.entries(c||{})){const p=s.split('|');o[k]={prov:p[0]||'',codp:p[1]||'',desc:p[2]||'',fam:p[3]||'',cat:p[4]||'',marca:p[5]||'',costoReal:+p[6]||0,pvMin:+p[7]||0,mostrador:+p[8]||0};} return o; };
 const compactStk  = e => { const o={}; for(const[k,s]of Object.entries(e)) o[k]=`${s.DM01||0},${s.DM03||0},${s.DMCN||0}`; return o; };
 const expandStk   = c => { const o={}; for(const[k,s]of Object.entries(c||{})){const p=s.split(',');o[k]={DM01:+p[0]||0,DM03:+p[1]||0,DMCN:+p[2]||0};} return o; };
 const compactVent = o => Object.entries(o).filter(([,v])=>v>0).map(([k,v])=>`${k}:${v}`).join('|');
@@ -23,21 +14,17 @@ const expandVent  = s => { if(!s||typeof s!=='string')return{}; const o={}; s.re
 const compactPlan = e => { const o={}; for(const[k,p]of Object.entries(e)) if(p.ac||p.d1||p.d3||p.dc) o[k]=`${p.ac||0},${p.d1||0},${p.d3||0},${p.dc||0}`; return o; };
 const expandPlan  = c => { const o={}; for(const[k,s]of Object.entries(c||{})){const p=s.split(',');o[k]={ac:+p[0]||0,d1:+p[1]||0,d3:+p[2]||0,dc:+p[3]||0};} return o; };
 
-function tryGet(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d;}catch{return d;}}
-function trySet(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch{}}
-function trySetRaw(k,v){try{localStorage.setItem(k,v);}catch{}}
-
-function loadMEM(){
-  const artC=tryGet(SK.art,null); const art=artC?expandArt(artC):{};
-  const stkC=tryGet(SK.stk,null); const stk=stkC?expandStk(stkC):{};
-  const vs=expandVent(localStorage.getItem(SK.vs)||'');
-  const vq=expandVent(localStorage.getItem(SK.vq)||'');
-  const vm=expandVent(localStorage.getItem(SK.vm)||'');
-  const vh=expandVent(localStorage.getItem(SK.vh)||'');
-  const sh=tryGet(SK.share,null); const planC=sh?.planC||tryGet(SK.plan,null);
+function loadLocalMEM(){
+  const stkC=lsGet(SK.stk,null); const stk=stkC?expandStk(stkC):{};
+  const vs=expandVent(lsGetRaw(SK.vs)||'');
+  const vq=expandVent(lsGetRaw(SK.vq)||'');
+  const vm=expandVent(lsGetRaw(SK.vm)||'');
+  const vh=expandVent(lsGetRaw(SK.vh)||'');
+  const sh=lsGet(SK.share,null); const planC=sh?.planC||lsGet(SK.plan,null);
   const plan=planC?expandPlan(planC):{};
-  const meta=tryGet(SK.meta,{});
-  return {art,stk,vs,vq,vm,vh,plan,meta};
+  const meta=lsGet(SK.meta,{});
+  const pins=lsGet(SK.pins,{});
+  return {art:{},stk,vs,vq,vm,vh,plan,meta,pins};
 }
 
 // ─── Parsers ──────────────────────────────────────────────────────────────────
@@ -127,102 +114,130 @@ function getArts(mem,prov){
     });
 }
 
-// ─── Input numérico sin flechas, sin saltar campo ────────────────────────────
-function NumInput({value, onChange, color, disabled, width=54, placeholder='—'}){
-  const [local, setLocal] = useState(value||'');
-  const ref = useRef();
-  // sync cuando cambia externamente
-  React.useEffect(()=>{ if(document.activeElement!==ref.current) setLocal(value||''); },[value]);
-
-  return (
-    <input
-      ref={ref}
-      type="text"
-      inputMode="numeric"
-      value={local}
-      placeholder={placeholder}
-      disabled={disabled}
-      onChange={e=>{
-        const v=e.target.value.replace(/[^0-9]/g,'');
-        setLocal(v);
-        onChange(v===''?0:parseInt(v,10));
-      }}
-      onBlur={()=>setLocal(value||'')}
-      style={{
-        width, padding:'3px 5px', fontSize:10, textAlign:'right',
-        background:'#0c0e14',
-        color: value>0 ? (color||'#f0c040') : '#e8eaf0',
-        border:`1px solid ${value>0?(color||'#f0c040'):'#1e2133'}`,
-        borderRadius:3, fontFamily:'DM Mono,monospace', outline:'none',
-        opacity: disabled?0.3:1,
-      }}
-    />
-  );
+// ─── Input numérico sin flechas ───────────────────────────────────────────────
+function NumInput({value,onChange,color,disabled,width=54,placeholder='—'}){
+  const [local,setLocal]=useState(value||'');
+  const ref=useRef();
+  useEffect(()=>{if(document.activeElement!==ref.current)setLocal(value||'');},[value]);
+  return(<input ref={ref} type="text" inputMode="numeric" value={local} placeholder={placeholder} disabled={disabled}
+    onChange={e=>{const v=e.target.value.replace(/[^0-9]/g,'');setLocal(v);onChange(v===''?0:parseInt(v,10));}}
+    onBlur={()=>setLocal(value||'')}
+    style={{width,padding:'3px 5px',fontSize:10,textAlign:'right',background:'#0c0e14',color:value>0?(color||'#f0c040'):'#e8eaf0',border:`1px solid ${value>0?(color||'#f0c040'):'#1e2133'}`,borderRadius:3,fontFamily:'DM Mono,monospace',outline:'none',opacity:disabled?.3:1}} />);
 }
 
-// ─── Componente principal ─────────────────────────────────────────────────────
-export default function ModuloStock() {
-  const [mem,       setMem]      = useState(loadMEM);
-  const [provSel,   setProvSel]  = useState(null);
-  const [showProv,  setShowProv] = useState(true);
-  const [provQ,     setProvQ]    = useState('');
-  const [filterQ,   setFilterQ]  = useState('');
-  const [filterFam, setFilterFam]= useState('');
-  const [filterCat, setFilterCat]= useState('');
-  const [soloComp,  setSoloComp] = useState(false);
-  const [sortCol,   setSortCol]  = useState('desc');
-  const [sortDir,   setSortDir]  = useState(1);
-  const [loading,   setLoading]  = useState({});
-  const [pins,      setPins]     = useState(()=>tryGet(SK.pins,{}));
+// ════════════════════════════════════════════════════════════════════════════
+// COMPONENTE PRINCIPAL
+// ════════════════════════════════════════════════════════════════════════════
+export default function ModuloStock(){
+  const [mem,      setMem]     = useState(loadLocalMEM);
+  const [artLoaded,setArtLoaded]=useState(false);
+  const [provSel,  setProvSel] = useState(null);
+  const [provQ,    setProvQ]   = useState('');
+  const [filterQ,  setFilterQ] = useState('');
+  const [filterFam,setFilterFam]=useState('');
+  const [filterCat,setFilterCat]=useState('');
+  const [soloComp, setSoloComp]=useState(false);
+  const [sortCol,  setSortCol] =useState('desc');
+  const [sortDir,  setSortDir] =useState(1);
+  const [loading,  setLoading] =useState({});
+  const [saveStatus,setSaveStatus]=useState('');
 
-  const togglePin = useCallback((cod)=>{
-    setPins(prev=>{
-      const next={...prev,[cod]:!prev[cod]};
-      if(!next[cod])delete next[cod];
-      trySet(SK.pins,next);
-      return next;
+  // Cargar artículos desde Redis al montar
+  useEffect(()=>{
+    loadArt().then(art=>{
+      if(Object.keys(art).length>0){
+        setMem(prev=>({...prev,art}));
+      }
+      setArtLoaded(true);
     });
   },[]);
 
-  const loadFile = useCallback(async(tipo,file)=>{
+  const loadFile=useCallback(async(tipo,file)=>{
     if(!file)return;
     setLoading(p=>({...p,[tipo]:true}));
+    setSaveStatus('');
     try{
       const ab=await file.arrayBuffer();
       const wb=XLSX.read(ab,{type:'array',cellDates:false});
-      setMem(prev=>{
-        const next={...prev};
-        if(tipo==='art'){next.art=parseFormatoProveedores(wb);chunkSave(SK.art,compactArt(next.art));next.meta={...next.meta,art:{f:file.name,n:Object.keys(next.art).length,t:Date.now()}};}
-        else if(tipo==='stk'){next.stk=parseStk(wb);trySet(SK.stk,compactStk(next.stk));next.meta={...next.meta,stk:{f:file.name,n:Object.keys(next.stk).length,t:Date.now()}};}
-        else{const v=parseVentas(wb);next[tipo]=v;trySetRaw(SK[tipo],compactVent(v));next.meta={...next.meta,[tipo]:{f:file.name,n:Object.keys(v).length,t:Date.now()}};}
-        trySet(SK.meta,next.meta);
-        trySet(SK.share,{planC:compactPlan(next.plan),t:Date.now()});
-        return next;
-      });
-    }catch(e){console.error('[Stock] loadFile:',e);}
+      if(tipo==='art'){
+        setSaveStatus('Guardando artículos en Redis...');
+        const art=parseFormatoProveedores(wb);
+        const compacted=compactArt(art);
+        const ok=await saveArt(compacted);
+        setSaveStatus(ok?`✓ ${Object.keys(art).length} artículos guardados en Redis`:'⚠ Error guardando en Redis');
+        setMem(prev=>{
+          const next={...prev,art};
+          const meta={...prev.meta,art:{f:file.name,n:Object.keys(art).length,t:Date.now()}};
+          lsSet(SK.meta,meta);
+          return{...next,meta};
+        });
+      } else if(tipo==='stk'){
+        const stk=parseStk(wb);
+        lsSet(SK.stk,compactStk(stk));
+        setMem(prev=>{const meta={...prev.meta,stk:{f:file.name,n:Object.keys(stk).length,t:Date.now()}};lsSet(SK.meta,meta);return{...prev,stk,meta};});
+      } else {
+        const v=parseVentas(wb);
+        lsSetRaw(SK[tipo],compactVent(v));
+        setMem(prev=>{const meta={...prev.meta,[tipo]:{f:file.name,n:Object.keys(v).length,t:Date.now()}};lsSet(SK.meta,meta);return{...prev,[tipo]:v,meta};});
+      }
+    }catch(e){console.error('[Stock]',e);setSaveStatus('Error: '+e.message);}
     finally{setLoading(p=>({...p,[tipo]:false}));}
   },[]);
 
-  const updPlan = useCallback((cod,field,val)=>{
+  const updPlan=useCallback((cod,field,val)=>{
     const v=Math.max(0,parseInt(val)||0);
     setMem(prev=>{
       const plan={...prev.plan,[cod]:{...(prev.plan[cod]||{ac:0,d1:0,d3:0,dc:0}),[field]:v}};
       if(field==='ac'&&!v)plan[cod]={ac:0,d1:0,d3:0,dc:0};
       const compact=compactPlan(plan);
-      trySet(SK.plan,compact); trySet(SK.share,{planC:compact,t:Date.now()});
+      lsSet(SK.plan,compact);
+      lsSet(SK.share,{planC:compact,pins:{...(prev.pins||{})},prov:provSel,t:Date.now()});
       return{...prev,plan};
+    });
+  },[provSel]);
+
+  const togglePin=useCallback((cod)=>{
+    setMem(prev=>{
+      const pins={...prev.pins,[cod]:!prev.pins[cod]};
+      if(!pins[cod])delete pins[cod];
+      lsSet(SK.pins,pins);
+      // Update share
+      const sh=lsGet(SK.share,{});
+      lsSet(SK.share,{...sh,pins,t:Date.now()});
+      return{...prev,pins};
     });
   },[]);
 
-  const doReset = useCallback(()=>{
-    if(!window.confirm('¿Eliminar todos los datos?'))return;
+  // ─── Enviar a Compras — SOLO el proveedor seleccionado ────────────────────
+  const enviarACompras=useCallback(()=>{
+    if(!provSel){alert('Seleccioná un proveedor primero');return;}
+    const planActual={...mem.plan};
+    Object.keys(mem.pins||{}).forEach(cod=>{
+      if(!planActual[cod])planActual[cod]={ac:0,d1:0,d3:0,dc:0};
+    });
+    const artsProv=getArts(mem,provSel);
+    const planProv={};
+    artsProv.forEach(a=>{
+      if(planActual[a.cod]&&(planActual[a.cod].ac>0||(mem.pins||{})[a.cod]))
+        planProv[a.cod]=planActual[a.cod];
+    });
+    const n=Object.keys(planProv).length;
+    if(!n){alert('Fijá o completá cantidad en al menos 1 artículo de '+provSel);return;}
+    const compact=compactPlan(planProv);
+    lsSet(SK.plan,compact);
+    lsSet(SK.share,{planC:compact,pins:{...(mem.pins||{})},prov:provSel,t:Date.now()});
+    alert(`✓ ${n} artículos de ${provSel} enviados a Compras`);
+  },[mem,provSel]);
+
+  const doReset=useCallback(()=>{
+    if(!window.confirm('¿Eliminar todos los datos de stock?'))return;
     Object.values(SK).forEach(k=>{try{localStorage.removeItem(k);}catch{}});
-    setMem({art:{},stk:{},vs:{},vq:{},vm:{},vh:{},plan:{},meta:{}});
-    setPins({});
-    setProvSel(null);setShowProv(true);
+    api.del(SK.art).catch(()=>{});
+    setMem({art:{},stk:{},vs:{},vq:{},vm:{},vh:{},plan:{},meta:{},pins:{}});
+    setProvSel(null);setProvQ('');
   },[]);
 
-  const exportExcel = useCallback(()=>{
+  const exportExcel=useCallback(()=>{
     if(!provSel)return;
     const arts=getArts(mem,provSel);
     const hasV=Object.keys(mem.vs).length>0; const hasVh=Object.keys(mem.vh).length>0;
@@ -235,42 +250,25 @@ export default function ModuloStock() {
       const p=mem.plan[a.cod]||{ac:0,d1:0,d3:0,dc:0};
       const dp=Math.max(0,p.ac-p.d1-p.d3-p.dc);
       const r=[a.cod,a.codp,a.desc,a.fam,a.cat,a.costoReal,a.pvMin,a.mostrador,a.DMCN,a.DM01,a.DM03,a.DM01+a.DM03+a.DMCN];
-      if(hasVh)r.push(a.vh);
-      if(hasV)r.push(a.vs,a.vq,a.vm);
-      r.push(p.ac||0,p.dc||0,p.d1||0,p.d3||0,dp,pins[a.cod]?'✓':'');
+      if(hasVh)r.push(a.vh); if(hasV)r.push(a.vs,a.vq,a.vm);
+      r.push(p.ac||0,p.dc||0,p.d1||0,p.d3||0,dp,(mem.pins||{})[a.cod]?'✓':'');
       rows.push(r);
     });
-    const wb=XLSX.utils.book_new();
-    const ws=XLSX.utils.aoa_to_sheet(rows);
+    const wb=XLSX.utils.book_new(); const ws=XLSX.utils.aoa_to_sheet(rows);
     XLSX.utils.book_append_sheet(wb,ws,'Planilla');
     XLSX.writeFile(wb,`planilla_${provSel}_${new Date().toISOString().slice(0,10)}.xlsx`);
-  },[mem,provSel,pins]);
-
-  const enviarACompras = useCallback(()=>{
-    // Enviar artículos fijados o con cantidad a comprar
-    const planActual={...mem.plan};
-    // Asegurar que artículos fijados sin cantidad tengan entry
-    Object.keys(pins).forEach(cod=>{
-      if(!planActual[cod])planActual[cod]={ac:0,d1:0,d3:0,dc:0};
-    });
-    const n=Object.entries(planActual).filter(([cod,p])=>p.ac>0||pins[cod]).length;
-    if(!n){alert('Fijá o completá cantidad en al menos 1 artículo');return;}
-    const compact=compactPlan(planActual);
-    trySet(SK.plan,compact);
-    trySet(SK.share,{planC:compact,pins:{...pins},prov:provSel,t:Date.now()});
-    alert(`✓ ${n} artículos enviados a Compras`);
-  },[mem.plan,pins,provSel]);
+  },[mem,provSel]);
 
   const sortBy=(col)=>{ if(sortCol===col)setSortDir(d=>d*-1); else{setSortCol(col);setSortDir(1);} };
 
-  const proveedores    = useMemo(()=>getProveedores(mem.art),[mem.art]);
-  const provsFiltrados = useMemo(()=>{const q=provQ.toLowerCase();return q?proveedores.filter(p=>p.nombre.toLowerCase().includes(q)):proveedores;},[proveedores,provQ]);
-  const hasArt = Object.keys(mem.art).length>0;
-  const hasV   = Object.keys(mem.vs).length>0||Object.keys(mem.vq).length>0||Object.keys(mem.vm).length>0;
-  const hasVh  = Object.keys(mem.vh).length>0;
+  const proveedores   =useMemo(()=>getProveedores(mem.art),[mem.art]);
+  const provsFiltrados=useMemo(()=>{const q=provQ.toLowerCase();return q?proveedores.filter(p=>p.nombre.toLowerCase().includes(q)):proveedores;},[proveedores,provQ]);
+  const hasArt=Object.keys(mem.art).length>0;
+  const hasV  =Object.keys(mem.vs).length>0||Object.keys(mem.vq).length>0||Object.keys(mem.vm).length>0;
+  const hasVh =Object.keys(mem.vh).length>0;
 
   const UZONES=[
-    {id:'art',icon:'📋',label:'ARTÍCULOS + PROVEEDORES',sub:'FormatoProveedores.xlsx'},
+    {id:'art',icon:'📋',label:'ARTÍCULOS + PROVEEDORES',sub:'FormatoProveedores.xlsx → Redis'},
     {id:'stk',icon:'📦',label:'STOCK POR SUCURSAL',sub:'StockDisponible.xlsx'},
     {id:'vs', icon:'📊',label:'VENTAS SEMANA',sub:'7 días'},
     {id:'vq', icon:'📊',label:'VENTAS QUINCENA',sub:'15 días'},
@@ -278,21 +276,20 @@ export default function ModuloStock() {
     {id:'vh', icon:'📈',label:'PROM. HISTÓRICO',sub:'Semanal histórico'},
   ];
 
-  return (
+  return(
     <div style={{display:'flex',flexDirection:'column',height:'calc(100vh - 56px)',background:'#0c0e14'}}>
       {/* Badges */}
       <div style={{padding:'7px 14px',background:'#0d0f1a',borderBottom:'1px solid #1e2133',display:'flex',gap:6,flexWrap:'wrap',alignItems:'center',flexShrink:0}}>
         {UZONES.map(u=>{
           const loaded=mem.meta[u.id];
-          return(
-            <span key={u.id} style={{display:'inline-flex',alignItems:'center',padding:'2px 8px',borderRadius:3,fontSize:9,fontWeight:500,background:loaded?'rgba(74,222,128,.12)':'rgba(248,113,113,.12)',color:loaded?'#4ade80':'#f87171',border:`1px solid ${loaded?'rgba(74,222,128,.3)':'rgba(248,113,113,.3)'}`}}>
-              {u.label.split(' ')[0]}: {loaded?fn(loaded.n):'—'}
-            </span>
-          );
+          return(<span key={u.id} style={{display:'inline-flex',alignItems:'center',padding:'2px 8px',borderRadius:3,fontSize:9,fontWeight:500,background:loaded?'rgba(74,222,128,.12)':'rgba(248,113,113,.12)',color:loaded?'#4ade80':'#f87171',border:`1px solid ${loaded?'rgba(74,222,128,.3)':'rgba(248,113,113,.3)'}`}}>
+            {u.label.split(' ')[0]}: {loaded?fn(loaded.n):'—'}
+          </span>);
         })}
+        {saveStatus&&<span style={{fontSize:9,color:saveStatus.startsWith('✓')?'#4ade80':'#f0c040',marginLeft:8}}>{saveStatus}</span>}
         <div style={{marginLeft:'auto',display:'flex',gap:6}}>
-          <button onClick={doReset} style={{cursor:'pointer',fontFamily:'DM Mono,monospace',fontSize:10,borderRadius:4,padding:'3px 9px',border:'1px solid #6b7280',background:'transparent',color:'#6b7280'}}>✕ Reset</button>
-          <button onClick={exportExcel} style={{cursor:'pointer',fontFamily:'DM Mono,monospace',fontSize:10,borderRadius:4,padding:'3px 9px',border:'1px solid rgba(45,212,191,.3)',background:'rgba(45,212,191,.1)',color:'#2dd4bf'}}>↓ Excel</button>
+          <button onClick={doReset}        style={{cursor:'pointer',fontFamily:'DM Mono,monospace',fontSize:10,borderRadius:4,padding:'3px 9px',border:'1px solid #6b7280',background:'transparent',color:'#6b7280'}}>✕ Reset</button>
+          <button onClick={exportExcel}    style={{cursor:'pointer',fontFamily:'DM Mono,monospace',fontSize:10,borderRadius:4,padding:'3px 9px',border:'1px solid rgba(45,212,191,.3)',background:'rgba(45,212,191,.1)',color:'#2dd4bf'}}>↓ Excel</button>
           <button onClick={enviarACompras} style={{cursor:'pointer',fontFamily:'DM Mono,monospace',fontSize:10,borderRadius:4,padding:'3px 9px',border:'1px solid rgba(192,132,252,.3)',background:'rgba(192,132,252,.1)',color:'#c084fc'}}>→ Compras</button>
         </div>
       </div>
@@ -304,30 +301,53 @@ export default function ModuloStock() {
         ))}
       </div>
 
-      {/* Contenido */}
-      <div style={{flex:1,overflow:'auto',padding:14}}>
-        {!hasArt ? <EmptyStock /> :
-         (!provSel||showProv) ? (
-           <ProvSelector provs={provsFiltrados} total={proveedores.length} q={provQ} setQ={setProvQ} sel={provSel}
-             onSel={p=>{setProvSel(p);setProvQ(p);setShowProv(false);setFilterQ('');setFilterFam('');setFilterCat('');}} />
-         ) : (
-           <TablaProveedor mem={mem} provSel={provSel} hasV={hasV} hasVh={hasVh}
-             filterQ={filterQ} setFilterQ={setFilterQ}
-             filterFam={filterFam} setFilterFam={setFilterFam}
-             filterCat={filterCat} setFilterCat={setFilterCat}
-             soloComp={soloComp} setSoloComp={setSoloComp}
-             sortCol={sortCol} sortDir={sortDir} sortBy={sortBy}
-             updPlan={updPlan} pins={pins} togglePin={togglePin}
-             onBack={()=>{setShowProv(true);setProvSel(null);}} />
-         )
-        }
+      {/* Contenido: siempre con panel proveedor a la izquierda + tabla a la derecha */}
+      <div style={{flex:1,overflow:'hidden',display:'flex'}}>
+        {/* Panel proveedor — siempre visible */}
+        <div style={{width:220,flexShrink:0,borderRight:'1px solid #1e2133',display:'flex',flexDirection:'column',background:'#0d0f1a'}}>
+          <div style={{padding:'8px 10px',borderBottom:'1px solid #1e2133',fontSize:9,color:'#6b7280',letterSpacing:'.08em',textTransform:'uppercase'}}>
+            PROVEEDOR
+          </div>
+          <div style={{padding:'6px 8px'}}>
+            <input placeholder="Buscar..." value={provQ} onChange={e=>setProvQ(e.target.value)}
+              style={{width:'100%',fontSize:11,padding:'4px 8px',background:'#0c0e14',color:'#e8eaf0',border:'1px solid #1e2133',borderRadius:4,outline:'none',fontFamily:'DM Mono,monospace'}} />
+          </div>
+          <div style={{flex:1,overflowY:'auto'}}>
+            {!artLoaded&&<div style={{padding:16,textAlign:'center',color:'#6b7280',fontSize:11}}>Cargando...</div>}
+            {artLoaded&&!hasArt&&<div style={{padding:16,textAlign:'center',color:'#6b7280',fontSize:10}}>Cargá FormatoProveedores.xlsx</div>}
+            {provsFiltrados.map(p=>(
+              <div key={p.nombre} onClick={()=>{setProvSel(p.nombre);setFilterQ('');setFilterFam('');setFilterCat('');}}
+                style={{padding:'7px 10px',cursor:'pointer',borderBottom:'1px solid #181b27',borderLeft:`2px solid ${p.nombre===provSel?'#f0c040':'transparent'}`,background:p.nombre===provSel?'rgba(240,192,64,.06)':'transparent'}}>
+                <div style={{fontSize:11,color:'#e8eaf0',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.nombre}</div>
+                <div style={{fontSize:9,color:'#6b7280',marginTop:1}}>{p.n} arts</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Tabla artículos */}
+        <div style={{flex:1,overflow:'auto',padding:12}}>
+          {!provSel
+            ?<div style={{textAlign:'center',padding:'60px 20px',color:'#6b7280'}}>
+                <div style={{fontSize:28,marginBottom:10}}>←</div>
+                <div style={{fontSize:12,color:'#e8eaf0'}}>Seleccioná un proveedor</div>
+              </div>
+            :<TablaProveedor mem={mem} provSel={provSel} hasV={hasV} hasVh={hasVh}
+                filterQ={filterQ} setFilterQ={setFilterQ}
+                filterFam={filterFam} setFilterFam={setFilterFam}
+                filterCat={filterCat} setFilterCat={setFilterCat}
+                soloComp={soloComp} setSoloComp={setSoloComp}
+                sortCol={sortCol} sortDir={sortDir} sortBy={sortBy}
+                updPlan={updPlan} pins={mem.pins||{}} togglePin={togglePin} />
+          }
+        </div>
       </div>
     </div>
   );
 }
 
 function UZone({id,icon,label,sub,loaded,info,loading,onFile}){
-  const ref=React.useRef();
+  const ref=useRef();
   return(
     <div onClick={()=>ref.current.click()} style={{border:`2px dashed ${loaded?'rgba(74,222,128,.4)':'#1e2133'}`,background:loaded?'rgba(74,222,128,.04)':'transparent',borderRadius:4,padding:'7px 11px',display:'flex',alignItems:'center',gap:7,cursor:'pointer',minWidth:130,flex:'1 1 130px',transition:'all .15s'}}>
       <input ref={ref} type="file" accept=".xlsx,.xls" style={{display:'none'}} onChange={e=>{onFile(e.target.files[0]);e.target.value='';}} />
@@ -340,62 +360,19 @@ function UZone({id,icon,label,sub,loaded,info,loading,onFile}){
   );
 }
 
-function EmptyStock(){
-  return(
-    <div style={{textAlign:'center',padding:'50px 20px',color:'#6b7280'}}>
-      <div style={{fontSize:36,marginBottom:12}}>📋</div>
-      <div style={{fontSize:13,color:'#e8eaf0',marginBottom:6}}>Cargá las planillas para comenzar</div>
-      <div style={{fontSize:11,lineHeight:1.9}}>1. FormatoProveedores.xlsx<br/>2. StockDisponible.xlsx<br/>3. Planillas de ventas (opcional)</div>
-    </div>
-  );
-}
-
-function ProvSelector({provs,total,q,setQ,sel,onSel}){
-  return(
-    <div style={{background:'#111420',border:'1px solid #1e2133',borderRadius:5,overflow:'hidden'}}>
-      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'7px 12px',borderBottom:'1px solid #1e2133'}}>
-        <span style={{fontSize:9,color:'#6b7280',letterSpacing:'.1em',textTransform:'uppercase'}}>SELECCIONAR PROVEEDOR</span>
-        <span style={{fontSize:9,color:'#6b7280'}}>{provs.length} de {total}</span>
-      </div>
-      <div style={{padding:'8px 10px'}}>
-        <input placeholder="Buscar proveedor..." value={q} onChange={e=>setQ(e.target.value)}
-          style={{width:'100%',fontSize:12,padding:'6px 10px',background:'#0c0e14',color:'#e8eaf0',border:'1px solid #1e2133',borderRadius:4,outline:'none',fontFamily:'DM Mono,monospace'}} />
-      </div>
-      <div style={{maxHeight:340,overflowY:'auto'}}>
-        {provs.map(p=>(
-          <div key={p.nombre} onClick={()=>onSel(p.nombre)}
-            style={{padding:'8px 12px',cursor:'pointer',borderBottom:'1px solid #181b27',borderLeft:`2px solid ${p.nombre===sel?'#f0c040':'transparent'}`,background:p.nombre===sel?'rgba(240,192,64,.06)':'transparent'}}>
-            <div style={{fontSize:11,color:'#e8eaf0'}}>{p.nombre}</div>
-            <div style={{fontSize:9,color:'#6b7280',marginTop:2}}>{p.n} artículos · {p.fams.slice(0,3).join(', ')}</div>
-          </div>
-        ))}
-        {provs.length===0&&<div style={{padding:20,textAlign:'center',color:'#6b7280',fontSize:11}}>Sin resultados</div>}
-      </div>
-    </div>
-  );
-}
-
-function TablaProveedor({mem,provSel,hasV,hasVh,filterQ,setFilterQ,filterFam,setFilterFam,filterCat,setFilterCat,soloComp,setSoloComp,sortCol,sortDir,sortBy,updPlan,pins,togglePin,onBack}){
+function TablaProveedor({mem,provSel,hasV,hasVh,filterQ,setFilterQ,filterFam,setFilterFam,filterCat,setFilterCat,soloComp,setSoloComp,sortCol,sortDir,sortBy,updPlan,pins,togglePin}){
   let arts=getArts(mem,provSel);
   const fams=[...new Set(arts.map(a=>a.fam).filter(Boolean))].sort();
   const cats=[...new Set(arts.filter(a=>!filterFam||a.fam===filterFam).map(a=>a.cat).filter(Boolean))].sort();
-
   if(filterFam)arts=arts.filter(a=>a.fam===filterFam);
   if(filterCat)arts=arts.filter(a=>a.cat===filterCat);
   if(filterQ){const tokens=filterQ.toLowerCase().split(/\s+/).filter(Boolean);arts=arts.filter(a=>tokens.every(t=>(a.desc+a.cod+a.codp).toLowerCase().includes(t)));}
   if(soloComp)arts=arts.filter(a=>a.ac>0||pins[a.cod]);
 
-  // Separar fijados y no fijados
   const fijados=arts.filter(a=>pins[a.cod]||(a.ac>0||a.d1>0||a.d3>0||a.dc>0));
   const normales=arts.filter(a=>!pins[a.cod]&&!(a.ac>0||a.d1>0||a.d3>0||a.dc>0));
-
-  const sortFn=(a,b)=>{
-    const va=a[sortCol]||0,vb=b[sortCol]||0;
-    if(typeof va==='string')return sortDir*va.localeCompare(vb);
-    return sortDir*(va-vb);
-  };
-  fijados.sort(sortFn);
-  normales.sort(sortFn);
+  const sortFn=(a,b)=>{const va=a[sortCol]||0,vb=b[sortCol]||0;if(typeof va==='string')return sortDir*va.localeCompare(vb);return sortDir*(va-vb);};
+  fijados.sort(sortFn); normales.sort(sortFn);
   const artsOrdenados=[...fijados,...normales];
 
   const totCen=arts.reduce((s,a)=>s+a.DMCN,0);
@@ -413,46 +390,37 @@ function TablaProveedor({mem,provSel,hasV,hasVh,filterQ,setFilterQ,filterFam,set
   return(
     <div>
       {/* KPIs */}
-      <div style={{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:7,marginBottom:10}}>
-        {[
-          {l:'ARTÍCULOS', v:fn(arts.length),   c:'#e8eaf0'},
-          {l:'CENTRAL',   v:fn(totCen),         c:'#2dd4bf'},
-          {l:'SOLANO',    v:fn(totSol),          c:'#60a5fa'},
-          {l:'VARELA',    v:fn(totVar),          c:'#4ade80'},
-          {l:'A COMPRAR', v:fn(totComp),         c:'#f0c040'},
-          {l:'→ DP AUTO', v:fn(totDP),           c:'#c084fc'},
-        ].map(k=>(
-          <div key={k.l} style={{background:'#111420',border:'1px solid #1e2133',borderRadius:4,padding:'8px 10px'}}>
-            <div style={{fontSize:8,color:'#6b7280',letterSpacing:'.07em',textTransform:'uppercase',marginBottom:3}}>{k.l}</div>
-            <div style={{fontFamily:'Syne,sans-serif',fontSize:17,fontWeight:700,color:k.c}}>{k.v}</div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:6,marginBottom:8}}>
+        {[{l:'ARTÍCULOS',v:fn(arts.length),c:'#e8eaf0'},{l:'CENTRAL',v:fn(totCen),c:'#2dd4bf'},{l:'SOLANO',v:fn(totSol),c:'#60a5fa'},{l:'VARELA',v:fn(totVar),c:'#4ade80'},{l:'A COMPRAR',v:fn(totComp),c:'#f0c040'},{l:'→ DP AUTO',v:fn(totDP),c:'#c084fc'}].map(k=>(
+          <div key={k.l} style={{background:'#111420',border:'1px solid #1e2133',borderRadius:4,padding:'6px 8px'}}>
+            <div style={{fontSize:8,color:'#6b7280',letterSpacing:'.07em',textTransform:'uppercase',marginBottom:2}}>{k.l}</div>
+            <div style={{fontFamily:'Syne,sans-serif',fontSize:15,fontWeight:700,color:k.c}}>{k.v}</div>
           </div>
         ))}
       </div>
 
       {/* Filtros */}
-      <div style={{display:'flex',gap:7,alignItems:'center',marginBottom:8,flexWrap:'wrap'}}>
-        <button onClick={onBack} style={{fontSize:10,padding:'4px 10px',color:'#6b7280',cursor:'pointer',background:'transparent',border:'1px solid #1e2133',borderRadius:4,fontFamily:'DM Mono,monospace'}}>← Proveedores</button>
+      <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:7,flexWrap:'wrap'}}>
         <select value={filterFam} onChange={e=>{setFilterFam(e.target.value);setFilterCat('');}}
-          style={{fontSize:10,padding:'4px 8px',background:'#0c0e14',color:'#e8eaf0',border:'1px solid #1e2133',borderRadius:4,fontFamily:'DM Mono,monospace'}}>
+          style={{fontSize:10,padding:'4px 7px',background:'#0c0e14',color:'#e8eaf0',border:'1px solid #1e2133',borderRadius:4,fontFamily:'DM Mono,monospace'}}>
           <option value="">— Todas las familias —</option>
           {fams.map(f=><option key={f} value={f}>{f}</option>)}
         </select>
         <select value={filterCat} onChange={e=>setFilterCat(e.target.value)}
-          style={{fontSize:10,padding:'4px 8px',background:'#0c0e14',color:'#e8eaf0',border:'1px solid #1e2133',borderRadius:4,fontFamily:'DM Mono,monospace'}}>
+          style={{fontSize:10,padding:'4px 7px',background:'#0c0e14',color:'#e8eaf0',border:'1px solid #1e2133',borderRadius:4,fontFamily:'DM Mono,monospace'}}>
           <option value="">— Todas las categorías —</option>
           {cats.map(c=><option key={c} value={c}>{c}</option>)}
         </select>
         <input value={filterQ} onChange={e=>setFilterQ(e.target.value)} placeholder="Buscar artículo o código..."
-          style={{flex:1,minWidth:140,fontSize:11,padding:'4px 8px',background:'#0c0e14',color:'#e8eaf0',border:'1px solid #1e2133',borderRadius:4,outline:'none',fontFamily:'DM Mono,monospace'}} />
-        <label style={{display:'flex',alignItems:'center',gap:4,fontSize:10,cursor:'pointer',color:'#e8eaf0'}}>
+          style={{flex:1,minWidth:120,fontSize:11,padding:'4px 7px',background:'#0c0e14',color:'#e8eaf0',border:'1px solid #1e2133',borderRadius:4,outline:'none',fontFamily:'DM Mono,monospace'}} />
+        <label style={{display:'flex',alignItems:'center',gap:4,fontSize:10,cursor:'pointer',color:'#e8eaf0',whiteSpace:'nowrap'}}>
           <input type="checkbox" checked={soloComp} onChange={e=>setSoloComp(e.target.checked)} style={{accentColor:'#f0c040'}} />
-          Solo fijados/compra
+          Solo fijados
         </label>
         {hasV&&(
-          <div style={{display:'flex',gap:4,fontSize:8,color:'#6b7280',alignItems:'center'}}>
-            STOCK:
+          <div style={{display:'flex',gap:3,fontSize:8,color:'#6b7280',alignItems:'center'}}>
             {[['#4ade80','#0c0e14','>MES'],['#f0c040','#0c0e14','>QUIN'],['#f87171','#fff','<SEM']].map(([bg,co,t])=>(
-              <span key={t} style={{background:bg,color:co,padding:'1px 5px',borderRadius:2,fontWeight:600}}>{t}</span>
+              <span key={t} style={{background:bg,color:co,padding:'1px 4px',borderRadius:2,fontWeight:600}}>{t}</span>
             ))}
           </div>
         )}
@@ -464,52 +432,41 @@ function TablaProveedor({mem,provSel,hasV,hasVh,filterQ,setFilterQ,filterFam,set
           <thead>
             <tr>
               <th style={{fontSize:9,color:'#6b7280',padding:'5px 7px',background:'#0d0f1a',borderBottom:'1px solid #1e2133',width:28,textAlign:'center'}}>📌</th>
-              <Th col="cod"  label="CÓDIGO"      style={{width:'10%'}} />
+              <Th col="cod"  label="CÓDIGO"     style={{width:'10%'}} />
               <th style={{fontSize:9,color:'#6b7280',padding:'5px 7px',background:'#0d0f1a',borderBottom:'1px solid #1e2133',width:'8%',textTransform:'uppercase',letterSpacing:'.06em'}}>CÓD.PROV</th>
               <Th col="desc" label="DESCRIPCIÓN" />
-              <Th col="DMCN" label="CENTRAL"     style={{textAlign:'right',color:'#2dd4bf',width:65}} />
-              <Th col="DM01" label="SOLANO"      style={{textAlign:'right',color:'#60a5fa',width:65}} />
-              <Th col="DM03" label="VARELA"      style={{textAlign:'right',color:'#4ade80',width:65}} />
-              <Th col="tot"  label="TOTAL"       style={{textAlign:'right',width:65}} />
-              {hasVh&&<Th col="vh" label="HIST"  style={{textAlign:'right',fontSize:8,width:55,color:'#6b7280'}} />}
+              <Th col="DMCN" label="CENTRAL"    style={{textAlign:'right',color:'#2dd4bf',width:62}} />
+              <Th col="DM01" label="SOLANO"     style={{textAlign:'right',color:'#60a5fa',width:62}} />
+              <Th col="DM03" label="VARELA"     style={{textAlign:'right',color:'#4ade80',width:62}} />
+              <Th col="tot"  label="TOTAL"      style={{textAlign:'right',width:62}} />
+              {hasVh&&<Th col="vh" label="HIST" style={{textAlign:'right',fontSize:8,width:52,color:'#6b7280'}} />}
               {hasV&&<>
-                <Th col="vs" label="V.SEM"       style={{textAlign:'right',width:55}} />
-                <Th col="vq" label="V.QUIN"      style={{textAlign:'right',fontSize:8,width:55,color:'#6b7280'}} />
-                <Th col="vm" label="V.MES"       style={{textAlign:'right',fontSize:8,width:55,color:'#6b7280'}} />
+                <Th col="vs" label="V.SEM"      style={{textAlign:'right',width:52}} />
+                <Th col="vq" label="V.QUIN"     style={{textAlign:'right',fontSize:8,width:52,color:'#6b7280'}} />
+                <Th col="vm" label="V.MES"      style={{textAlign:'right',fontSize:8,width:52,color:'#6b7280'}} />
               </>}
-              <th style={{fontSize:9,color:'#f0c040',padding:'5px 7px',background:'#0d0f1a',borderBottom:'1px solid #1e2133',textAlign:'right',width:68,textTransform:'uppercase'}}>A COMPRAR</th>
-              <th style={{fontSize:8,color:'#2dd4bf',padding:'5px 7px',background:'#0d0f1a',borderBottom:'1px solid #1e2133',textAlign:'right',width:58,textTransform:'uppercase'}}>→CENTRAL</th>
-              <th style={{fontSize:8,color:'#60a5fa',padding:'5px 7px',background:'#0d0f1a',borderBottom:'1px solid #1e2133',textAlign:'right',width:58,textTransform:'uppercase'}}>→SOLANO</th>
-              <th style={{fontSize:8,color:'#4ade80',padding:'5px 7px',background:'#0d0f1a',borderBottom:'1px solid #1e2133',textAlign:'right',width:58,textTransform:'uppercase'}}>→VARELA</th>
-              <th style={{fontSize:8,color:'#c084fc',padding:'5px 7px',background:'#0d0f1a',borderBottom:'1px solid #1e2133',textAlign:'right',width:50,textTransform:'uppercase'}}>→DP</th>
+              <th style={{fontSize:9,color:'#f0c040',padding:'5px 7px',background:'#0d0f1a',borderBottom:'1px solid #1e2133',textAlign:'right',width:66,textTransform:'uppercase'}}>A COMPRAR</th>
+              <th style={{fontSize:8,color:'#2dd4bf',padding:'5px 7px',background:'#0d0f1a',borderBottom:'1px solid #1e2133',textAlign:'right',width:56,textTransform:'uppercase'}}>→CEN</th>
+              <th style={{fontSize:8,color:'#60a5fa',padding:'5px 7px',background:'#0d0f1a',borderBottom:'1px solid #1e2133',textAlign:'right',width:56,textTransform:'uppercase'}}>→SOL</th>
+              <th style={{fontSize:8,color:'#4ade80',padding:'5px 7px',background:'#0d0f1a',borderBottom:'1px solid #1e2133',textAlign:'right',width:56,textTransform:'uppercase'}}>→VAR</th>
+              <th style={{fontSize:8,color:'#c084fc',padding:'5px 7px',background:'#0d0f1a',borderBottom:'1px solid #1e2133',textAlign:'right',width:48,textTransform:'uppercase'}}>→DP</th>
             </tr>
           </thead>
           <tbody>
-            {artsOrdenados.length===0&&<tr><td colSpan={20} style={{textAlign:'center',padding:24,color:'#6b7280',fontSize:11}}>Sin artículos</td></tr>}
+            {artsOrdenados.length===0&&<tr><td colSpan={20} style={{textAlign:'center',padding:20,color:'#6b7280',fontSize:11}}>Sin artículos</td></tr>}
             {artsOrdenados.map((a,idx)=>{
-              const esFijado=!!pins[a.cod];
-              const tieneDatos=a.ac>0||a.d1>0||a.d3>0||a.dc>0;
-              const esSeparador=idx===fijados.length&&idx>0&&normales.length>0;
+              const esSep=idx===fijados.length&&idx>0&&normales.length>0;
               return(
                 <React.Fragment key={a.cod}>
-                  {esSeparador&&(
-                    <tr>
-                      <td colSpan={20} style={{padding:'3px 7px',background:'rgba(30,33,51,.5)',borderBottom:'1px solid #1e2133',fontSize:8,color:'#4b5563',letterSpacing:'.08em',textTransform:'uppercase'}}>
-                        — Resto del catálogo —
-                      </td>
-                    </tr>
-                  )}
-                  <ArtRow art={a} mem={mem} hasV={hasV} hasVh={hasVh} updPlan={updPlan}
-                    pinned={esFijado} onPin={()=>togglePin(a.cod)} hasDatos={tieneDatos} />
+                  {esSep&&<tr><td colSpan={20} style={{padding:'3px 7px',background:'rgba(30,33,51,.5)',borderBottom:'1px solid #1e2133',fontSize:8,color:'#4b5563',letterSpacing:'.08em',textTransform:'uppercase'}}>— Resto del catálogo —</td></tr>}
+                  <ArtRow art={a} mem={mem} hasV={hasV} hasVh={hasVh} updPlan={updPlan} pinned={!!pins[a.cod]} onPin={()=>togglePin(a.cod)} hasDatos={a.ac>0||a.d1>0||a.d3>0||a.dc>0} />
                 </React.Fragment>
               );
             })}
           </tbody>
         </table>
       </div>
-      <div style={{marginTop:7,fontSize:9,color:'#6b7280'}}>
-        {arts.length} artículos · {fijados.length} fijados/con compra
-      </div>
+      <div style={{marginTop:6,fontSize:9,color:'#6b7280'}}>{arts.length} artículos · {fijados.length} fijados/con compra</div>
     </div>
   );
 }
@@ -524,23 +481,19 @@ function ArtRow({art,mem,hasV,hasVh,updPlan,pinned,onPin,hasDatos}){
   if(hasV&&(vm||vq||vs)){
     if(tot>=vm&&vm>0)totColor='#4ade80';
     else if(tot>=vq&&vq>0)totColor='#f0c040';
-    else if(tot>=vs&&vs>0){totColor='#f87171';totExtra={border:'1px solid #f87171',borderRadius:3,padding:'0 4px',background:'rgba(248,113,113,.1)'};}
-    else if(vs>0){totColor='#fff';totExtra={background:'#f87171',borderRadius:3,padding:'0 4px'};}
+    else if(tot>=vs&&vs>0){totColor='#f87171';totExtra={border:'1px solid #f87171',borderRadius:3,padding:'0 3px',background:'rgba(248,113,113,.1)'};}
+    else if(vs>0){totColor='#fff';totExtra={background:'#f87171',borderRadius:3,padding:'0 3px'};}
   }
   const rowBg=pinned?'rgba(240,192,64,.04)':hasDatos?'rgba(96,165,250,.02)':'transparent';
-  const td=(c,s)=><td style={{padding:'4px 7px',borderBottom:'1px solid #181b27',fontSize:10,verticalAlign:'middle',...s}}>{c}</td>;
-
+  const td=(c,s)=><td style={{padding:'4px 6px',borderBottom:'1px solid #181b27',fontSize:10,verticalAlign:'middle',...s}}>{c}</td>;
   return(
     <tr style={{background:rowBg}}>
-      {/* Pin */}
-      <td style={{padding:'4px 7px',borderBottom:'1px solid #181b27',textAlign:'center'}}>
-        <button onClick={onPin} style={{background:'transparent',border:'none',cursor:'pointer',fontSize:12,color:pinned?'#f0c040':'#4b5563',padding:0}}>
-          {pinned?'📌':'·'}
-        </button>
+      <td style={{padding:'4px 6px',borderBottom:'1px solid #181b27',textAlign:'center'}}>
+        <button onClick={onPin} style={{background:'transparent',border:'none',cursor:'pointer',fontSize:11,color:pinned?'#f0c040':'#4b5563',padding:0}}>{pinned?'📌':'·'}</button>
       </td>
       {td(art.cod,{fontSize:9,color:'#60a5fa',fontFamily:'DM Mono,monospace'})}
       {td(art.codp,{fontSize:9,color:'#6b7280'})}
-      {td(<span title={art.desc} style={{display:'block',maxWidth:190,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontSize:10}}>{art.desc}</span>)}
+      {td(<span title={art.desc} style={{display:'block',maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontSize:10}}>{art.desc}</span>)}
       {td(art.DMCN||'—',{textAlign:'right',color:art.DMCN>0?'#2dd4bf':'#4b5563'})}
       {td(art.DM01||'—',{textAlign:'right',color:art.DM01>0?'#60a5fa':'#4b5563'})}
       {td(art.DM03||'—',{textAlign:'right',color:art.DM03>0?'#4ade80':'#4b5563'})}
@@ -549,16 +502,16 @@ function ArtRow({art,mem,hasV,hasVh,updPlan,pinned,onPin,hasDatos}){
       {hasV&&td(art.vs||'—',{textAlign:'right',fontWeight:art.vs>0?500:400,color:art.vs>0?'#e8eaf0':'#4b5563'})}
       {hasV&&td(art.vq||'—',{textAlign:'right',color:'#6b7280'})}
       {hasV&&td(art.vm||'—',{textAlign:'right',color:'#6b7280'})}
-      <td style={{textAlign:'right',padding:'3px 5px',borderBottom:'1px solid #181b27',verticalAlign:'middle'}}>
+      <td style={{textAlign:'right',padding:'3px 4px',borderBottom:'1px solid #181b27',verticalAlign:'middle'}}>
         <NumInput value={p.ac} onChange={v=>updPlan(art.cod,'ac',v)} color='#f0c040' />
       </td>
-      <td style={{textAlign:'right',padding:'3px 5px',borderBottom:'1px solid #181b27',verticalAlign:'middle'}}>
+      <td style={{textAlign:'right',padding:'3px 4px',borderBottom:'1px solid #181b27',verticalAlign:'middle'}}>
         <NumInput value={p.dc} onChange={v=>updPlan(art.cod,'dc',v)} color='#2dd4bf' disabled={!p.ac&&!pinned} />
       </td>
-      <td style={{textAlign:'right',padding:'3px 5px',borderBottom:'1px solid #181b27',verticalAlign:'middle'}}>
+      <td style={{textAlign:'right',padding:'3px 4px',borderBottom:'1px solid #181b27',verticalAlign:'middle'}}>
         <NumInput value={p.d1} onChange={v=>updPlan(art.cod,'d1',v)} color='#60a5fa' disabled={!p.ac&&!pinned} />
       </td>
-      <td style={{textAlign:'right',padding:'3px 5px',borderBottom:'1px solid #181b27',verticalAlign:'middle'}}>
+      <td style={{textAlign:'right',padding:'3px 4px',borderBottom:'1px solid #181b27',verticalAlign:'middle'}}>
         <NumInput value={p.d3} onChange={v=>updPlan(art.cod,'d3',v)} color='#4ade80' disabled={!p.ac&&!pinned} />
       </td>
       {td(over?'⚠':dp||'—',{textAlign:'right',fontWeight:500,color:over?'#f87171':dp>0?'#c084fc':'#4b5563'})}
