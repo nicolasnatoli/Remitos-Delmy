@@ -49,13 +49,27 @@ export async function saveArt(artCompact) {
   } catch(e) { console.error('[saveArt]', e.message); return false; }
 }
 
+// Expandir formato compacto "prov|codp|desc|fam|cat|marca|cr|pv|most" a objeto
+function expandArtCompact(compact) {
+  const o = {};
+  for (const [k, s] of Object.entries(compact || {})) {
+    if (typeof s === 'string') {
+      const p = s.split('|');
+      o[k] = { prov:p[0]||'', codp:p[1]||'', desc:p[2]||'', fam:p[3]||'', cat:p[4]||'', marca:p[5]||'', costoReal:+p[6]||0, pvMin:+p[7]||0, mostrador:+p[8]||0 };
+    } else if (s && typeof s === 'object') {
+      o[k] = s; // ya expandido
+    }
+  }
+  return o;
+}
+
 export async function loadArt() {
   // 1. localStorage si tiene datos
   try {
     const local = localStorage.getItem(SK.art);
     if (local) {
       const obj = JSON.parse(local);
-      if (Object.keys(obj).length > 100) return obj;
+      if (obj && Object.keys(obj).length > 100) return expandArtCompact(obj);
     }
   } catch {}
   // 2. Redis
@@ -63,7 +77,7 @@ export async function loadArt() {
     const { value, exists } = await api.get(SK.art);
     if (exists && value && Object.keys(value).length > 0) {
       try { localStorage.setItem(SK.art, JSON.stringify(value)); } catch {}
-      return value;
+      return expandArtCompact(value);
     }
   } catch(e) { console.error('[loadArt Redis]', e.message); }
   return {};

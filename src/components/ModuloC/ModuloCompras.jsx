@@ -113,14 +113,14 @@ const bStyle=(cls)=>({display:'inline-flex',alignItems:'center',padding:'1px 7px
 }[cls]||{}});
 const Alrt=({cls,children,style})=>{const s={ok:{background:'rgba(74,222,128,.08)',border:'1px solid rgba(74,222,128,.2)',color:C.green},warn:{background:'rgba(240,192,64,.08)',border:'1px solid rgba(240,192,64,.2)',color:C.acc},err:{background:'rgba(248,113,113,.08)',border:'1px solid rgba(248,113,113,.2)',color:C.red},info:{background:'rgba(96,165,250,.08)',border:'1px solid rgba(96,165,250,.2)',color:C.blue}}[cls]||{};return<div style={{borderRadius:4,padding:'7px 11px',fontSize:10,marginBottom:7,...s,...(style||{})}}>{children}</div>;};
 
-function NumIn({value,onChange,color,disabled,width=72,placeholder='0'}){
+function NumIn({value,onChange,onEnterFix,color,disabled,width=72,placeholder='0'}){
   const [loc,setLoc]=useState(String(value||''));
   const ref=useRef();
   useEffect(()=>{if(document.activeElement!==ref.current)setLoc(String(value||''));},[value]);
   return(<input ref={ref} type="text" inputMode="numeric" value={loc} placeholder={placeholder} disabled={disabled}
     onChange={e=>{const v=e.target.value.replace(/[^0-9.]/g,'');setLoc(v);onChange(parseFloat(v)||0);}}
     onBlur={()=>setLoc(String(value||''))}
-    onKeyDown={e=>{if(e.key==='Enter'){e.target.blur();}}}
+    onKeyDown={e=>{if(e.key==='Enter'){e.target.blur();if(onEnterFix)onEnterFix();}}}
     style={{width,padding:'3px 5px',fontSize:10,textAlign:'right',background:C.bg,color:(parseFloat(loc)||0)>0?(color||C.acc):C.txt,border:`1px solid ${(parseFloat(loc)||0)>0?(color||C.acc):C.b1}`,borderRadius:3,fontFamily:'DM Mono,monospace',outline:'none',opacity:disabled?.3:1}} />);
 }
 
@@ -217,22 +217,22 @@ export default function ModuloCompras(){
     });
     if(!Object.keys(todos).length){alert('Sin artículos para importar.');return;}
     // Leer DB fresca
-    const artC=lsGet(SK.art,null);
-    const artFresh=artC&&typeof artC==='object'?artC:{};
-    const stkC=lsGet(SK.stk,null);const stkFresh=stkC?expandStk(stkC):{};
-    const vsFresh=expandVent(lsGetRaw(SK.vs)||'');
-    const vqFresh=expandVent(lsGetRaw(SK.vq)||'');
-    const vmFresh=expandVent(lsGetRaw(SK.vm)||'');
+    // Usar db que ya tiene art expandido desde loadArt()
+    const artFresh=db.art;
+    const stkFresh=db.stk;
+    const vsFresh=db.vs;
+    const vqFresh=db.vq;
+    const vmFresh=db.vm;
     const lineas=Object.entries(todos).map(([cod,p])=>{
-      const artData=artFresh[cod];
-      const a=artData?{desc:artData.split?artData.split('|')[2]||'':artData.desc||'',codp:artData.split?artData.split('|')[1]||'':artData.codp||'',prov:artData.split?artData.split('|')[0]||'':artData.prov||'',fam:artData.split?artData.split('|')[3]||'':artData.fam||'',cat:artData.split?artData.split('|')[4]||'':artData.cat||'',costoReal:artData.split?+artData.split('|')[6]||0:artData.costoReal||0,pvMin:artData.split?+artData.split('|')[7]||0:artData.pvMin||0,mostrador:artData.split?+artData.split('|')[8]||0:artData.mostrador||0}:{desc:'',codp:'',prov:'',fam:'',cat:'',costoReal:0,pvMin:0,mostrador:0};
+      const a=artFresh[cod]||{desc:'',codp:'',prov:'',fam:'',cat:'',costoReal:0,pvMin:0,mostrador:0};
       const s=stkFresh[cod]||{DM01:0,DM03:0,DMCN:0};
-      return{cod,codp:a.codp||cod,desc:a.desc,prov:a.prov||prov,fam:a.fam,cat:a.cat||'',costoReal:a.costoReal,pvMin:a.pvMin,mostrador:a.mostrador,cantOC:p.ac||0,dc:p.dc||0,d1:p.d1||0,d3:p.d3||0,precioDoc:0,cantRemito:p.ac||0,stkDMCN:s.DMCN,stkDM01:s.DM01,stkDM03:s.DM03,vs:vsFresh[cod]||0,vq:vqFresh[cod]||0,vm:vmFresh[cod]||0,reconocido:!!artFresh[cod],aprobado:false,rechazado:false};
+      return{cod,codp:a.codp||cod,desc:a.desc,prov:a.prov||prov,fam:a.fam||'',cat:a.cat||'',costoReal:a.costoReal,pvMin:a.pvMin,mostrador:a.mostrador,cantOC:p.ac||0,dc:p.dc||0,d1:p.d1||0,d3:p.d3||0,precioDoc:0,cantRemito:p.ac||0,stkDMCN:s.DMCN,stkDM01:s.DM01,stkDM03:s.DM03,vs:vsFresh[cod]||0,vq:vqFresh[cod]||0,vm:vmFresh[cod]||0,reconocido:!!(a.desc),aprobado:false,rechazado:false};
     });
     const id='oc_'+Date.now();
     const data={meta:{proveedor:prov,fecha:new Date().toISOString().slice(0,10),documento:'',origen:'Stock+',estado:'generada',historial:[{estado:'generada',ts:now(),label:nowLabel(),usuario:'Operario',desdePrev:0}]},lineas};
     setOCdata(data);setOCact(id);saveOC(id,data);setEtC('validacion');
     setDb(prev=>({...prev,plan:expandPlan(planC||compactPlan({}))}));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   },[saveOC]);
 
   // ─── Procesar documento ───────────────────────────────────────────────────
@@ -275,15 +275,28 @@ export default function ModuloCompras(){
   const aplicarDocLineas=useCallback((docLineas)=>{
     if(!docLineas.length)return;
     if(OCdata.lineas.length){
+      // OC existente — solo actualizar precioDoc y cantRemito desde el documento
+      // NO reemplazar líneas. Marcar artículos del doc que no están en OC como sobrantes.
       setOCdata(prev=>{
         const lineas=prev.lineas.map(l=>{
-          const match=docLineas.find(dl=>{const ci=cruzar(dl.cod,db.art,codpIdx);return dl.cod===l.codp||dl.cod===l.cod||(ci&&ci===l.cod);});
-          if(match)return{...l,precioDoc:match.precio||0,cantRemito:match.cant||l.cantRemito};
-          return l;
+          const match=docLineas.find(dl=>{
+            const ci=cruzar(dl.cod,db.art,codpIdx);
+            return dl.cod===l.codp||dl.cod===l.cod||(ci&&ci===l.cod);
+          });
+          if(match)return{...l,precioDoc:match.precio||l.precioDoc||0,cantRemito:match.cant||l.cantRemito};
+          return l; // Sin cambios si no está en el doc
         });
-        const updated={...prev,lineas};saveOC(OCact,updated);return updated;
+        // Artículos del doc que NO están en OC → sobrantes
+        const codsOC=new Set(prev.lineas.map(l=>l.cod));
+        const sobrantes=docLineas.filter(dl=>{
+          const ci=cruzar(dl.cod,db.art,codpIdx);
+          return !codsOC.has(dl.cod)&&!codsOC.has(ci||'');
+        }).map(dl=>({...enriquecerLinea(dl.cod,dl.cant,dl.precio,dl.desc,db,codpIdx),esSobrante:true}));
+        const updated={...prev,lineas:[...lineas,...sobrantes]};
+        saveOC(OCact,updated);return updated;
       });
     } else {
+      // Sin OC — crear desde documento
       const lineas=docLineas.map(dl=>enriquecerLinea(dl.cod,dl.cant,dl.precio,dl.desc,db,codpIdx));
       const prov=lineas.find(l=>l.prov)?.prov||'';
       const id='oc_'+Date.now();
@@ -546,7 +559,17 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,procesarDoc,saveOC,OCact,abri
                   {td(l.stkDMCN||'—',{textAlign:'right',color:l.stkDMCN>0?C.teal:C.mut,fontSize:9})}
                   {td(l.stkDM01||'—',{textAlign:'right',color:l.stkDM01>0?C.blue:C.mut,fontSize:9})}
                   {td(l.stkDM03||'—',{textAlign:'right',color:l.stkDM03>0?C.green:C.mut,fontSize:9})}
-                  {td(totStk||'—',{textAlign:'right',fontSize:9})}
+                  {(()=>{
+                    const vm_=l.vm||0,vq_=l.vq||0,vs_=l.vs||0;
+                    let stkColor=C.txt;let stkExtra={};
+                    if(vm_>0||vq_>0||vs_>0){
+                      if(totStk>=vm_&&vm_>0)stkColor=C.green;
+                      else if(totStk>=vq_&&vq_>0)stkColor=C.acc; // amarillo
+                      else if(totStk>=vs_&&vs_>0){stkColor=C.red;}
+                      else if(vs_>0){stkColor=C.red;stkExtra={fontWeight:700};}
+                    }
+                    return td(<span style={{color:stkColor,...stkExtra}}>{totStk||'—'}</span>,{textAlign:'right',fontSize:9});
+                  })()}
                   {td(l.vs||'—',{textAlign:'right',fontSize:9,color:C.mut})}
                   {td(l.vq||'—',{textAlign:'right',fontSize:9,color:C.mut})}
                   {td(l.vm||'—',{textAlign:'right',fontSize:9,color:C.mut})}
@@ -618,9 +641,9 @@ function EtDistribucion({OCdata,setOCdata,saveOC,OCact,onBack,onNext}){
                 {td(l.cantOC,{textAlign:'right',fontWeight:500})}
                 {td(l.precioDoc>0?fp(l.precioDoc):l.costoReal>0?fp(l.costoReal):'—',{textAlign:'right',color:C.mut})}
                 {td(l.cantOC*(l.precioDoc||l.costoReal||0)>0?'$'+fn(l.cantOC*(l.precioDoc||l.costoReal||0)):'—',{textAlign:'right',color:C.acc})}
-                <td style={{textAlign:'right',padding:'3px 4px',borderBottom:`1px solid ${C.b2}`,verticalAlign:'middle'}}><NumIn value={l.dc} onChange={v=>upd(i,'dc',v)} color={C.teal} width={55} /></td>
-                <td style={{textAlign:'right',padding:'3px 4px',borderBottom:`1px solid ${C.b2}`,verticalAlign:'middle'}}><NumIn value={l.d1} onChange={v=>upd(i,'d1',v)} color={C.blue} width={55} /></td>
-                <td style={{textAlign:'right',padding:'3px 4px',borderBottom:`1px solid ${C.b2}`,verticalAlign:'middle'}}><NumIn value={l.d3} onChange={v=>upd(i,'d3',v)} color={C.green} width={55} /></td>
+                <td style={{textAlign:'right',padding:'3px 4px',borderBottom:`1px solid ${C.b2}`,verticalAlign:'middle'}}><NumIn value={l.dc} onChange={v=>upd(i,'dc',v)} color={C.teal} width={55} onEnterFix={()=>{}} /></td>
+                <td style={{textAlign:'right',padding:'3px 4px',borderBottom:`1px solid ${C.b2}`,verticalAlign:'middle'}}><NumIn value={l.d1} onChange={v=>upd(i,'d1',v)} color={C.blue} width={55} onEnterFix={()=>{}} /></td>
+                <td style={{textAlign:'right',padding:'3px 4px',borderBottom:`1px solid ${C.b2}`,verticalAlign:'middle'}}><NumIn value={l.d3} onChange={v=>upd(i,'d3',v)} color={C.green} width={55} onEnterFix={()=>{}} /></td>
                 {td(dp,{textAlign:'right',color:C.vio})}
                 {td(<span style={{color:diff===0?C.green:diff>0?C.acc:C.red,fontWeight:600}}>{diff>0?'+':''}{diff}</span>,{textAlign:'right'})}
               </tr>;

@@ -630,12 +630,14 @@ function ArtRow({art,mem,hasV,hasVh,updPlan,enLista,onToggle}){
   const over=(p.d1+p.d3+p.dc)>p.ac&&p.ac>0;
   const vm=mem.vm[art.cod]||0,vq=mem.vq[art.cod]||0,vs=mem.vs[art.cod]||0;
   const tot=art.DM01+art.DM03+art.DMCN;
+  // Colores: blanco=sin datos, verde=>mes, amarillo=quincena-mes, rojo=semana-quincena, rojo sólido=<semana
   let totColor='#e8eaf0';let totExtra={};
   if(hasV&&(vm||vq||vs)){
-    if(tot>=vm&&vm>0)totColor='#4ade80';
-    else if(tot>=vq&&vq>0)totColor='#f0c040';
-    else if(tot>=vs&&vs>0){totColor='#f87171';totExtra={border:'1px solid #f87171',borderRadius:3,padding:'0 3px',background:'rgba(248,113,113,.1)'};}
-    else if(vs>0){totColor='#fff';totExtra={background:'#f87171',borderRadius:3,padding:'0 3px'};}
+    if(tot>=vm&&vm>0){ totColor='#4ade80'; }                                              // verde: +mes
+    else if(tot>=vq&&vq>0){ totColor='#f0c040'; }                                         // amarillo: quincena-mes
+    else if(tot>=vs&&vs>0){ totColor='#f87171'; totExtra={border:'1px solid #f87171',borderRadius:3,padding:'0 3px',background:'rgba(248,113,113,.1)'}; }  // rojo: semana-quincena
+    else if(vs>0){ totColor='#fff'; totExtra={background:'#f87171',borderRadius:3,padding:'0 3px'}; }  // rojo sólido: <semana
+    // sin datos de ventas → blanco (sin color especial)
   }
   const rowBg=enLista?'rgba(240,192,64,.04)':'transparent';
   const td=(c,s)=><td style={{padding:'3px 6px',borderBottom:'1px solid #181b27',fontSize:10,verticalAlign:'middle',...s}}>{c}</td>;
@@ -664,13 +666,13 @@ function ArtRow({art,mem,hasV,hasVh,updPlan,enLista,onToggle}){
           onEnterFix={!enLista?()=>onToggle():undefined} />
       </td>
       <td style={{textAlign:'right',padding:'2px 4px',borderBottom:'1px solid #181b27',verticalAlign:'middle'}}>
-        <NumInput value={p.dc} onChange={v=>updPlan(art.cod,'dc',v)} color='#2dd4bf' disabled={!p.ac&&!enLista} />
+        <NumInput value={p.dc} onChange={v=>updPlan(art.cod,'dc',v)} color='#2dd4bf' disabled={!p.ac&&!enLista} onEnterFix={()=>{}} />
       </td>
       <td style={{textAlign:'right',padding:'2px 4px',borderBottom:'1px solid #181b27',verticalAlign:'middle'}}>
-        <NumInput value={p.d1} onChange={v=>updPlan(art.cod,'d1',v)} color='#60a5fa' disabled={!p.ac&&!enLista} />
+        <NumInput value={p.d1} onChange={v=>updPlan(art.cod,'d1',v)} color='#60a5fa' disabled={!p.ac&&!enLista} onEnterFix={()=>{}} />
       </td>
       <td style={{textAlign:'right',padding:'2px 4px',borderBottom:'1px solid #181b27',verticalAlign:'middle'}}>
-        <NumInput value={p.d3} onChange={v=>updPlan(art.cod,'d3',v)} color='#4ade80' disabled={!p.ac&&!enLista} />
+        <NumInput value={p.d3} onChange={v=>updPlan(art.cod,'d3',v)} color='#4ade80' disabled={!p.ac&&!enLista} onEnterFix={()=>{}} />
       </td>
       {td(over?'⚠':dp||'—',{textAlign:'right',fontWeight:500,color:over?'#f87171':dp>0?'#c084fc':'#4b5563'})}
     </tr>

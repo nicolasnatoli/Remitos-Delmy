@@ -54,6 +54,29 @@ function NumIn({value,onChange,color,disabled,width=70,placeholder='—'}){
     style={{width,padding:'3px 5px',fontSize:10,textAlign:'right',background:C.bg,color:(parseInt(loc)||0)>0?(color||C.acc):C.txt,border:`1px solid ${(parseInt(loc)||0)>0?(color||C.acc):C.b1}`,borderRadius:3,fontFamily:'DM Mono,monospace',outline:'none',opacity:disabled?.3:1}} />);
 }
 
+
+// ─── Estimación de bultos ─────────────────────────────────────────────────────
+function estimarBultos(lineas){
+  // Reglas de inferencia:
+  // 1. Si el documento dice "bultos" en algún campo → usar ese valor
+  // 2. Si hay un total de bultos del documento → distribuir proporcionalmente
+  // 3. Mínimo 1 bulto por artículo distinto
+  // 4. Si cantidad > 10 unidades de un artículo → estimar 1 bulto por fracción estándar
+  return lineas.map(l=>{
+    if(l.bultos!==null&&l.bultos!==undefined)return l; // ya tiene dato
+    const cant=l.cantRemito||0;
+    // Heurística: artículos de repostería suelen venir en cajas de 6,12,24
+    let bultosEst=null;
+    if(cant<=0)bultosEst=null;
+    else if(cant<=6)bultosEst=1;
+    else if(cant%24===0)bultosEst=cant/24;
+    else if(cant%12===0)bultosEst=cant/12;
+    else if(cant%6===0)bultosEst=cant/6;
+    else bultosEst=1;
+    return{...l,bultos:bultosEst,artsPorBulto:bultosEst&&bultosEst>0?Math.round(cant/bultosEst):null};
+  });
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 export default function ModuloRecepcion(){
   const [etapa,   setEtapa]  = useState('documento');
@@ -69,13 +92,10 @@ export default function ModuloRecepcion(){
   const fileRef=useRef(); const fotoRef=useRef();
 
   useEffect(()=>{
-    loadArt().then(artC=>{
-      const expanded={};
-      for(const[k,v]of Object.entries(artC||{})){
-        if(typeof v==='string'){const p=v.split('|');expanded[k]={prov:p[0]||'',codp:p[1]||'',desc:p[2]||'',fam:p[3]||'',cat:p[4]||'',costoReal:+p[6]||0};}
-        else expanded[k]=v;
-      }
-      setArt(expanded);setArtIdx(buildIdx(expanded));
+    loadArt().then(artExpanded=>{
+      // loadArt() now returns already-expanded objects
+      setArt(artExpanded);
+      setArtIdx(buildIdx(artExpanded));
     });
     // Cargar OCs disponibles
     const ocs=lsGet(SK.ocs,[]);
@@ -391,6 +411,7 @@ ${etiquetas.map(n=>`<div class="etq">
                   <span style={{fontSize:9,padding:'2px 7px',borderRadius:3,background:'rgba(74,222,128,.12)',color:C.green,border:'1px solid rgba(74,222,128,.3)'}}>{stats.conformes} conformes</span>
                   <span style={{fontSize:9,padding:'2px 7px',borderRadius:3,background:'rgba(248,113,113,.12)',color:C.red,border:'1px solid rgba(248,113,113,.3)'}}>{stats.faltantes} faltantes</span>
                   <span style={{fontSize:9,color:C.mut}}>{stats.sinCtrl} sin controlar</span>
+                  <button onClick={()=>setRec(prev=>{const lineas=estimarBultos(prev.lineas);const next={...prev,lineas};saveRec(next);return next;})} style={{...Btn(C.vio,'rgba(192,132,252,.08)'),marginLeft:4}}>≈ Estimar bultos</button>
                   <button onClick={conformeTodo} style={{...Btn(C.green,'rgba(74,222,128,.08)'),marginLeft:'auto'}}>✓ Todo conforme</button>
                 </div>
 
@@ -414,11 +435,14 @@ ${etiquetas.map(n=>`<div class="etq">
                             {td(l.codDoc||'—',{fontSize:9,color:C.blue,fontFamily:'DM Mono,monospace'})}
                             {td(
                               l.codI
-                                ?<span style={{fontSize:9,color:C.teal,fontFamily:'DM Mono,monospace'}}>{l.codI}</span>
-                                :<select onChange={e=>asignarCodigo(i,e.target.value)} defaultValue="" style={{fontSize:9,background:C.bg,color:C.red,border:`1px solid ${C.red}`,borderRadius:3,fontFamily:'DM Mono,monospace',maxWidth:120}}>
-                                    <option value="">— Asignar —</option>
-                                    {cands.map(({cod,a})=><option key={cod} value={cod}>{cod} · {a.desc.slice(0,20)}</option>)}
-                                  </select>
+                                ?<span style={{fontSize:9,color:C.teal,fontFamily:'DM Mono,monospace',cursor:'pointer'}} onClick={()=>{const c=window.prompt('Cambiar código base (dejar vacío para cancelar):',l.codI||'');if(c&&c.trim()&&art[c.trim()])asignarCodigo(i,c.trim());}}>{l.codI}</span>
+                                :<div>
+                                    <select onChange={e=>{if(e.target.value)asignarCodigo(i,e.target.value);}} defaultValue="" style={{fontSize:9,background:C.bg,color:C.red,border:`1px solid ${C.red}`,borderRadius:3,fontFamily:'DM Mono,monospace',maxWidth:130,marginBottom:2}}>
+                                      <option value="">— Asignar código —</option>
+                                      {cands.map(({cod,a})=><option key={cod} value={cod}>{cod} · {a.desc.slice(0,25)}</option>)}
+                                    </select>
+                                    {cands.length===0&&<div style={{fontSize:8,color:C.mut}}>Sin candidatos · DB sin datos del proveedor</div>}
+                                  </div>
                             )}
                             {td(<span title={l.desc} style={{display:'block',maxWidth:160,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{l.desc||'—'}</span>)}
                             {td(l.cantOC??'—',{textAlign:'right',color:C.mut,fontSize:9})}
