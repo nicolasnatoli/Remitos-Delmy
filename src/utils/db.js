@@ -64,7 +64,17 @@ function expandArtCompact(compact) {
 }
 
 export async function loadArt() {
-  // 1. localStorage si tiene datos (preferido — más rápido y no borra otros datos)
+  // SIEMPRE intentar Redis primero — es la fuente de verdad para artículos
+  // localStorage solo se usa como cache de sesión pero Redis tiene la versión completa
+  try {
+    const { value, exists } = await api.get(SK.art);
+    if (exists && value && Object.keys(value).length > 1000) {
+      // Redis tiene datos completos — usar esos
+      return expandArtCompact(value);
+    }
+  } catch(e) { console.error('[loadArt Redis]', e.message); }
+  
+  // Fallback: localStorage (puede tener versión parcial)
   try {
     const local = localStorage.getItem(SK.art);
     if (local) {
@@ -74,18 +84,7 @@ export async function loadArt() {
       }
     }
   } catch {}
-  // 2. Redis — solo si localStorage está vacío
-  try {
-    const { value, exists } = await api.get(SK.art);
-    if (exists && value && Object.keys(value).length > 0) {
-      // Guardar en localStorage SIN borrar otras claves (setItem puntual)
-      try {
-        const str = JSON.stringify(value);
-        localStorage.setItem(SK.art, str);
-      } catch { /* localStorage lleno — ok, seguimos con Redis */ }
-      return expandArtCompact(value);
-    }
-  } catch(e) { console.error('[loadArt Redis]', e.message); }
+  
   return {};
 }
 

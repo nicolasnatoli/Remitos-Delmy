@@ -272,6 +272,8 @@ export default function ModuloStock(){
         setSaveStatus('Guardando en Redis...');
         const art=parseFormatoProveedores(wb);
         const compact=compactArt(art);
+        // Limpiar localStorage viejo antes de guardar en Redis
+        try{localStorage.removeItem('dm_art_v3');}catch{}
         const ok=await saveArt(compact);
         setSaveStatus(ok?`✓ ${Object.keys(art).length} artículos en Redis`:'⚠ Error Redis');
         meta.art={f:file.name,n:Object.keys(art).length,t:Date.now()};

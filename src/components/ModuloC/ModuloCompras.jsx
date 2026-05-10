@@ -150,11 +150,12 @@ function NumIn({value,onChange,onEnterFix,color,disabled,width=72,placeholder='0
 
 // ─── Cargar DB completa desde Redis + localStorage ────────────────────────────
 async function loadDB(){
-  const art=await loadArt(); // siempre expandido
+  const art=await loadArt(); // siempre expandido — lee de Redis
   const stkC=lsGet(SK.stk,null); const stk=stkC?expandStk(stkC):{};
   const vs=expandVent(lsGetRaw(SK.vs)||'');
   const vq=expandVent(lsGetRaw(SK.vq)||'');
   const vm=expandVent(lsGetRaw(SK.vm)||'');
+  console.log('[DB] arts:',Object.keys(art).length,'stk:',Object.keys(stk).length,'vs:',Object.keys(vs).length,'vm:',Object.keys(vm).length);
   const sh=lsGet(SK.share,null);
   const planC=sh?.planC||lsGet(SK.plan,null);
   const plan=planC?expandPlan(planC):{};
