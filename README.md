@@ -116,3 +116,7 @@ Formato: `PL01 - F - A - 4`
 ---
 
 *Delmy Party SRL · Sistema Operativo v1.0 · Industrial Partner*
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
