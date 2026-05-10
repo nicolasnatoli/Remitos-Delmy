@@ -53,7 +53,7 @@ function cruzar(codExt,art,idx){
 // ─── Búsqueda por palabras ────────────────────────────────────────────────────
 function buscar(desc,codDoc,prov,famF,catF,marcaF,q,art){
   if(!art||!Object.keys(art).length)return[];
-  const words=(desc||'').toLowerCase().split(/\s+/).filter(w=>w.length>2).slice(0,4);
+  const words=(desc||'').toLowerCase().replace(/[^\w\s]/g,' ').split(/\s+/).filter(w=>w.length>2&&!/^\d+$/.test(w)).slice(0,5);
   const codN=String(codDoc||'').toLowerCase().replace(/^0+/,'');
   const qLow=(q||'').toLowerCase().trim();
   const res=[];
@@ -67,11 +67,19 @@ function buscar(desc,codDoc,prov,famF,catF,marcaF,q,art){
     let score=0;let type='other';
     // Match por código proveedor (parcial también)
     if(codN&&cpN){
-      if(cpN===codN||cpF===codN){score+=25;type='prim';}
-      else if(codN.length>=3&&(cpN.includes(codN)||codN.includes(cpN))){score+=18;type='prim';}
+      if(cpN===codN||cpF===codN){
+        score+=25;type='prim';
+        // bonus si además es el mismo proveedor
+        if(prov&&(a.prov||'').toLowerCase()===prov.toLowerCase())score+=10;
+      } else if(codN.length>=3&&(cpN.includes(codN)||codN.includes(cpN))){score+=18;type='prim';}
     }
     // Match por palabras de descripción
-    const wm=words.filter(w=>hay.includes(w)).length;
+    const wm=words.filter(w=>{
+      if(hay.includes(w))return true;
+      // Match parcial: palabra de la factura es prefijo de palabra en base (ej: "rell" en "relleno")
+      const hayWords=hay.replace(/[^\w\s]/g,' ').split(/\s+/);
+      return hayWords.some(hw=>hw.startsWith(w)||w.startsWith(hw));
+    }).length;
     if(wm>0){score+=wm*9;if(type==='other')type='sec';}
     // Búsqueda manual
     if(qLow&&(hay.includes(qLow)||cod.toLowerCase().includes(qLow)||cpN.includes(qLow.replace(/^0+/,'')))){score+=16;if(type==='other')type='sec';}
@@ -243,9 +251,16 @@ export default function ModuloCompras(){
     });
     if(!Object.keys(todos).length){alert('Sin artículos para importar.');return;}
 
+    // DEBUG: log first art entry to verify format
+    const firstCod=Object.keys(db.art)[0];
+    if(firstCod)console.log('[Compras] Primer art en DB:',firstCod,'->', db.art[firstCod]);
+    console.log('[Compras] Codes en todos:', Object.keys(todos).slice(0,5));
+    console.log('[Compras] Total arts DB:', Object.keys(db.art).length);
+
     const lineas=Object.entries(todos).map(([cod,p])=>{
       // db.art ya está expandido gracias al fix en db.js
       const a=db.art[cod]||{desc:'',codp:'',prov:'',fam:'',cat:'',costoReal:0,pvMin:0,mostrador:0};
+      if(!a.desc) console.log('[Compras] NO encontrado en db.art:', cod, '| primeras 3 claves DB:', Object.keys(db.art).slice(0,3));
       const s=db.stk[cod]||{DM01:0,DM03:0,DMCN:0};
       return{
         cod, codp:a.codp||cod,

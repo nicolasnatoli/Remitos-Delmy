@@ -20,7 +20,7 @@ function cruzar(codExt,art,idx){if(!codExt)return null;const cod=String(codExt).
 
 function buscar(desc,codDoc,prov,art){
   if(!art||!Object.keys(art).length)return[];
-  const words=(desc||'').toLowerCase().split(/\s+/).filter(w=>w.length>2).slice(0,4);
+  const words=(desc||'').toLowerCase().replace(/[^\w\s]/g,' ').split(/\s+/).filter(w=>w.length>2&&!/^\d+$/.test(w)).slice(0,5);
   const codN=String(codDoc||'').toLowerCase().replace(/^0+/,'');
   const res=[];
   for(const[cod,a]of Object.entries(art)){
@@ -29,7 +29,12 @@ function buscar(desc,codDoc,prov,art){
     const cpN=String(a.codp||'').toLowerCase().replace(/^0+/,'');
     let score=0;let type='other';
     if(codN&&cpN){if(cpN===codN||cpN.includes(codN)||codN.includes(cpN)){score+=20;type='prim';}}
-    const wm=words.filter(w=>hay.includes(w)).length;
+    const wm=words.filter(w=>{
+      if(hay.includes(w))return true;
+      // Match parcial: palabra de la factura es prefijo de palabra en base (ej: "rell" en "relleno")
+      const hayWords=hay.replace(/[^\w\s]/g,' ').split(/\s+/);
+      return hayWords.some(hw=>hw.startsWith(w)||w.startsWith(hw));
+    }).length;
     if(wm>0){score+=wm*9;if(type==='other')type='sec';}
     if(score>0)res.push({cod,a,score,type});
   }
