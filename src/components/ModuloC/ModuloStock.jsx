@@ -7,7 +7,7 @@ const fn = n => Number(n||0).toLocaleString('es-AR');
 
 // ─── Compactar/expandir ───────────────────────────────────────────────────────
 const compactArt  = e => { const o={}; for(const[k,a]of Object.entries(e)) o[k]=`${a.prov}|${a.codp}|${a.desc}|${a.fam}|${a.cat||''}|${a.marca||''}|${a.costoReal||0}|${a.pvMin||0}|${a.mostrador||0}`; return o; };
-const expandArt   = c => { const o={}; for(const[k,s]of Object.entries(c||{})){const p=s.split('|');o[k]={prov:p[0]||'',codp:p[1]||'',desc:p[2]||'',fam:p[3]||'',cat:p[4]||'',marca:p[5]||'',costoReal:+p[6]||0,pvMin:+p[7]||0,mostrador:+p[8]||0};} return o; };
+const expandArt   = c => { const o={}; for(const[k,s]of Object.entries(c||{})){if(typeof s==='string'){const p=s.split('|');o[k]={prov:p[0]||'',codp:p[1]||'',desc:p[2]||'',fam:p[3]||'',cat:p[4]||'',marca:p[5]||'',costoReal:+p[6]||0,pvMin:+p[7]||0,mostrador:+p[8]||0};}else if(s&&typeof s==='object')o[k]=s;} return o; };
 const compactStk  = e => { const o={}; for(const[k,s]of Object.entries(e)) o[k]=`${s.DM01||0},${s.DM03||0},${s.DMCN||0}`; return o; };
 const expandStk   = c => { const o={}; for(const[k,s]of Object.entries(c||{})){const p=s.split(',');o[k]={DM01:+p[0]||0,DM03:+p[1]||0,DMCN:+p[2]||0};} return o; };
 const compactVent = o => Object.entries(o).filter(([,v])=>v>0).map(([k,v])=>`${k}:${v}`).join('|');

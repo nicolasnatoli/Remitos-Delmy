@@ -250,6 +250,19 @@ export default function ModuloCompras(){
       if(!todos[cod])todos[cod]={ac:it.ac||0,d1:it.d1||0,d3:it.d3||0,dc:it.dc||0};
     });
     if(!Object.keys(todos).length){alert('Sin artículos para importar.');return;}
+    // Si db.art está vacío, recargar fresh antes de armar las líneas
+    if(Object.keys(db.art).length===0){
+      alert('La base de artículos no está cargada. Hacé click en ↺ DB primero.');
+      reloadDB();return;
+    }
+    // DIAGNÓSTICO: mostrar si las claves coinciden
+    const dbKeys=Object.keys(db.art).slice(0,3);
+    const listKeys=Object.keys(todos).slice(0,3);
+    console.log('[DIAGNÓSTICO] Primeras claves DB:', dbKeys);
+    console.log('[DIAGNÓSTICO] Primeras claves lista:', listKeys);
+    console.log('[DIAGNÓSTICO] Ejemplo art DB[0]:', db.art[dbKeys[0]]);
+    const primerMatch=listKeys.find(k=>db.art[k]);
+    console.log('[DIAGNÓSTICO] Primer match lista→DB:', primerMatch||'NINGUNO');
 
     // DEBUG: log first art entry to verify format
     const firstCod=Object.keys(db.art)[0];
@@ -260,7 +273,6 @@ export default function ModuloCompras(){
     const lineas=Object.entries(todos).map(([cod,p])=>{
       // db.art ya está expandido gracias al fix en db.js
       const a=db.art[cod]||{desc:'',codp:'',prov:'',fam:'',cat:'',costoReal:0,pvMin:0,mostrador:0};
-      if(!a.desc) console.log('[Compras] NO encontrado en db.art:', cod, '| primeras 3 claves DB:', Object.keys(db.art).slice(0,3));
       const s=db.stk[cod]||{DM01:0,DM03:0,DMCN:0};
       return{
         cod, codp:a.codp||cod,
@@ -280,6 +292,7 @@ export default function ModuloCompras(){
     const id='oc_'+Date.now();
     const data={meta:{proveedor:prov,fecha:new Date().toISOString().slice(0,10),documento:'',origen:'Stock+',estado:'generada',historial:[{estado:'generada',ts:now(),label:nowLabel(),usuario:'Operario',desdePrev:0}]},lineas};
     setOCdata(data);setOCact(id);saveOC(id,data);setEtC('validacion');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   },[db,saveOC]);
 
   // ─── Procesar documento (factura/remito) ──────────────────────────────────

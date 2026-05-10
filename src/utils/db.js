@@ -64,19 +64,25 @@ function expandArtCompact(compact) {
 }
 
 export async function loadArt() {
-  // 1. localStorage si tiene datos
+  // 1. localStorage si tiene datos (preferido — más rápido y no borra otros datos)
   try {
     const local = localStorage.getItem(SK.art);
     if (local) {
       const obj = JSON.parse(local);
-      if (obj && Object.keys(obj).length > 100) return expandArtCompact(obj);
+      if (obj && Object.keys(obj).length > 100) {
+        return expandArtCompact(obj);
+      }
     }
   } catch {}
-  // 2. Redis
+  // 2. Redis — solo si localStorage está vacío
   try {
     const { value, exists } = await api.get(SK.art);
     if (exists && value && Object.keys(value).length > 0) {
-      try { localStorage.setItem(SK.art, JSON.stringify(value)); } catch {}
+      // Guardar en localStorage SIN borrar otras claves (setItem puntual)
+      try {
+        const str = JSON.stringify(value);
+        localStorage.setItem(SK.art, str);
+      } catch { /* localStorage lleno — ok, seguimos con Redis */ }
       return expandArtCompact(value);
     }
   } catch(e) { console.error('[loadArt Redis]', e.message); }
