@@ -165,6 +165,7 @@ export default function ModuloRecepcion(){
     lineas:[],fotoEvidencia:null,cerrada:false,
   });
   const [art,     setArt]    = useState({});
+  const artRef = React.useRef({});  // siempre tiene el último valor de art
   // artIdx removed
   const [OCS,     setOCS]    = useState([]);
   const [ocSel,   setOcSel]  = useState(null);
@@ -175,6 +176,7 @@ export default function ModuloRecepcion(){
     loadArt().then(artExpanded=>{
       // loadArt() now returns already-expanded objects
       setArt(artExpanded);
+      artRef.current = artExpanded;
     });
     // Cargar OCs disponibles
     const ocs=lsGet(SK.ocs,[]);
@@ -212,6 +214,14 @@ export default function ModuloRecepcion(){
 
   // ─── Procesar documento ───────────────────────────────────────────────────
   const procesarDoc=useCallback(async(file)=>{
+    // Si art está vacío, recargar primero (puede pasar si el usuario carga antes del mount)
+    let artActual = artRef.current;
+    if (!artActual || Object.keys(artActual).length === 0) {
+      setIaStatus('Cargando base de artículos...');
+      artActual = await loadArt();
+      setArt(artActual);
+      artRef.current = artActual;
+    }
     const ext=file.name.toLowerCase().split('.').pop();
     const rc=generarRC(rec.meta.proveedor||'SP');
     updMeta('rc',rc);
@@ -233,7 +243,7 @@ export default function ModuloRecepcion(){
       for(let i=hRow+1;i<raw.length;i++){
         const r=raw[i];const codDoc=String(r[iCod]||'').trim();if(!codDoc||codDoc.length<2)continue;
         const {cod:codI,nivel:mNivel}=cruzar(codDoc,String(r[iDesc]||"").trim(),rec.meta.proveedor||"",art,ocSel?.lineas||[]);
-        const a=codI?art[codI]:null;
+        const a=codI?(artActual[codI]||art[codI]):null;
         // Buscar en OC
         const ocLinea=ocSel?ocSel.lineas?.find(ol=>ol.cod===codI||ol.codp===codDoc):null;
         lineas.push({codDoc,codI,desc:a?.desc||String(r[iDesc]||'').trim(),matchTipo:mNivel||'none',confirmado:false,cantRemito:parseFloat(String(r[iCant]||'0'))||0,precioUnit:iPrecio>=0?parseFloat(String(r[iPrecio]||'0'))||0:0,cantOC:ocLinea?.cantOC||null,bultos:null,artsPorBulto:null,cantFis:null,diff:null,ub:'',ok:null,obs:'',candidatos:[]});
@@ -260,7 +270,7 @@ Respondé SOLO con JSON:
         const parsed=JSON.parse((result.text||'').replace(/```json|```/g,'').trim());
         const lineas=(parsed.lineas||[]).map(l=>{
           const {cod:codI,nivel:mNivel}=cruzar(l.cod,l.desc||"",rec.meta.proveedor||"",art,ocSel?.lineas||[]);
-          const a=codI?art[codI]:null;
+          const a=codI?(artActual[codI]||art[codI]):null;
           const ocLinea=ocSel?ocSel.lineas?.find(ol=>ol.cod===codI||ol.codp===l.cod):null;
           return{codDoc:l.cod,codI,desc:a?.desc||l.desc||'',matchTipo:mNivel||'none',confirmado:false,cantRemito:Number(l.cant)||0,precioUnit:Number(l.precioUnit)||0,cantOC:ocLinea?.cantOC||null,bultos:l.bultos||null,artsPorBulto:null,cantFis:null,diff:null,ub:'',ok:null,obs:'',candidatos:[]};
         });

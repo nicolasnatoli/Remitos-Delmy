@@ -7,7 +7,6 @@ async function apiFetch(path){const r=await fetch(path,{headers:{'Content-Type':
 
 const fn   = n => Number(n||0).toLocaleString('es-AR');
 const fp   = n => n>0 ? '$'+Number(n).toLocaleString('es-AR',{maximumFractionDigits:0}) : '—';
-const fpct = n => (n>=0?'+':'')+n.toFixed(1)+'%';
 const now  = () => new Date().toISOString();
 const nowLabel = () => new Date().toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
 
@@ -154,12 +153,44 @@ function buscar(descDoc, codDoc, prov, famF, catF, marcaF, q, art) {
 
 
 function calcDiff(cr,pd){if(!cr||!pd)return null;return((pd-cr)/cr)*100;}
-function priceLabel(diff){
-  if(diff===null)return{cls:'mut',text:'S/PRECIO'};
-  if(Math.abs(diff)<0.01)return{cls:'ok',text:'✓ IGUAL'};
-  if(diff>0)return{cls:'err',text:'↑ '+fpct(diff)};
-  return{cls:'ok',text:'↓ '+fpct(Math.abs(diff))};
+
+// ─── Estado completo de línea OC vs FC ───────────────────────────────────────
+function estadoLinea(l) {
+  const enFC = l.precioDoc > 0 || l.cantRemito > 0;
+  const cantFC = l.cantRemito || 0;
+  const cantOC = l.cantOC || 0;
+  const precioFC = l.precioDoc || 0;
+  const precioCR = l.costoReal || 0;
+  const esSobrante = l.esSobrante;
+  const matchTipo = l.matchTipo || 'none';
+
+  if (esSobrante) {
+    return l.reconocido ? 'SOBRANTE_CONOCIDO' : 'SOBRANTE_NUEVO';
+  }
+  if (!enFC) return 'NO_ENTREGADO';
+  if (matchTipo === 'parcial_codp' || matchTipo === 'parcial_cod') return 'PARCIAL_CODP';
+  if (matchTipo === 'descripcion') return 'PARCIAL_DESC';
+  if (!l.reconocido) return 'SIN_RECONOCER';
+  if (cantFC > cantOC) return 'CANT_MAYOR_FC';
+  if (cantFC < cantOC) return 'CANT_MENOR_FC';
+  if (precioFC > 0 && precioCR > 0 && precioFC > precioCR * 1.001) return 'EXACTO_PRECIO_SUBE';
+  if (precioFC > 0 && precioCR > 0 && precioFC < precioCR * 0.999) return 'EXACTO_PRECIO_BAJA';
+  return 'EXACTO_COMPLETO';
 }
+
+const ESTADO_CONFIG = {
+  EXACTO_COMPLETO:    { color:'#4ade80', bg:'rgba(74,222,128,.08)',  label:'✓ Exacto',         badge:'ok'  },
+  EXACTO_PRECIO_SUBE: { color:'#f87171', bg:'rgba(248,113,113,.06)', label:'↑ Precio sube',    badge:'err' },
+  EXACTO_PRECIO_BAJA: { color:'#4ade80', bg:'rgba(74,222,128,.04)',  label:'↓ Precio baja',    badge:'ok'  },
+  CANT_MAYOR_FC:      { color:'#2dd4bf', bg:'rgba(45,212,191,.06)',  label:'⚡ Cant. extra',    badge:'teal'},
+  CANT_MENOR_FC:      { color:'#f87171', bg:'rgba(248,113,113,.06)', label:'⚠ Cant. menor',    badge:'err' },
+  PARCIAL_CODP:       { color:'#f0c040', bg:'rgba(240,192,64,.06)',  label:'⚡ Cód parcial',   badge:'warn'},
+  PARCIAL_DESC:       { color:'#f0c040', bg:'rgba(240,192,64,.06)',  label:'⚡ Por desc.',      badge:'warn'},
+  NO_ENTREGADO:       { color:'#f87171', bg:'rgba(248,113,113,.08)', label:'✗ No entregado',   badge:'err' },
+  SOBRANTE_CONOCIDO:  { color:'#fb923c', bg:'rgba(251,146,60,.06)',  label:'⚡ Sobrante',       badge:'ora' },
+  SOBRANTE_NUEVO:     { color:'#fb923c', bg:'rgba(251,146,60,.08)',  label:'⚡ Nuevo',          badge:'ora' },
+  SIN_RECONOCER:      { color:'#f87171', bg:'rgba(248,113,113,.08)', label:'? Sin reconocer',  badge:'err' },
+};
 
 // ─── Colores de stock ─────────────────────────────────────────────────────────
 function stkColor(tot,vm,vq,vs){
@@ -565,10 +596,12 @@ export default function ModuloCompras(){
     // Incluir: artículos con match parcial aprobados + artículos de otro proveedor asignados
     const parciales=OCdata.lineas.filter(l=>l.aprobado&&(l.matchTipo==='parcial_codp'||l.matchTipo==='parcial_cod'||l.matchTipo==='descripcion'));
     const otrosProv=OCdata.lineas.filter(l=>l.otroProveedor);
-    const rows=[['Código Interno','Cód.Prov Nuevo','Descripción','Familia','Categ.','Marca','Costo Real','PV Mín.','Mostrador','Proveedor a comprar','Fecha Alta']];
+    const noEntregados=OCdata.lineas.filter(l=>estadoLinea(l)==='NO_ENTREGADO');
+    const rows=[['Código Interno','Cód.Prov FC','Cód.Prov Base','Descripción','Familia','Categ.','Costo Real','PV Mín.','Mostrador','Proveedor','Motivo']];
     nList.forEach(n=>rows.push([n.cod,n.codp,n.desc,n.fam,n.cat,n.marca||'',n.costoReal,n.pvMin,n.mostrador,n.prov,n.fechaAlta]));
-    parciales.forEach(l=>{if(!nList.find(n=>n.cod===l.cod))rows.push([l.cod,l.codp,l.desc,l.fam,l.cat,'',l.costoReal,l.pvMin,l.mostrador,l.prov,`Corregir código (${l.matchTipo}): FC=${l.codp} Base=${l.cod}`]);});
-    otrosProv.forEach(l=>{if(!nList.find(n=>n.cod===l.cod))rows.push([l.cod,l.codp,l.desc,l.fam,l.cat,'',l.costoReal,l.pvMin,l.mostrador,OCdata.meta.proveedor,'Nueva línea proveedor']);});
+    parciales.forEach(l=>{rows.push([l.cod,l.codDocFC||l.codp,l.codp,l.desc,l.fam,l.cat||'',l.costoReal,l.pvMin,l.mostrador,l.prov,`Corregir código (${l.matchTipo}): FC=${l.codDocFC||l.codp} Base codp=${l.codp}`]);});
+    otrosProv.forEach(l=>{if(!rows.find(r=>r[0]===l.cod))rows.push([l.cod,l.codDocFC||l.codp,l.codp,l.desc,l.fam,l.cat||'',l.costoReal,l.pvMin,l.mostrador,OCdata.meta.proveedor,'Nueva línea proveedor']);});
+    noEntregados.forEach(l=>{rows.push([l.cod,l.codDocFC||l.codp,l.codp,l.desc,l.fam,l.cat||'',l.costoReal,l.pvMin,l.mostrador,l.prov,'NO ENTREGADO — pendiente de entrega']);});
     if(rows.length===1){alert('Sin artículos nuevos para exportar');return;}
     const wb=XLSX.utils.book_new();const ws=XLSX.utils.aoa_to_sheet(rows);XLSX.utils.book_append_sheet(wb,ws,'Nuevos');
     XLSX.writeFile(wb,`articulos_nuevos_${new Date().toISOString().slice(0,10)}.xlsx`);
@@ -586,6 +619,8 @@ export default function ModuloCompras(){
   const totVal=OCdata.lineas.reduce((s,l)=>s+l.cantOC*(l.precioDoc||0),0);
   const nNuevos=lsGet(SK.nuevos,[]).length;
   const nOtroProv=OCdata.lineas.filter(l=>l.otroProveedor).length;
+  const nParciales=OCdata.lineas.filter(l=>l.matchTipo==='parcial_codp'||l.matchTipo==='parcial_cod'||l.matchTipo==='descripcion').length;
+
   const fileRef=useRef();
 
   return(
@@ -601,7 +636,7 @@ export default function ModuloCompras(){
           <button onClick={reloadDB}            style={Btn(C.mut)}>↺ DB</button>
           <button onClick={importarDesdeStock}   style={Btn(C.acc,'rgba(240,192,64,.08)')}>← Stock+</button>
           <button onClick={exportarOC}           style={Btn(C.teal,'rgba(45,212,191,.08)')}>↓ Excel OC</button>
-          {(nNuevos>0||nOtroProv>0)&&<button onClick={exportarNuevos} style={Btn(C.ora,'rgba(251,146,60,.08)')}>↓ Nuevos ({nNuevos+nOtroProv})</button>}
+          {(nNuevos>0||nOtroProv>0||nParciales>0)&&<button onClick={exportarNuevos} style={Btn(C.ora,'rgba(251,146,60,.08)')}>↓ Masivo ({nNuevos+nOtroProv+nParciales})</button>}
         </div>
       </div>
 
@@ -769,7 +804,7 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
     <div>
       {/* KPIs */}
       <div style={{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:6,marginBottom:8}}>
-        {[{l:'LÍNEAS',v:OCdata.lineas.length,c:C.txt},{l:'EXACTAS',v:rec,c:C.green},{l:'SUGERIDAS',v:sugeridos,c:sugeridos>0?C.ora:C.mut},{l:'SIN RECONOCER',v:noRec,c:noRec>0?C.red:C.mut},{l:'SOBRANTES',v:sobrantes,c:sobrantes>0?C.ora:C.mut},{l:'PRECIO ↑',v:suben,c:suben>0?C.red:C.mut}].map(k=>(
+      {[{l:'LÍNEAS',v:OCdata.lineas.length,c:C.txt},{l:'EXACTAS',v:rec,c:C.green},{l:'PARCIALES',v:sugeridos,c:sugeridos>0?C.ora:C.mut},{l:'NO ENTREGADOS',v:OCdata.lineas.filter(l=>!l.esSobrante&&!(l.precioDoc>0||l.cantRemito>0)).length,c:OCdata.lineas.filter(l=>!l.esSobrante&&!(l.precioDoc>0||l.cantRemito>0)).length>0?C.red:C.mut},{l:'SOBRANTES',v:sobrantes,c:sobrantes>0?C.ora:C.mut},{l:'SIN RECONOCER',v:noRec,c:noRec>0?C.red:C.mut}].map(k=>(
           <div key={k.l} style={{background:C.p2,border:`1px solid ${C.b1}`,borderRadius:4,padding:'6px 9px'}}>
             <div style={{fontSize:7,color:C.mut,letterSpacing:'.07em',textTransform:'uppercase',marginBottom:2}}>{k.l}</div>
             <div style={{fontFamily:'Syne,sans-serif',fontSize:16,fontWeight:700,color:k.c}}>{k.v}</div>
@@ -796,27 +831,29 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
           <thead>
             <tr>
               {[
-                ['',C.mut,24],['CÓD.DOC',C.blue,80],['CÓD.BASE',C.teal,80],['DESCRIPCIÓN',C.txt,140],['FAM.',C.mut,60],
-                ['CEN',C.teal,52],['SOL',C.blue,52],['VAR',C.green,52],['STK',C.txt,52],
-                ['V.SEM',C.mut,48],['V.QUIN',C.mut,48],['V.MES',C.mut,48],
-                ['CANT.',C.txt,60],['PRECIO DOC.',C.acc,85],['COSTO REAL',C.mut,80],['MOSTRADOR',C.blue,75],['PV MÍN.',C.vio,75],['SUBTOTAL',C.acc,85],
-                ['DIFF',C.mut,70],['ACCIÓN',C.mut,90]
+                ['ESTADO',C.mut,90],['CÓD.PROV FC',C.acc,85],['CÓD.PROV BASE',C.teal,90],['CÓD.BASE',C.blue,85],['DESCRIPCIÓN',C.txt,140],['FAM.',C.mut,55],
+                ['CEN',C.teal,48],['SOL',C.blue,48],['VAR',C.green,48],['STK',C.txt,48],
+                ['V.SEM',C.mut,44],['V.QUIN',C.mut,44],['V.MES',C.mut,44],
+                ['CANT.OC',C.txt,55],['CANT.FC',C.acc,55],['PRECIO FC',C.acc,80],['COSTO REAL',C.mut,75],['MOSTRADOR',C.blue,70],['PV MÍN.',C.vio,70],['SUBTOTAL',C.acc,80],
+                ['ACCIÓN',C.mut,90]
               ].map(([h,c,w],i)=>(
-                <th key={i} style={{fontSize:8,color:c,padding:'4px 5px',borderBottom:`1px solid ${C.b1}`,whiteSpace:'nowrap',textTransform:'uppercase',letterSpacing:'.05em',textAlign:i>4?'right':'left',background:C.p2,width:w,minWidth:w}}>{h}</th>
+                <th key={i} style={{fontSize:8,color:c,padding:'4px 5px',borderBottom:`1px solid ${C.b1}`,whiteSpace:'nowrap',textTransform:'uppercase',letterSpacing:'.05em',textAlign:i>5?'right':'left',background:C.p2,width:w,minWidth:w}}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {OCdata.lineas.map((l,i)=>{
               const diff=calcDiff(l.costoReal,l.precioDoc);
-              const pl=priceLabel(diff);
               const totStk=(l.stkDMCN||0)+(l.stkDM01||0)+(l.stkDM03||0);
               const sc=stkColor(totStk,l.vm||0,l.vq||0,l.vs||0);
-              const subtotal=l.cantOC*(l.precioDoc||0);
-              const isParcial=l.matchTipo==='parcial_codp'||l.matchTipo==='parcial_cod'||l.matchTipo==='descripcion';
-const rowBg=l.esSobrante?'rgba(251,146,60,.04)':!l.reconocido?'rgba(248,113,113,.04)':isParcial&&!l.aprobado?'rgba(251,146,60,.04)':diff!==null&&diff>0&&!l.aprobado?'rgba(248,113,113,.02)':'transparent';
+              const subtotal=l.cantRemito>0?(l.cantRemito*(l.precioDoc||0)):(l.cantOC*(l.precioDoc||0));
+              const est=estadoLinea(l);
+              const esParcial=est==='PARCIAL_CODP'||est==='PARCIAL_DESC';
+              const estCfg=ESTADO_CONFIG[est]||ESTADO_CONFIG.SIN_RECONOCER;
+              const rowBg=estCfg.bg;
+              const codpFC=l.codDocFC||l.codp||l.cod||'—';
+              const codpBase=l.reconocido&&db.art[l.cod]?(db.art[l.cod].codp||l.codp||'—'):l.codp||'—';
               let accion=null;
-              const esParcial=l.matchTipo==='parcial_codp'||l.matchTipo==='parcial_cod'||l.matchTipo==='descripcion';
               if(l.esSobrante&&!l.reconocido){
                 accion=<button onClick={()=>abrirModal(i)} style={{...Btn(C.acc,'rgba(240,192,64,.12)'),fontSize:9,padding:'2px 7px'}}>Resolver →</button>;
               } else if(l.esSobrante){
@@ -846,10 +883,10 @@ const rowBg=l.esSobrante?'rgba(251,146,60,.04)':!l.reconocido?'rgba(248,113,113,
               const td=(c,s)=><td style={{padding:'4px 5px',borderBottom:`1px solid ${C.b2}`,fontSize:10,verticalAlign:'middle',...s}}>{c}</td>;
               return(
                 <tr key={i} style={{background:rowBg}}>
-                  {/* Indicador sobrante */}
-                  {td(l.esSobrante?<span title="Sobrante" style={{color:C.ora}}>⚡</span>:l.otroProveedor?<span title="Otro proveedor" style={{color:C.vio}}>★</span>:'',{textAlign:'center',width:24})}
-                  {td(l.codDocFC||l.codp||l.cod,{fontSize:9,color:l.codDocFC?C.acc:C.blue,fontFamily:'DM Mono,monospace'})}
-                  {td(l.reconocido?l.cod:'—?',{fontSize:9,color:l.reconocido?C.teal:C.red,fontFamily:'DM Mono,monospace'})}
+                  {td(<span style={{fontSize:8,fontWeight:600,color:estCfg.color,whiteSpace:'nowrap'}}>{estCfg.label}</span>,{width:90})}
+                  {td(codpFC,{fontSize:9,color:C.acc,fontFamily:'DM Mono,monospace',title:`Cód. FC: ${codpFC}`})}
+                  {td(l.reconocido?codpBase:'—?',{fontSize:9,color:l.reconocido?C.teal:C.red,fontFamily:'DM Mono,monospace',title:`Cód.Prov Base: ${codpBase}`})}
+                  {td(l.reconocido?l.cod:'—?',{fontSize:9,color:C.blue,fontFamily:'DM Mono,monospace'})}
                   {td(<span title={l.desc} style={{display:'block',maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{l.desc||'—'}</span>)}
                   {td(l.fam||'—',{fontSize:9,color:C.mut})}
                   {td(l.stkDMCN||'—',{textAlign:'right',color:l.stkDMCN>0?C.teal:C.mut,fontSize:9})}
@@ -859,24 +896,28 @@ const rowBg=l.esSobrante?'rgba(251,146,60,.04)':!l.reconocido?'rgba(248,113,113,
                   {td(l.vs||'—',{textAlign:'right',fontSize:9,color:C.mut})}
                   {td(l.vq||'—',{textAlign:'right',fontSize:9,color:C.mut})}
                   {td(l.vm||'—',{textAlign:'right',fontSize:9,color:C.mut})}
-                  {td(<NumIn value={l.cantOC} onChange={v=>updLinea(i,'cantOC',v)} color={C.txt} width={55} />,{textAlign:'right',padding:'3px 4px'})}
-                  {td(<NumIn value={l.precioDoc} onChange={v=>updLinea(i,'precioDoc',v)} color={C.acc} width={82} />,{textAlign:'right',padding:'3px 4px'})}
+                  {/* CANT OC */}
+                  {td(<NumIn value={l.cantOC} onChange={v=>updLinea(i,'cantOC',v)} color={est==='NO_ENTREGADO'?C.red:C.txt} width={50} />,{textAlign:'right',padding:'3px 4px'})}
+                  {/* CANT FC — rojo si falta, teal si sobra */}
+                  {td(l.cantRemito>0?<span style={{color:l.cantRemito<l.cantOC?C.red:l.cantRemito>l.cantOC?C.teal:C.green,fontWeight:600}}>{l.cantRemito}</span>:<span style={{color:C.red,fontSize:9}}>—</span>,{textAlign:'right'})}
+                  {td(<NumIn value={l.precioDoc} onChange={v=>updLinea(i,'precioDoc',v)} color={C.acc} width={77} />,{textAlign:'right',padding:'3px 4px'})}
                   {td(fp(l.costoReal),{textAlign:'right',color:C.mut})}
                   {td(fp(l.mostrador),{textAlign:'right',color:C.blue})}
                   {td(fp(l.pvMin),{textAlign:'right',color:C.vio})}
-                  {td(subtotal>0?'$'+fn(subtotal):'—',{textAlign:'right',color:C.acc,fontWeight:500})}
-                  {td(<span style={bStyle(pl.cls)}>{pl.text}</span>)}
+                  {td(subtotal>0?'$'+fn(subtotal):<span style={{color:C.red,fontSize:9}}>—</span>,{textAlign:'right',color:C.acc,fontWeight:500})}
                   {td(accion)}
                 </tr>
               );
             })}
             {/* Fila de totales */}
             <tr style={{background:'rgba(240,192,64,.04)'}}>
-              <td colSpan={12} style={{padding:'5px 5px',fontSize:9,color:C.mut,textAlign:'right',borderTop:`1px solid ${C.b1}`}}>TOTALES →</td>
+              <td colSpan={6} style={{padding:'5px 5px',fontSize:9,color:C.mut,textAlign:'right',borderTop:`1px solid ${C.b1}`}}>TOTALES →</td>
+              <td colSpan={7} style={{padding:'5px 5px',borderTop:`1px solid ${C.b1}`}}></td>
               <td style={{padding:'5px 5px',textAlign:'right',borderTop:`1px solid ${C.b1}`,fontSize:10,fontWeight:600}}>{fn(OCdata.lineas.reduce((s,l)=>s+l.cantOC,0))}</td>
+              <td style={{padding:'5px 5px',textAlign:'right',borderTop:`1px solid ${C.b1}`,fontSize:10,fontWeight:600,color:C.acc}}>{fn(OCdata.lineas.reduce((s,l)=>s+(l.cantRemito||0),0))}</td>
               <td colSpan={4} style={{padding:'5px 5px',borderTop:`1px solid ${C.b1}`}}></td>
-              <td style={{padding:'5px 5px',textAlign:'right',borderTop:`1px solid ${C.b1}`,fontSize:10,color:C.acc,fontWeight:700}}>${fn(OCdata.lineas.reduce((s,l)=>s+l.cantOC*(l.precioDoc||0),0))}</td>
-              <td colSpan={2} style={{padding:'5px 5px',borderTop:`1px solid ${C.b1}`}}></td>
+              <td style={{padding:'5px 5px',textAlign:'right',borderTop:`1px solid ${C.b1}`,fontSize:10,color:C.acc,fontWeight:700}}>${fn(OCdata.lineas.reduce((s,l)=>s+(l.cantRemito>0?l.cantRemito*(l.precioDoc||0):l.cantOC*(l.precioDoc||0)),0))}</td>
+              <td style={{padding:'5px 5px',borderTop:`1px solid ${C.b1}`}}></td>
             </tr>
           </tbody>
         </table>
