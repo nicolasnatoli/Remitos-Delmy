@@ -34,13 +34,15 @@ const ESTADOS={
 // Regla 5: sin match
 function cruzar(codDoc, descDoc, prov, art) {
   if (!codDoc) return null;
+  if (!art || typeof art !== 'object') return null;
   const cod = String(codDoc).trim();
   if (!cod) return null;
 
   // Filtrar solo artículos del proveedor
+  const entries = Object.entries(art);
   const artsProv = prov
-    ? Object.entries(art).filter(([,a]) => (a.prov||'').toLowerCase() === prov.toLowerCase())
-    : Object.entries(art);
+    ? entries.filter(([,a]) => a && (a.prov||'').toLowerCase() === prov.toLowerCase())
+    : entries;
 
   // Regla 1: codp exacto
   for (const [k, a] of artsProv) {
@@ -77,7 +79,7 @@ function cruzar(codDoc, descDoc, prov, art) {
 
 // ─── Búsqueda para modal (20 recomendados con filtro proveedor) ───────────────
 function buscar(descDoc, codDoc, prov, famF, catF, marcaF, q, art) {
-  if (!art || !Object.keys(art).length) return [];
+  if (!art || typeof art !== 'object' || !Object.keys(art).length) return [];
   const cod = String(codDoc||'').trim();
   const words = (descDoc||'').toLowerCase().replace(/[^\w\s]/g,' ').split(/\s+/).filter(w=>w.length>2).slice(0,5);
   const qLow = (q||'').toLowerCase().trim();
@@ -235,6 +237,7 @@ function getFreq(prov,art){
 
 // ─── Enriquecer línea con todos los datos de la base ─────────────────────────
 function enriquecerLinea(codDoc,cant,precioDoc,descDoc,prov,db){
+  if(!db||!db.art)return{cod:codDoc,codp:codDoc,desc:descDoc||'',prov:prov||'',fam:'',cat:'',costoReal:0,pvMin:0,mostrador:0,cantOC:cant||0,dc:0,d1:0,d3:0,precioDoc:precioDoc||0,cantRemito:cant||0,stkDMCN:0,stkDM01:0,stkDM03:0,vs:0,vq:0,vm:0,reconocido:false,aprobado:false,rechazado:false,esSobrante:false};
   const codI=cruzar(codDoc,descDoc||"",prov||"",db.art)||codDoc;
   const a=db.art[codI]||{desc:descDoc||'',codp:codDoc,prov:'',fam:'',cat:'',costoReal:0,pvMin:0,mostrador:0};
   const s=db.stk[codI]||{DM01:0,DM03:0,DMCN:0};
