@@ -26,112 +26,119 @@ const ESTADOS={
 };
 
 
-// ─── Cruce de códigos — reglas estrictas con filtro proveedor ─────────────────
-// Regla 1: codp exacto (filtro proveedor)
-// Regla 2: codDoc contenido TAL CUAL en codp (filtro proveedor)  
-// Regla 3: codDoc contenido TAL CUAL en código interno (filtro proveedor)
-// Regla 4: primeras 3 palabras descripción (filtro proveedor)
-// Regla 5: sin match
-function cruzar(codDoc, descDoc, prov, art) {
-  if (!codDoc) return null;
-  if (!art || typeof art !== 'object') return null;
+// ─── Cruce de códigos — 3 niveles con filtro proveedor ───────────────────────
+// Nivel 1 EXACTO:   codDoc === codp exacto → sin intervención
+// Nivel 2 PARCIAL:  codDoc contenido en codp o cod interno → confirmar + exportar
+// Nivel 3 NO MATCH: va al modal con recomendados
+// SIEMPRE filtrar por proveedor de la OC. Nunca matchear fuera.
+function cruzar(codDoc, descDoc, prov, art, ocLineas) {
+  if (!codDoc || !art || typeof art !== 'object') return {cod:null, nivel:null};
   const cod = String(codDoc).trim();
-  if (!cod) return null;
+  if (!cod) return {cod:null, nivel:null};
 
-  // Filtrar solo artículos del proveedor
-  const entries = Object.entries(art);
-  const artsProv = prov
-    ? entries.filter(([,a]) => a && (a.prov||'').toLowerCase() === prov.toLowerCase())
-    : entries;
-
-  // Regla 1: codp exacto
-  for (const [k, a] of artsProv) {
-    if (String(a.codp||'').trim() === cod) return k;
-  }
-
-  // Regla 2: codDoc contenido TAL CUAL dentro del codp del artículo
-  for (const [k, a] of artsProv) {
-    const cp = String(a.codp||'').trim();
-    if (cp && cp.includes(cod)) return k;
-  }
-
-  // Regla 3: codDoc contenido TAL CUAL dentro del código interno
-  for (const [k] of artsProv) {
-    if (k.includes(cod)) return k;
-  }
-
-  // Regla 4: primeras 3 palabras de la descripción del documento
-  if (descDoc) {
-    const words = descDoc.toLowerCase().replace(/[^\w\s]/g,' ').split(/\s+/).filter(w=>w.length>2).slice(0,3);
-    if (words.length > 0) {
-      let best = null; let bestScore = 0;
-      for (const [k, a] of artsProv) {
-        const hay = (a.desc||'').toLowerCase();
-        const score = words.filter(w => hay.includes(w)).length;
-        if (score > bestScore && score >= 2) { bestScore = score; best = k; }
-      }
-      if (best) return best;
+  // Prioridad 0: buscar en líneas de la OC activa (el contexto más directo)
+  if (ocLineas && ocLineas.length > 0) {
+    // Exacto en codp de la OC
+    for (const l of ocLineas) {
+      if (String(l.codp||'').trim() === cod) return {cod:l.cod, nivel:'exacto'};
+    }
+    // Parcial: codDoc contenido en codp de la OC
+    for (const l of ocLineas) {
+      const cp = String(l.codp||'').trim();
+      if (cp && cp.includes(cod)) return {cod:l.cod, nivel:'parcial_codp'};
+    }
+    // Parcial: codDoc contenido en código interno de la OC
+    for (const l of ocLineas) {
+      if (String(l.cod||'').includes(cod)) return {cod:l.cod, nivel:'parcial_cod'};
     }
   }
 
-  return null;
+  // Sin proveedor no se puede filtrar — no matchear
+  if (!prov) return {cod:null, nivel:null};
+  const artsProv = Object.entries(art).filter(([,a]) =>
+    a && (a.prov||'').toLowerCase() === prov.toLowerCase()
+  );
+
+  // Nivel 1: codp exacto (misma base, mismo proveedor)
+  for (const [k, a] of artsProv) {
+    if (String(a.codp||'').trim() === cod) return {cod:k, nivel:'exacto'};
+  }
+  // Nivel 2a: codDoc contenido en codp
+  for (const [k, a] of artsProv) {
+    const cp = String(a.codp||'').trim();
+    if (cp && cp.includes(cod)) return {cod:k, nivel:'parcial_codp'};
+  }
+  // Nivel 2b: codDoc contenido en código interno
+  for (const [k] of artsProv) {
+    if (k.includes(cod)) return {cod:k, nivel:'parcial_cod'};
+  }
+  // Nivel 3: descripción (2+ palabras coincidentes)
+  if (descDoc) {
+    const words = descDoc.toLowerCase().replace(/[^\w\s]/g,' ').split(/\s+/).filter(w=>w.length>2).slice(0,5);
+    if (words.length >= 2) {
+      let best = null; let bestScore = 0;
+      for (const [k, a] of artsProv) {
+        const hay = (a.desc||'').toLowerCase().split(/\s+/);
+        const score = words.filter(w => hay.some(hw=>hw.startsWith(w)||w.startsWith(hw)||hw.includes(w))).length;
+        if (score >= 2 && score > bestScore) { bestScore=score; best=k; }
+      }
+      if (best) return {cod:best, nivel:'descripcion'};
+    }
+  }
+  return {cod:null, nivel:null};
 }
 
-// ─── Búsqueda para modal (20 recomendados con filtro proveedor) ───────────────
+// ─── Búsqueda para modal — primero mismo proveedor, luego otros ──────────────
 function buscar(descDoc, codDoc, prov, famF, catF, marcaF, q, art) {
   if (!art || typeof art !== 'object' || !Object.keys(art).length) return [];
   const cod = String(codDoc||'').trim();
   const words = (descDoc||'').toLowerCase().replace(/[^\w\s]/g,' ').split(/\s+/).filter(w=>w.length>2).slice(0,5);
   const qLow = (q||'').toLowerCase().trim();
-  const res = [];
+  const mismoProveedor = []; const otrosProveedor = [];
 
   for (const [k, a] of Object.entries(art)) {
-    const esProv = !prov || (a.prov||'').toLowerCase() === prov.toLowerCase();
+    if (!a) continue;
+    const esMismo = prov && (a.prov||'').toLowerCase() === prov.toLowerCase();
     if (famF && (a.fam||'') !== famF) continue;
-    if (catF && (a.cat||'') !== catF) continue;
+    if (catF  && (a.cat||'') !== catF)  continue;
     if (marcaF && (a.marca||'') !== marcaF) continue;
 
     const hay = (a.desc||'').toLowerCase();
+    const hayWords = hay.replace(/[^\w\s]/g,' ').split(/\s+/);
     const cp = String(a.codp||'').trim();
-    let score = 0; let type = 'other';
+    let score = 0; let type = 'desc';
 
-    // Bonus fuerte si es del mismo proveedor
-    if (esProv) score += 10;
-
-    // Regla 1: codp exacto
-    if (cod && cp === cod) { score += 30; type = 'prim'; }
-    // Regla 2: codDoc en codp
-    else if (cod && cp && cp.includes(cod)) { score += 22; type = 'prim'; }
-    // Regla 3: codDoc en código interno
-    else if (cod && k.includes(cod)) { score += 18; type = 'prim'; }
-
-    // Regla 4: palabras descripción
-    const wm = words.filter(w => {
-      if (hay.includes(w)) return true;
-      const hayW = hay.split(/\s+/);
-      return hayW.some(hw => hw.startsWith(w) || w.startsWith(hw));
-    }).length;
-    if (wm > 0) { score += wm * 8; if (type === 'other') type = 'sec'; }
-
-    // Búsqueda manual
-    if (qLow && (hay.includes(qLow) || k.includes(qLow) || cp.toLowerCase().includes(qLow))) {
-      score += 15; if (type === 'other') type = 'sec';
+    // Código
+    if (cod) {
+      if (cp === cod) { score += 30; type = 'exacto'; }
+      else if (cp.includes(cod)) { score += 22; type = 'parcial_codp'; }
+      else if (k.includes(cod)) { score += 18; type = 'parcial_cod'; }
     }
+    // Palabras descripción — match flexible
+    const wm = words.filter(w => hayWords.some(hw => hw.startsWith(w)||w.startsWith(hw)||hw.includes(w))).length;
+    if (wm >= 2) score += wm * 8;
+    // Búsqueda manual
+    if (qLow && (hay.includes(qLow) || k.includes(qLow) || cp.toLowerCase().includes(qLow))) score += 15;
 
-    if (score > 10 || (score > 0 && esProv)) res.push({cod: k, a, score, type});
+    if (score > 0) {
+      const entry = {cod: k, a, score, type, esMismo};
+      if (esMismo) mismoProveedor.push(entry);
+      else otrosProveedor.push(entry);
+    }
   }
 
-  res.sort((a, b) => {
-    // Proveedor correcto primero
-    const pa = (a.a.prov||'').toLowerCase() === prov?.toLowerCase() ? 0 : 1;
-    const pb = (b.a.prov||'').toLowerCase() === prov?.toLowerCase() ? 0 : 1;
-    if (pa !== pb) return pa - pb;
-    const o = {prim:0, sec:1, other:2};
-    if (o[a.type] !== o[b.type]) return o[a.type] - o[b.type];
+  const sortFn = (a, b) => {
+    const o = {exacto:0, parcial_codp:1, parcial_cod:2, desc:3};
+    if ((o[a.type]||3) !== (o[b.type]||3)) return (o[a.type]||3)-(o[b.type]||3);
     return b.score - a.score;
-  });
-  return res.slice(0, 40);
+  };
+  mismoProveedor.sort(sortFn);
+  otrosProveedor.sort(sortFn);
+
+  // Primero mismo proveedor, luego otros — máximo 40 total
+  return [...mismoProveedor.slice(0,30), ...otrosProveedor.slice(0,10)].slice(0,40);
 }
+
 
 function calcDiff(cr,pd){if(!cr||!pd)return null;return((pd-cr)/cr)*100;}
 function priceLabel(diff){
@@ -236,13 +243,12 @@ function getFreq(prov,art){
 }
 
 // ─── Enriquecer línea con todos los datos de la base ─────────────────────────
-function enriquecerLinea(codDoc,cant,precioDoc,descDoc,prov,db){
+function enriquecerLinea(codDoc,cant,precioDoc,descDoc,prov,db,ocLineas){
   if(!db||!db.art)return{cod:codDoc,codp:codDoc,desc:descDoc||'',prov:prov||'',fam:'',cat:'',costoReal:0,pvMin:0,mostrador:0,cantOC:cant||0,dc:0,d1:0,d3:0,precioDoc:precioDoc||0,cantRemito:cant||0,stkDMCN:0,stkDM01:0,stkDM03:0,vs:0,vq:0,vm:0,reconocido:false,aprobado:false,rechazado:false,esSobrante:false};
-  const codI=cruzar(codDoc,descDoc||"",prov||"",db.art)||codDoc;
+  const matchResult=cruzar(codDoc,descDoc||"",prov||"",db.art,ocLineas||[]);
+  const codI=matchResult.cod||codDoc;
+  const nivel=matchResult.nivel; // 'exacto'|'parcial_codp'|'parcial_cod'|'descripcion'|null
   const a=db.art[codI]||{desc:descDoc||'',codp:codDoc,prov:'',fam:'',cat:'',costoReal:0,pvMin:0,mostrador:0};
-  // Determinar tipo de match: exacto solo si codp===codDoc
-  const codp=String(a.codp||'').trim();
-  const matchTipo=!db.art[codI]?'none':codp===String(codDoc).trim()?'exacto':codI!==codDoc?'sugerido':'none';
   const s=db.stk[codI]||{DM01:0,DM03:0,DMCN:0};
   const sh=lsGet(SK.share,null);
   const planC=sh?.planC||lsGet(SK.plan,null);
@@ -256,8 +262,8 @@ function enriquecerLinea(codDoc,cant,precioDoc,descDoc,prov,db){
     precioDoc:precioDoc||0, cantRemito:cant||0,
     stkDMCN:s.DMCN, stkDM01:s.DM01, stkDM03:s.DM03,
     vs:db.vs[codI]||0, vq:db.vq[codI]||0, vm:db.vm[codI]||0,
-    reconocido:!!(a.desc&&a.desc!==descDoc),
-    matchTipo, // 'exacto'|'sugerido'|'none'
+    reconocido:!!(nivel), // reconocido si matcheó en cualquier nivel
+    matchTipo:nivel||'none', // 'exacto'|'parcial_codp'|'parcial_cod'|'descripcion'|'none'
     aprobado:false, rechazado:false, esSobrante:false,
   };
 }
@@ -427,7 +433,7 @@ export default function ModuloCompras(){
         // Para cada línea del doc, buscar su correspondiente en la OC
         const lineasActualizadas=prev.lineas.map(l=>{
           const match=docLineas.find(dl=>{
-            const ci=cruzar(dl.cod,dl.desc||"",OCdata.meta.proveedor||"",db.art);
+            const ci=cruzar(dl.cod,dl.desc||"",OCdata.meta.proveedor||"",db.art,prev.lineas).cod;
             return dl.cod===l.codp||dl.cod===l.cod||(ci&&ci===l.cod);
           });
           if(match){
@@ -445,9 +451,9 @@ export default function ModuloCompras(){
         const codpOC=new Set(prev.lineas.map(l=>l.codp));
         const sobrantes=[];
         for(const dl of docLineas){
-          const ci=cruzar(dl.cod,dl.desc||"",OCdata.meta.proveedor||"",db.art)||dl.cod;
+          const ci=cruzar(dl.cod,dl.desc||"",OCdata.meta.proveedor||"",db.art,prev.lineas).cod||dl.cod;
           if(!codsOC.has(ci)&&!codsOC.has(dl.cod)&&!codpOC.has(dl.cod)){
-            sobrantes.push({...enriquecerLinea(dl.cod,dl.cant,dl.precio,dl.desc,OCdata.meta.proveedor||"",db),esSobrante:true});
+            sobrantes.push({...enriquecerLinea(dl.cod,dl.cant,dl.precio,dl.desc,OCdata.meta.proveedor||"",db,prev.lineas),esSobrante:true});
           }
         }
 
@@ -456,7 +462,7 @@ export default function ModuloCompras(){
         return updated;
       });
     } else {
-      const lineas=docLineas.map(dl=>enriquecerLinea(dl.cod,dl.cant,dl.precio,dl.desc,OCdata.meta.proveedor||"",db));
+      const lineas=docLineas.map(dl=>enriquecerLinea(dl.cod,dl.cant,dl.precio,dl.desc,OCdata.meta.proveedor||"",db,OCdata.lineas));
       const prov=docMeta.proveedor||lineas.find(l=>l.prov)?.prov||'';
       const id='oc_'+Date.now();
       const data={meta:{proveedor:prov,fecha:new Date().toISOString().slice(0,10),documento:docMeta.nDocumento||'',origen:'Documento',estado:'generada',historial:[{estado:'generada',ts:now(),label:nowLabel(),usuario:'Operario',desdePrev:0}]},lineas};
@@ -467,10 +473,17 @@ export default function ModuloCompras(){
   },[OCdata.lineas,OCact,db,saveOC]);
 
   // ─── Modal ────────────────────────────────────────────────────────────────
-  const asignarArt=useCallback((idx,cod)=>{
+  const asignarArt=useCallback((idx,cod,matchType,esMismo)=>{
     const a=db.art[cod];if(!a)return;
+    // Si es de otro proveedor → marcar para nueva línea de proveedor
+    const otroProveedor=!esMismo;
+    // El matchTipo en el modal siempre va a importación masiva (no fue exacto por código)
+    const nuevoMatchTipo=matchType||'descripcion';
     setOCdata(prev=>{
-      const lineas=prev.lineas.map((l,i)=>i!==idx?l:{...l,cod,codp:a.codp||l.codp,desc:a.desc,prov:a.prov||'',fam:a.fam||'',cat:a.cat||'',costoReal:a.costoReal||0,pvMin:a.pvMin||0,mostrador:a.mostrador||0,reconocido:true});
+      const lineas=prev.lineas.map((l,i)=>i!==idx?l:{...l,cod,codp:a.codp||l.codp,desc:a.desc,
+        prov:a.prov||'',fam:a.fam||'',cat:a.cat||'',costoReal:a.costoReal||0,pvMin:a.pvMin||0,
+        mostrador:a.mostrador||0,reconocido:true,matchTipo:nuevoMatchTipo,
+        otroProveedor,aprobado:false});
       const updated={...prev,lineas};saveOC(OCact,updated);return updated;
     });
     setModal(m=>({...m,open:false}));
@@ -515,9 +528,12 @@ export default function ModuloCompras(){
   const exportarNuevos=()=>{
     const nList=lsGet(SK.nuevos,[]);
     // También incluir artículos de otro proveedor de la OC
+    // Incluir: artículos con match parcial aprobados + artículos de otro proveedor asignados
+    const parciales=OCdata.lineas.filter(l=>l.aprobado&&(l.matchTipo==='parcial_codp'||l.matchTipo==='parcial_cod'||l.matchTipo==='descripcion'));
     const otrosProv=OCdata.lineas.filter(l=>l.otroProveedor);
     const rows=[['Código Interno','Cód.Prov Nuevo','Descripción','Familia','Categ.','Marca','Costo Real','PV Mín.','Mostrador','Proveedor a comprar','Fecha Alta']];
     nList.forEach(n=>rows.push([n.cod,n.codp,n.desc,n.fam,n.cat,n.marca||'',n.costoReal,n.pvMin,n.mostrador,n.prov,n.fechaAlta]));
+    parciales.forEach(l=>{if(!nList.find(n=>n.cod===l.cod))rows.push([l.cod,l.codp,l.desc,l.fam,l.cat,'',l.costoReal,l.pvMin,l.mostrador,l.prov,`Corregir código (${l.matchTipo}): FC=${l.codp} Base=${l.cod}`]);});
     otrosProv.forEach(l=>{if(!nList.find(n=>n.cod===l.cod))rows.push([l.cod,l.codp,l.desc,l.fam,l.cat,'',l.costoReal,l.pvMin,l.mostrador,OCdata.meta.proveedor,'Nueva línea proveedor']);});
     if(rows.length===1){alert('Sin artículos nuevos para exportar');return;}
     const wb=XLSX.utils.book_new();const ws=XLSX.utils.aoa_to_sheet(rows);XLSX.utils.book_append_sheet(wb,ws,'Nuevos');
@@ -763,27 +779,33 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
               const totStk=(l.stkDMCN||0)+(l.stkDM01||0)+(l.stkDM03||0);
               const sc=stkColor(totStk,l.vm||0,l.vq||0,l.vs||0);
               const subtotal=l.cantOC*(l.precioDoc||0);
-              const rowBg=l.esSobrante?'rgba(251,146,60,.04)':!l.reconocido?'rgba(248,113,113,.04)':l.matchTipo==='sugerido'&&!l.aprobado?'rgba(251,146,60,.04)':diff!==null&&diff>0&&!l.aprobado?'rgba(248,113,113,.02)':'transparent';
+              const isParcial=l.matchTipo==='parcial_codp'||l.matchTipo==='parcial_cod'||l.matchTipo==='descripcion';
+const rowBg=l.esSobrante?'rgba(251,146,60,.04)':!l.reconocido?'rgba(248,113,113,.04)':isParcial&&!l.aprobado?'rgba(251,146,60,.04)':diff!==null&&diff>0&&!l.aprobado?'rgba(248,113,113,.02)':'transparent';
               let accion=null;
-              if(!l.reconocido){
+              const esParcial=l.matchTipo==='parcial_codp'||l.matchTipo==='parcial_cod'||l.matchTipo==='descripcion';
+              if(l.esSobrante&&!l.reconocido){
                 accion=<button onClick={()=>abrirModal(i)} style={{...Btn(C.acc,'rgba(240,192,64,.12)'),fontSize:9,padding:'2px 7px'}}>Resolver →</button>;
-              } else if(l.matchTipo==='sugerido'&&!l.aprobado&&!l.rechazado){
-                // Match sugerido — requiere confirmación
+              } else if(l.esSobrante){
+                accion=<span style={bStyle('ora')}>⚡ Sobrante</span>;
+              } else if(!l.reconocido){
+                accion=<button onClick={()=>abrirModal(i)} style={{...Btn(C.acc,'rgba(240,192,64,.12)'),fontSize:9,padding:'2px 7px'}}>Resolver →</button>;
+              } else if(esParcial&&!l.aprobado&&!l.rechazado){
+                // Parcial — necesita confirmación y va a importación masiva
                 accion=<div style={{display:'flex',gap:2,flexDirection:'column',alignItems:'flex-end'}}>
-                  <span style={{fontSize:7,color:C.ora,marginBottom:1}}>⚡ SUGERIDO</span>
+                  <span style={{fontSize:7,color:C.ora,marginBottom:1}}>⚡ {l.matchTipo==='descripcion'?'DESC':l.matchTipo==='parcial_codp'?'CODP':'COD'}</span>
                   <div style={{display:'flex',gap:2}}>
-                    <button onClick={()=>aprobar(i,true)} style={{...Btn(C.green,'rgba(74,222,128,.1)'),fontSize:9,padding:'2px 5px'}}>✓ OK</button>
-                    <button onClick={()=>abrirModal(i)} style={{...Btn(C.acc,'rgba(240,192,64,.1)'),fontSize:9,padding:'2px 5px'}}>↺</button>
+                    <button onClick={()=>aprobar(i,true)} style={{...Btn(C.green,'rgba(74,222,128,.1)'),fontSize:9,padding:'2px 5px'}} title="Confirmar y agregar a importación masiva">✓</button>
+                    <button onClick={()=>abrirModal(i)} style={{...Btn(C.acc,'rgba(240,192,64,.1)'),fontSize:9,padding:'2px 5px'}} title="Cambiar asignación">↺</button>
                   </div>
                 </div>;
+              } else if(esParcial&&l.aprobado){
+                accion=<span style={bStyle('warn')}>✓ Aprobado ·exportar</span>;
               } else if(diff!==null&&diff>0&&!l.aprobado){
                 accion=<div style={{display:'flex',gap:2}}><button onClick={()=>aprobar(i,true)} style={{...Btn(C.green,'rgba(74,222,128,.1)'),fontSize:9,padding:'2px 4px'}}>✓</button><button onClick={()=>aprobar(i,false)} style={{...Btn(C.red,'rgba(248,113,113,.1)'),fontSize:9,padding:'2px 4px'}}>✗</button></div>;
               } else if(l.aprobado){
                 accion=<span style={bStyle('ok')}>✓ OK</span>;
               } else if(l.rechazado){
                 accion=<span style={bStyle('err')}>✗</span>;
-              } else if(l.esSobrante){
-                accion=<span style={bStyle('ora')}>⚡ Sobrante</span>;
               } else {
                 accion=<span style={{fontSize:9,color:C.green}}>✓ Exacto</span>;
               }
@@ -1016,24 +1038,34 @@ function ModalArt({modal,setModal,linea,db,onAsignar,onNuevo,OCprov}){
             <div style={{flex:1,overflowY:'auto',borderTop:`1px solid ${C.b1}`}}>
               {nArt===0&&<div style={{padding:16,textAlign:'center',color:C.red,fontSize:11}}>⚠ Base vacía — hacé ↺ DB y recargá el FormatoProveedores en Stock+</div>}
               {nArt>0&&res.length===0&&<div style={{padding:16,textAlign:'center',color:C.mut,fontSize:11}}>Sin resultados · probá con otras palabras o filtros</div>}
-              {res.map(({cod,a,type})=>(
-                <div key={cod} onClick={()=>onAsignar(modal.idx,cod)}
-                  style={{display:'flex',alignItems:'center',gap:8,padding:'7px 14px',cursor:'pointer',borderBottom:`1px solid ${C.b2}`,borderLeft:`3px solid ${type==='prim'?C.acc:type==='sec'?C.blue:C.b1}`}}>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:11,color:C.txt,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.desc}</div>
-                    <div style={{fontSize:9,color:C.mut,marginTop:2,display:'flex',gap:8,flexWrap:'wrap'}}>
-                      <span style={{color:C.blue}}>{cod}</span>
-                      <span>codp: <span style={{color:C.acc}}>{a.codp||'—'}</span></span>
-                      <span style={{color:C.teal}}>{a.prov||'—'}</span>
-                      <span>{a.fam||'—'}</span>
-                      {a.costoReal>0&&<span style={{color:C.acc}}>CR: ${fn(a.costoReal)}</span>}
-                      {a.pvMin>0&&<span style={{color:C.vio}}>PVMin: ${fn(a.pvMin)}</span>}
+              {res.map(({cod,a,type,esMismo},ridx)=>{
+                const prevEsMismo = ridx>0?res[ridx-1].esMismo:true;
+                const showSep = !esMismo && prevEsMismo && ridx>0;
+                const borderCol = type==='exacto'?C.acc:type==='parcial_codp'?C.acc:type==='parcial_cod'?C.teal:C.blue;
+                return(<React.Fragment key={cod}>
+                  {showSep&&<div style={{padding:'5px 14px',background:'rgba(107,114,128,.1)',borderBottom:`1px solid ${C.b1}`,fontSize:8,color:C.mut,letterSpacing:'.08em',textTransform:'uppercase'}}>— Otros proveedores — al asignar genera nueva línea de proveedor</div>}
+                  <div onClick={()=>onAsignar(modal.idx,cod,type,esMismo)}
+                    style={{display:'flex',alignItems:'center',gap:8,padding:'7px 14px',cursor:'pointer',borderBottom:`1px solid ${C.b2}`,borderLeft:`3px solid ${borderCol}`,background:esMismo?'transparent':'rgba(107,114,128,.03)'}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:11,color:esMismo?C.txt:C.mut,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.desc}</div>
+                      <div style={{fontSize:9,color:C.mut,marginTop:2,display:'flex',gap:8,flexWrap:'wrap'}}>
+                        <span style={{color:C.blue}}>{cod}</span>
+                        <span>codp: <span style={{color:C.acc}}>{a.codp||'—'}</span></span>
+                        <span style={{color:esMismo?C.teal:C.mut}}>{a.prov||'—'}</span>
+                        <span>{a.fam||'—'}</span>
+                        {a.costoReal>0&&<span style={{color:C.acc}}>CR: ${fn(a.costoReal)}</span>}
+                      </div>
+                    </div>
+                    <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:2}}>
+                      {type==='exacto'&&<span style={{...bStyle('warn'),fontSize:7}}>exacto</span>}
+                      {type==='parcial_codp'&&<span style={{...bStyle('warn'),fontSize:7}}>codp parcial</span>}
+                      {type==='parcial_cod'&&<span style={{...bStyle('teal'),fontSize:7}}>cod parcial</span>}
+                      {(type==='desc'||(!type))&&<span style={{...bStyle('info'),fontSize:7}}>desc.</span>}
+                      {!esMismo&&<span style={{...bStyle('ora'),fontSize:7}}>otro prov.</span>}
                     </div>
                   </div>
-                  {type==='prim'&&<span style={{...bStyle('warn'),fontSize:8}}>cód.prov</span>}
-                  {type==='sec'&&<span style={{...bStyle('info'),fontSize:8}}>desc.</span>}
-                </div>
-              ))}
+                </React.Fragment>);
+              })}
             </div>
             <div style={{padding:'8px 14px',borderTop:`1px solid ${C.b1}`,display:'flex',gap:6,flexShrink:0}}>
               <button onClick={()=>setModal(m=>({...m,open:false}))} style={Btn(C.mut)}>Omitir</button>

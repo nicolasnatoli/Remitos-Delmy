@@ -21,103 +21,87 @@ function generarRC(proveedor){
 // Regla 3: codDoc contenido TAL CUAL en código interno (filtro proveedor)
 // Regla 4: primeras 3 palabras descripción (filtro proveedor)
 // Regla 5: sin match
-function cruzar(codDoc, descDoc, prov, art) {
-  if (!codDoc) return null;
+function cruzar(codDoc, descDoc, prov, art, ocLineas) {
+  if (!codDoc || !art || typeof art !== 'object') return {cod:null, nivel:null};
   const cod = String(codDoc).trim();
-  if (!cod) return null;
-
-  // Filtrar solo artículos del proveedor
-  const artsProv = prov
-    ? Object.entries(art).filter(([,a]) => (a.prov||'').toLowerCase() === prov.toLowerCase())
-    : Object.entries(art);
-
-  // Regla 1: codp exacto
-  for (const [k, a] of artsProv) {
-    if (String(a.codp||'').trim() === cod) return k;
-  }
-
-  // Regla 2: codDoc contenido TAL CUAL dentro del codp del artículo
-  for (const [k, a] of artsProv) {
-    const cp = String(a.codp||'').trim();
-    if (cp && cp.includes(cod)) return k;
-  }
-
-  // Regla 3: codDoc contenido TAL CUAL dentro del código interno
-  for (const [k] of artsProv) {
-    if (k.includes(cod)) return k;
-  }
-
-  // Regla 4: primeras 3 palabras de la descripción del documento
-  if (descDoc) {
-    const words = descDoc.toLowerCase().replace(/[^\w\s]/g,' ').split(/\s+/).filter(w=>w.length>2).slice(0,3);
-    if (words.length > 0) {
-      let best = null; let bestScore = 0;
-      for (const [k, a] of artsProv) {
-        const hay = (a.desc||'').toLowerCase();
-        const score = words.filter(w => hay.includes(w)).length;
-        if (score > bestScore && score >= 2) { bestScore = score; best = k; }
-      }
-      if (best) return best;
+  if (!cod) return {cod:null, nivel:null};
+  if (ocLineas && ocLineas.length > 0) {
+    for (const l of ocLineas) {
+      if (String(l.codp||'').trim() === cod) return {cod:l.cod, nivel:'exacto'};
+    }
+    for (const l of ocLineas) {
+      const cp = String(l.codp||'').trim();
+      if (cp && cp.includes(cod)) return {cod:l.cod, nivel:'parcial_codp'};
+    }
+    for (const l of ocLineas) {
+      if (String(l.cod||'').includes(cod)) return {cod:l.cod, nivel:'parcial_cod'};
     }
   }
-
-  return null;
+  if (!prov) return {cod:null, nivel:null};
+  const artsProv = Object.entries(art).filter(([,a]) =>
+    a && (a.prov||'').toLowerCase() === prov.toLowerCase()
+  );
+  for (const [k, a] of artsProv) {
+    if (String(a.codp||'').trim() === cod) return {cod:k, nivel:'exacto'};
+  }
+  for (const [k, a] of artsProv) {
+    const cp = String(a.codp||'').trim();
+    if (cp && cp.includes(cod)) return {cod:k, nivel:'parcial_codp'};
+  }
+  for (const [k] of artsProv) {
+    if (k.includes(cod)) return {cod:k, nivel:'parcial_cod'};
+  }
+  if (descDoc) {
+    const words = descDoc.toLowerCase().replace(/[^\w\s]/g,' ').split(/\s+/).filter(w=>w.length>2).slice(0,5);
+    if (words.length >= 2) {
+      let best = null; let bestScore = 0;
+      for (const [k, a] of artsProv) {
+        const hay = (a.desc||'').toLowerCase().split(/\s+/);
+        const score = words.filter(w => hay.some(hw=>hw.startsWith(w)||w.startsWith(hw)||hw.includes(w))).length;
+        if (score >= 2 && score > bestScore) { bestScore=score; best=k; }
+      }
+      if (best) return {cod:best, nivel:'descripcion'};
+    }
+  }
+  return {cod:null, nivel:null};
 }
 
-// ─── Búsqueda para modal (20 recomendados con filtro proveedor) ───────────────
 function buscar(descDoc, codDoc, prov, famF, catF, marcaF, q, art) {
-  if (!art || !Object.keys(art).length) return [];
+  if (!art || typeof art !== 'object' || !Object.keys(art).length) return [];
   const cod = String(codDoc||'').trim();
   const words = (descDoc||'').toLowerCase().replace(/[^\w\s]/g,' ').split(/\s+/).filter(w=>w.length>2).slice(0,5);
   const qLow = (q||'').toLowerCase().trim();
-  const res = [];
-
+  const mismoProveedor = []; const otrosProveedor = [];
   for (const [k, a] of Object.entries(art)) {
-    const esProv = !prov || (a.prov||'').toLowerCase() === prov.toLowerCase();
+    if (!a) continue;
+    const esMismo = prov && (a.prov||'').toLowerCase() === prov.toLowerCase();
     if (famF && (a.fam||'') !== famF) continue;
-    if (catF && (a.cat||'') !== catF) continue;
-    if (marcaF && (a.marca||'') !== marcaF) continue;
-
+    if (catF  && (a.cat||'') !== catF)  continue;
     const hay = (a.desc||'').toLowerCase();
+    const hayW = hay.replace(/[^\w\s]/g,' ').split(/\s+/);
     const cp = String(a.codp||'').trim();
-    let score = 0; let type = 'other';
-
-    // Bonus fuerte si es del mismo proveedor
-    if (esProv) score += 10;
-
-    // Regla 1: codp exacto
-    if (cod && cp === cod) { score += 30; type = 'prim'; }
-    // Regla 2: codDoc en codp
-    else if (cod && cp && cp.includes(cod)) { score += 22; type = 'prim'; }
-    // Regla 3: codDoc en código interno
-    else if (cod && k.includes(cod)) { score += 18; type = 'prim'; }
-
-    // Regla 4: palabras descripción
-    const wm = words.filter(w => {
-      if (hay.includes(w)) return true;
-      const hayW = hay.split(/\s+/);
-      return hayW.some(hw => hw.startsWith(w) || w.startsWith(hw));
-    }).length;
-    if (wm > 0) { score += wm * 8; if (type === 'other') type = 'sec'; }
-
-    // Búsqueda manual
-    if (qLow && (hay.includes(qLow) || k.includes(qLow) || cp.toLowerCase().includes(qLow))) {
-      score += 15; if (type === 'other') type = 'sec';
+    let score = 0; let type = 'desc';
+    if (cod) {
+      if (cp === cod) { score += 30; type = 'exacto'; }
+      else if (cp.includes(cod)) { score += 22; type = 'parcial_codp'; }
+      else if (k.includes(cod)) { score += 18; type = 'parcial_cod'; }
     }
-
-    if (score > 10 || (score > 0 && esProv)) res.push({cod: k, a, score, type});
+    const wm = words.filter(w => hayW.some(hw=>hw.startsWith(w)||w.startsWith(hw)||hw.includes(w))).length;
+    if (wm >= 2) score += wm * 8;
+    if (qLow && (hay.includes(qLow)||k.includes(qLow)||cp.toLowerCase().includes(qLow))) score += 15;
+    if (score > 0) {
+      const entry = {cod:k, a, score, type, esMismo};
+      if (esMismo) mismoProveedor.push(entry);
+      else otrosProveedor.push(entry);
+    }
   }
-
-  res.sort((a, b) => {
-    // Proveedor correcto primero
-    const pa = (a.a.prov||'').toLowerCase() === prov?.toLowerCase() ? 0 : 1;
-    const pb = (b.a.prov||'').toLowerCase() === prov?.toLowerCase() ? 0 : 1;
-    if (pa !== pb) return pa - pb;
-    const o = {prim:0, sec:1, other:2};
-    if (o[a.type] !== o[b.type]) return o[a.type] - o[b.type];
-    return b.score - a.score;
-  });
-  return res.slice(0, 40);
+  const sortFn = (a,b) => {
+    const o = {exacto:0,parcial_codp:1,parcial_cod:2,desc:3};
+    if((o[a.type]||3)!==(o[b.type]||3))return(o[a.type]||3)-(o[b.type]||3);
+    return b.score-a.score;
+  };
+  mismoProveedor.sort(sortFn); otrosProveedor.sort(sortFn);
+  return [...mismoProveedor.slice(0,30),...otrosProveedor.slice(0,10)].slice(0,40);
 }
 
 // ─── Estilos ──────────────────────────────────────────────────────────────────
@@ -186,6 +170,31 @@ export default function ModuloRecepcion(){
   },[]);
 
   const saveRec=useCallback((data)=>lsSet(SK.rec,data),[]);
+
+  const [modalRec,setModalRec]=useState({open:false,idx:0,busqQ:'',selFam:''});
+
+  const abrirModalRec=useCallback((idx)=>{
+    setModalRec({open:true,idx,busqQ:'',selFam:''});
+  },[]);
+
+  const confirmarLinea=useCallback((idx)=>{
+    setRec(prev=>{
+      const lineas=prev.lineas.map((l,i)=>i!==idx?l:{...l,confirmado:true});
+      const next={...prev,lineas};saveRec(next);return next;
+    });
+  },[saveRec]);
+
+  const asignarCodigoModal=useCallback((idx,codI,tipo,esMismo)=>{
+    const a=art[codI];if(!a)return;
+    setRec(prev=>{
+      const lineas=prev.lineas.map((l,i)=>i!==idx?l:{...l,
+        codI,desc:a.desc||l.desc,matchTipo:tipo||'descripcion',
+        confirmado:true,otroProveedor:!esMismo,
+      });
+      const next={...prev,lineas};saveRec(next);return next;
+    });
+    setModalRec(m=>({...m,open:false}));
+  },[art,saveRec]);
   const updMeta=useCallback((field,val)=>{setRec(prev=>{const next={...prev,meta:{...prev.meta,[field]:val}};saveRec(next);return next;});},[saveRec]);
 
   // ─── Procesar documento ───────────────────────────────────────────────────
@@ -210,11 +219,11 @@ export default function ModuloRecepcion(){
       const lineas=[];
       for(let i=hRow+1;i<raw.length;i++){
         const r=raw[i];const codDoc=String(r[iCod]||'').trim();if(!codDoc||codDoc.length<2)continue;
-        const codI=cruzar(codDoc,String(r[iDesc]||"").trim(),rec.meta.proveedor||"",art)||null;
+        const {cod:codI,nivel:mNivel}=cruzar(codDoc,String(r[iDesc]||"").trim(),rec.meta.proveedor||"",art,ocSel?.lineas||[]);
         const a=codI?art[codI]:null;
         // Buscar en OC
         const ocLinea=ocSel?ocSel.lineas?.find(ol=>ol.cod===codI||ol.codp===codDoc):null;
-        lineas.push({codDoc,codI,desc:a?.desc||String(r[iDesc]||'').trim(),cantRemito:parseFloat(String(r[iCant]||'0'))||0,precioUnit:iPrecio>=0?parseFloat(String(r[iPrecio]||'0'))||0:0,cantOC:ocLinea?.cantOC||null,bultos:null,artsPorBulto:null,cantFis:null,diff:null,ub:'',ok:null,obs:'',candidatos:[]});
+        lineas.push({codDoc,codI,desc:a?.desc||String(r[iDesc]||'').trim(),matchTipo:mNivel||'none',confirmado:false,cantRemito:parseFloat(String(r[iCant]||'0'))||0,precioUnit:iPrecio>=0?parseFloat(String(r[iPrecio]||'0'))||0:0,cantOC:ocLinea?.cantOC||null,bultos:null,artsPorBulto:null,cantFis:null,diff:null,ub:'',ok:null,obs:'',candidatos:[]});
       }
       setRec(prev=>{const next={...prev,lineas};saveRec(next);return next;});
       setEtapa('registro');
@@ -237,10 +246,10 @@ Respondé SOLO con JSON:
         const result=await res.json();
         const parsed=JSON.parse((result.text||'').replace(/```json|```/g,'').trim());
         const lineas=(parsed.lineas||[]).map(l=>{
-          const codI=cruzar(l.cod,l.desc||"",rec.meta.proveedor||"",art)||null;
+          const {cod:codI,nivel:mNivel}=cruzar(l.cod,l.desc||"",rec.meta.proveedor||"",art,ocSel?.lineas||[]);
           const a=codI?art[codI]:null;
           const ocLinea=ocSel?ocSel.lineas?.find(ol=>ol.cod===codI||ol.codp===l.cod):null;
-          return{codDoc:l.cod,codI,desc:a?.desc||l.desc||'',cantRemito:Number(l.cant)||0,precioUnit:Number(l.precioUnit)||0,cantOC:ocLinea?.cantOC||null,bultos:l.bultos||null,artsPorBulto:null,cantFis:null,diff:null,ub:'',ok:null,obs:'',candidatos:[]};
+          return{codDoc:l.cod,codI,desc:a?.desc||l.desc||'',matchTipo:mNivel||'none',confirmado:false,cantRemito:Number(l.cant)||0,precioUnit:Number(l.precioUnit)||0,cantOC:ocLinea?.cantOC||null,bultos:l.bultos||null,artsPorBulto:null,cantFis:null,diff:null,ub:'',ok:null,obs:'',candidatos:[]};
         });
         setRec(prev=>{const next={...prev,meta:{...prev.meta,proveedor:parsed.proveedor||prev.meta.proveedor,nRemito:parsed.nDocumento||prev.meta.nRemito,fecha:parsed.fecha?parsed.fecha.split('/').reverse().join('-'):prev.meta.fecha,totalBultos:parsed.totalBultos||null,rc},lineas};saveRec(next);return next;});
         setIaStatus('');setEtapa('registro');
@@ -266,11 +275,6 @@ Respondé SOLO con JSON:
       const next={...prev,lineas};saveRec(next);return next;
     });
   },[saveRec]);
-
-  const asignarCodigo=useCallback((idx,codI)=>{
-    const a=art[codI];if(!a)return;
-    setRec(prev=>{const lineas=prev.lineas.map((l,i)=>i!==idx?l:{...l,codI,desc:a.desc});const next={...prev,lineas};saveRec(next);return next;});
-  },[art,saveRec]);
 
   const conformeTodo=()=>{setRec(prev=>{const lineas=prev.lineas.map(l=>({...l,cantFis:l.cantRemito||0,diff:0,ok:true}));const next={...prev,lineas};saveRec(next);return next;});};
 
@@ -510,21 +514,28 @@ ${etiquetas.map(n=>`<div class="etq">
                       {rec.lineas.map((l,i)=>{
                         const rowBg=l.ok===false?'rgba(248,113,113,.04)':l.ok===true?'rgba(74,222,128,.02)':'transparent';
                         const td=(c,s)=><td style={{padding:'4px 6px',borderBottom:`1px solid ${C.b2}`,fontSize:10,verticalAlign:'middle',...s}}>{c}</td>;
-                        const cands=buscar(l.desc,l.codDoc,rec.meta.proveedor,"","","","",art).slice(0,5);
                         return(
                           <tr key={i} style={{background:rowBg}}>
                             {td(i+1,{fontSize:9,color:C.mut})}
                             {td(l.codDoc||'—',{fontSize:9,color:C.blue,fontFamily:'DM Mono,monospace'})}
                             {td(
-                              l.codI
-                                ?<span style={{fontSize:9,color:C.teal,fontFamily:'DM Mono,monospace',cursor:'pointer'}} onClick={()=>{const c=window.prompt('Cambiar código base (dejar vacío para cancelar):',l.codI||'');if(c&&c.trim()&&art[c.trim()])asignarCodigo(i,c.trim());}}>{l.codI}</span>
-                                :<div>
-                                    <select onChange={e=>{if(e.target.value)asignarCodigo(i,e.target.value);}} defaultValue="" style={{fontSize:9,background:C.bg,color:C.red,border:`1px solid ${C.red}`,borderRadius:3,fontFamily:'DM Mono,monospace',maxWidth:130,marginBottom:2}}>
-                                      <option value="">— Asignar código —</option>
-                                      {cands.map(({cod,a})=><option key={cod} value={cod}>{cod} · {a.desc.slice(0,25)}</option>)}
-                                    </select>
-                                    {cands.length===0&&<div style={{fontSize:8,color:C.mut}}>Sin candidatos · DB sin datos del proveedor</div>}
-                                  </div>
+                              (()=>{
+                              const esParcial=l.matchTipo==='parcial_codp'||l.matchTipo==='parcial_cod'||l.matchTipo==='descripcion';
+                              if(l.codI&&l.matchTipo==='exacto')return <span style={{fontSize:9,color:C.teal,fontFamily:'DM Mono,monospace'}}>{l.codI}</span>;
+                              if(l.codI&&esParcial&&!l.confirmado)return <div style={{display:'flex',flexDirection:'column',gap:2}}>
+                                <span style={{fontSize:9,color:C.teal,fontFamily:'DM Mono,monospace'}}>{l.codI}</span>
+                                <span style={{fontSize:7,color:C.ora}}>⚡ {l.matchTipo}</span>
+                                <div style={{display:'flex',gap:2}}>
+                                  <button onClick={()=>confirmarLinea(i)} style={{fontSize:8,padding:'1px 5px',background:'rgba(74,222,128,.1)',border:`1px solid ${C.green}`,color:C.green,borderRadius:2,cursor:'pointer'}}>✓</button>
+                                  <button onClick={()=>abrirModalRec(i)} style={{fontSize:8,padding:'1px 5px',background:'rgba(240,192,64,.1)',border:`1px solid ${C.acc}`,color:C.acc,borderRadius:2,cursor:'pointer'}}>↺</button>
+                                </div>
+                              </div>;
+                              if(l.codI&&esParcial&&l.confirmado)return <div>
+                                <span style={{fontSize:9,color:C.teal,fontFamily:'DM Mono,monospace'}}>{l.codI}</span>
+                                <span style={{fontSize:7,color:C.green,marginLeft:4}}>✓</span>
+                              </div>;
+                              return <button onClick={()=>abrirModalRec(i)} style={{fontSize:9,padding:'2px 7px',background:'rgba(248,113,113,.1)',border:`1px solid ${C.red}`,color:C.red,borderRadius:3,cursor:'pointer',fontFamily:'DM Mono,monospace'}}>Resolver →</button>;
+                            })()
                             )}
                             {td(<span title={l.desc} style={{display:'block',maxWidth:160,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{l.desc||'—'}</span>)}
                             {td(l.cantOC??'—',{textAlign:'right',color:C.mut,fontSize:9})}
@@ -613,6 +624,70 @@ ${etiquetas.map(n=>`<div class="etq">
             </div>
           </div>
         )}
+
+        {/* Modal Resolver Recepción */}
+        {modalRec.open&&(()=>{
+          const l=rec.lineas[modalRec.idx];if(!l)return null;
+          const prov=rec.meta.proveedor||'';
+          const resBusq=buscar(l.desc,l.codDoc,prov,modalRec.selFam,'','',modalRec.busqQ,art);
+          const fams=[...new Set(Object.values(art).filter(a=>(a.prov||'').toLowerCase()===prov.toLowerCase()).map(a=>a.fam).filter(Boolean))].sort();
+          return(
+            <div style={{background:'rgba(0,0,0,.8)',padding:12,flexShrink:0}}>
+              <div style={{background:C.panel,border:`1px solid ${C.b1}`,borderRadius:6,maxHeight:'65vh',display:'flex',flexDirection:'column'}}>
+                <div style={{background:'rgba(240,192,64,.06)',borderBottom:'1px solid rgba(240,192,64,.2)',padding:'10px 14px',display:'flex',justifyContent:'space-between',flexShrink:0}}>
+                  <div>
+                    <div style={{fontSize:11,fontWeight:500,color:C.acc}}>Código no reconocido: <span style={{color:C.blue}}>{l.codDoc}</span>
+                      <span style={{fontSize:9,color:Object.keys(art).length>0?C.teal:C.red,marginLeft:10}}>{Object.keys(art).length>0?`${Object.keys(art).length} arts`:'⚠ Sin DB'}</span>
+                    </div>
+                    <div style={{fontSize:10,color:C.txt,marginTop:3}}>"{l.desc}" · remito: <b>{l.cantRemito}</b> · prov: <b>{prov||'—'}</b></div>
+                  </div>
+                  <button onClick={()=>setModalRec(m=>({...m,open:false}))} style={{background:'transparent',border:'none',color:C.mut,fontSize:16,cursor:'pointer'}}>✕</button>
+                </div>
+                <div style={{padding:'10px 14px',flexShrink:0}}>
+                  <input placeholder="Buscar código, descripción..." value={modalRec.busqQ}
+                    onChange={e=>setModalRec(m=>({...m,busqQ:e.target.value}))}
+                    style={{width:'100%',padding:'6px 10px',background:C.bg,color:C.txt,border:`1px solid ${C.b1}`,borderRadius:4,fontFamily:'DM Mono,monospace',fontSize:11,outline:'none'}} autoFocus />
+                  {fams.length>0&&<div style={{marginTop:6,display:'flex',gap:4,flexWrap:'wrap'}}>
+                    {fams.slice(0,8).map(f=><span key={f} onClick={()=>setModalRec(m=>({...m,selFam:m.selFam===f?'':f}))}
+                      style={{fontSize:9,padding:'2px 8px',borderRadius:3,border:`1px solid ${modalRec.selFam===f?C.acc:C.b1}`,cursor:'pointer',background:modalRec.selFam===f?'rgba(240,192,64,.15)':'transparent',color:modalRec.selFam===f?C.acc:C.txt}}>{f}</span>)}
+                  </div>}
+                  <div style={{fontSize:9,color:C.mut,marginTop:6}}>{resBusq.length} artículos — click para asignar</div>
+                </div>
+                <div style={{flex:1,overflowY:'auto',borderTop:`1px solid ${C.b1}`}}>
+                  {resBusq.length===0&&<div style={{padding:16,textAlign:'center',color:C.mut,fontSize:11}}>Sin resultados</div>}
+                  {resBusq.map(({cod,a,type,esMismo},ridx)=>{
+                    const prevEM=ridx>0?resBusq[ridx-1].esMismo:true;
+                    return(<React.Fragment key={cod}>
+                      {!esMismo&&prevEM&&ridx>0&&<div style={{padding:'4px 14px',background:'rgba(107,114,128,.1)',fontSize:8,color:C.mut,textTransform:'uppercase',letterSpacing:'.08em'}}>— Otros proveedores — genera nueva línea de proveedor</div>}
+                      <div onClick={()=>asignarCodigoModal(modalRec.idx,cod,type,esMismo)}
+                        style={{display:'flex',alignItems:'center',gap:8,padding:'7px 14px',cursor:'pointer',borderBottom:`1px solid ${C.b2}`,borderLeft:`3px solid ${type==='exacto'?C.acc:type.startsWith('parcial')?C.teal:C.blue}`,background:esMismo?'transparent':'rgba(107,114,128,.03)'}}>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontSize:11,color:esMismo?C.txt:C.mut,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.desc}</div>
+                          <div style={{fontSize:9,color:C.mut,marginTop:2,display:'flex',gap:8,flexWrap:'wrap'}}>
+                            <span style={{color:C.blue}}>{cod}</span>
+                            <span>codp: <span style={{color:C.acc}}>{a.codp||'—'}</span></span>
+                            <span style={{color:esMismo?C.teal:C.mut}}>{a.prov||'—'}</span>
+                            <span>{a.fam||'—'}</span>
+                            {a.costoReal>0&&<span style={{color:C.acc}}>${Number(a.costoReal).toLocaleString('es-AR',{maximumFractionDigits:0})}</span>}
+                          </div>
+                        </div>
+                        <div style={{display:'flex',flexDirection:'column',gap:2,alignItems:'flex-end'}}>
+                          {type==='exacto'&&<span style={{fontSize:7,padding:'1px 5px',borderRadius:2,background:'rgba(240,192,64,.15)',color:C.acc}}>exacto</span>}
+                          {type==='parcial_codp'&&<span style={{fontSize:7,padding:'1px 5px',borderRadius:2,background:'rgba(45,212,191,.15)',color:C.teal}}>codp parcial</span>}
+                          {type==='parcial_cod'&&<span style={{fontSize:7,padding:'1px 5px',borderRadius:2,background:'rgba(45,212,191,.15)',color:C.teal}}>cod parcial</span>}
+                          {!esMismo&&<span style={{fontSize:7,padding:'1px 5px',borderRadius:2,background:'rgba(251,146,60,.15)',color:C.ora}}>otro prov.</span>}
+                        </div>
+                      </div>
+                    </React.Fragment>);
+                  })}
+                </div>
+                <div style={{padding:'8px 14px',borderTop:`1px solid ${C.b1}`,flexShrink:0}}>
+                  <button onClick={()=>setModalRec(m=>({...m,open:false}))} style={{cursor:'pointer',fontFamily:'DM Mono,monospace',fontSize:11,borderRadius:4,padding:'5px 11px',border:`1px solid ${C.mut}`,background:'transparent',color:C.mut}}>Omitir</button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* E5 — CIERRE */}
         {etapa==='cierre'&&(
