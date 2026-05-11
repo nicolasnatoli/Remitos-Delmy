@@ -14,32 +14,110 @@ function generarRC(proveedor){
   return `RC${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}-${sigla}`;
 }
 
-// ─── Cruce códigos (mismo que Compras) ────────────────────────────────────────
-function buildIdx(art){const idx={};for(const[cod,a]of Object.entries(art)){const cp=String(a.codp||'').trim();if(cp){if(!idx[cp])idx[cp]=[];idx[cp].push(cod);}const cpN=cp.replace(/^0+/,'');if(cpN&&cpN!==cp){if(!idx[cpN])idx[cpN]=[];idx[cpN].push(cod);}}return idx;}
-function cruzar(codExt,art,idx){if(!codExt)return null;const cod=String(codExt).trim();const codN=cod.replace(/^0+/,'');if(idx[cod]?.length)return idx[cod][0];if(idx[codN]?.length)return idx[codN][0];for(const[cp,cods]of Object.entries(idx)){const cpN=cp.replace(/^0+/,'');if(cpN&&codN&&(cpN===codN||cpN.includes(codN)||codN.includes(cpN)))return cods[0];}return null;}
 
-function buscar(desc,codDoc,prov,art){
-  if(!art||!Object.keys(art).length)return[];
-  const words=(desc||'').toLowerCase().replace(/[^\w\s]/g,' ').split(/\s+/).filter(w=>w.length>2&&!/^\d+$/.test(w)).slice(0,5);
-  const codN=String(codDoc||'').toLowerCase().replace(/^0+/,'');
-  const res=[];
-  for(const[cod,a]of Object.entries(art)){
-    if(prov&&(a.prov||'').toLowerCase()!==prov.toLowerCase())continue;
-    const hay=(a.desc||'').toLowerCase();
-    const cpN=String(a.codp||'').toLowerCase().replace(/^0+/,'');
-    let score=0;let type='other';
-    if(codN&&cpN){if(cpN===codN||cpN.includes(codN)||codN.includes(cpN)){score+=20;type='prim';}}
-    const wm=words.filter(w=>{
-      if(hay.includes(w))return true;
-      // Match parcial: palabra de la factura es prefijo de palabra en base (ej: "rell" en "relleno")
-      const hayWords=hay.replace(/[^\w\s]/g,' ').split(/\s+/);
-      return hayWords.some(hw=>hw.startsWith(w)||w.startsWith(hw));
-    }).length;
-    if(wm>0){score+=wm*9;if(type==='other')type='sec';}
-    if(score>0)res.push({cod,a,score,type});
+// ─── Cruce de códigos — reglas estrictas con filtro proveedor ─────────────────
+// Regla 1: codp exacto (filtro proveedor)
+// Regla 2: codDoc contenido TAL CUAL en codp (filtro proveedor)  
+// Regla 3: codDoc contenido TAL CUAL en código interno (filtro proveedor)
+// Regla 4: primeras 3 palabras descripción (filtro proveedor)
+// Regla 5: sin match
+function cruzar(codDoc, descDoc, prov, art) {
+  if (!codDoc) return null;
+  const cod = String(codDoc).trim();
+  if (!cod) return null;
+
+  // Filtrar solo artículos del proveedor
+  const artsProv = prov
+    ? Object.entries(art).filter(([,a]) => (a.prov||'').toLowerCase() === prov.toLowerCase())
+    : Object.entries(art);
+
+  // Regla 1: codp exacto
+  for (const [k, a] of artsProv) {
+    if (String(a.codp||'').trim() === cod) return k;
   }
-  res.sort((a,b)=>{const o={prim:0,sec:1,other:2};if(o[a.type]!==o[b.type])return o[a.type]-o[b.type];return b.score-a.score;});
-  return res.slice(0,30);
+
+  // Regla 2: codDoc contenido TAL CUAL dentro del codp del artículo
+  for (const [k, a] of artsProv) {
+    const cp = String(a.codp||'').trim();
+    if (cp && cp.includes(cod)) return k;
+  }
+
+  // Regla 3: codDoc contenido TAL CUAL dentro del código interno
+  for (const [k] of artsProv) {
+    if (k.includes(cod)) return k;
+  }
+
+  // Regla 4: primeras 3 palabras de la descripción del documento
+  if (descDoc) {
+    const words = descDoc.toLowerCase().replace(/[^\w\s]/g,' ').split(/\s+/).filter(w=>w.length>2).slice(0,3);
+    if (words.length > 0) {
+      let best = null; let bestScore = 0;
+      for (const [k, a] of artsProv) {
+        const hay = (a.desc||'').toLowerCase();
+        const score = words.filter(w => hay.includes(w)).length;
+        if (score > bestScore && score >= 2) { bestScore = score; best = k; }
+      }
+      if (best) return best;
+    }
+  }
+
+  return null;
+}
+
+// ─── Búsqueda para modal (20 recomendados con filtro proveedor) ───────────────
+function buscar(descDoc, codDoc, prov, famF, catF, marcaF, q, art) {
+  if (!art || !Object.keys(art).length) return [];
+  const cod = String(codDoc||'').trim();
+  const words = (descDoc||'').toLowerCase().replace(/[^\w\s]/g,' ').split(/\s+/).filter(w=>w.length>2).slice(0,5);
+  const qLow = (q||'').toLowerCase().trim();
+  const res = [];
+
+  for (const [k, a] of Object.entries(art)) {
+    const esProv = !prov || (a.prov||'').toLowerCase() === prov.toLowerCase();
+    if (famF && (a.fam||'') !== famF) continue;
+    if (catF && (a.cat||'') !== catF) continue;
+    if (marcaF && (a.marca||'') !== marcaF) continue;
+
+    const hay = (a.desc||'').toLowerCase();
+    const cp = String(a.codp||'').trim();
+    let score = 0; let type = 'other';
+
+    // Bonus fuerte si es del mismo proveedor
+    if (esProv) score += 10;
+
+    // Regla 1: codp exacto
+    if (cod && cp === cod) { score += 30; type = 'prim'; }
+    // Regla 2: codDoc en codp
+    else if (cod && cp && cp.includes(cod)) { score += 22; type = 'prim'; }
+    // Regla 3: codDoc en código interno
+    else if (cod && k.includes(cod)) { score += 18; type = 'prim'; }
+
+    // Regla 4: palabras descripción
+    const wm = words.filter(w => {
+      if (hay.includes(w)) return true;
+      const hayW = hay.split(/\s+/);
+      return hayW.some(hw => hw.startsWith(w) || w.startsWith(hw));
+    }).length;
+    if (wm > 0) { score += wm * 8; if (type === 'other') type = 'sec'; }
+
+    // Búsqueda manual
+    if (qLow && (hay.includes(qLow) || k.includes(qLow) || cp.toLowerCase().includes(qLow))) {
+      score += 15; if (type === 'other') type = 'sec';
+    }
+
+    if (score > 10 || (score > 0 && esProv)) res.push({cod: k, a, score, type});
+  }
+
+  res.sort((a, b) => {
+    // Proveedor correcto primero
+    const pa = (a.a.prov||'').toLowerCase() === prov?.toLowerCase() ? 0 : 1;
+    const pb = (b.a.prov||'').toLowerCase() === prov?.toLowerCase() ? 0 : 1;
+    if (pa !== pb) return pa - pb;
+    const o = {prim:0, sec:1, other:2};
+    if (o[a.type] !== o[b.type]) return o[a.type] - o[b.type];
+    return b.score - a.score;
+  });
+  return res.slice(0, 40);
 }
 
 // ─── Estilos ──────────────────────────────────────────────────────────────────
@@ -90,7 +168,7 @@ export default function ModuloRecepcion(){
     lineas:[],fotoEvidencia:null,cerrada:false,
   });
   const [art,     setArt]    = useState({});
-  const [artIdx,  setArtIdx] = useState({});
+  // artIdx removed
   const [OCS,     setOCS]    = useState([]);
   const [ocSel,   setOcSel]  = useState(null);
   const [iaStatus,setIaStatus]=useState('');
@@ -100,7 +178,6 @@ export default function ModuloRecepcion(){
     loadArt().then(artExpanded=>{
       // loadArt() now returns already-expanded objects
       setArt(artExpanded);
-      setArtIdx(buildIdx(artExpanded));
     });
     // Cargar OCs disponibles
     const ocs=lsGet(SK.ocs,[]);
@@ -133,7 +210,7 @@ export default function ModuloRecepcion(){
       const lineas=[];
       for(let i=hRow+1;i<raw.length;i++){
         const r=raw[i];const codDoc=String(r[iCod]||'').trim();if(!codDoc||codDoc.length<2)continue;
-        const codI=cruzar(codDoc,art,artIdx)||null;
+        const codI=cruzar(codDoc,String(r[iDesc]||"").trim(),rec.meta.proveedor||"",art)||null;
         const a=codI?art[codI]:null;
         // Buscar en OC
         const ocLinea=ocSel?ocSel.lineas?.find(ol=>ol.cod===codI||ol.codp===codDoc):null;
@@ -160,7 +237,7 @@ Respondé SOLO con JSON:
         const result=await res.json();
         const parsed=JSON.parse((result.text||'').replace(/```json|```/g,'').trim());
         const lineas=(parsed.lineas||[]).map(l=>{
-          const codI=cruzar(l.cod,art,artIdx)||null;
+          const codI=cruzar(l.cod,l.desc||"",rec.meta.proveedor||"",art)||null;
           const a=codI?art[codI]:null;
           const ocLinea=ocSel?ocSel.lineas?.find(ol=>ol.cod===codI||ol.codp===l.cod):null;
           return{codDoc:l.cod,codI,desc:a?.desc||l.desc||'',cantRemito:Number(l.cant)||0,precioUnit:Number(l.precioUnit)||0,cantOC:ocLinea?.cantOC||null,bultos:l.bultos||null,artsPorBulto:null,cantFis:null,diff:null,ub:'',ok:null,obs:'',candidatos:[]};
@@ -169,7 +246,7 @@ Respondé SOLO con JSON:
         setIaStatus('');setEtapa('registro');
       }catch(e){setIaStatus('Error: '+e.message);}
     }
-  },[art,artIdx,ocSel,rec.meta.proveedor,saveRec,updMeta]);
+  },[art,ocSel,rec.meta.proveedor,saveRec,updMeta]);
 
   // ─── Control físico ───────────────────────────────────────────────────────
   const updLinea=useCallback((idx,field,val)=>{
@@ -433,7 +510,7 @@ ${etiquetas.map(n=>`<div class="etq">
                       {rec.lineas.map((l,i)=>{
                         const rowBg=l.ok===false?'rgba(248,113,113,.04)':l.ok===true?'rgba(74,222,128,.02)':'transparent';
                         const td=(c,s)=><td style={{padding:'4px 6px',borderBottom:`1px solid ${C.b2}`,fontSize:10,verticalAlign:'middle',...s}}>{c}</td>;
-                        const cands=buscar(l.desc,l.codDoc,rec.meta.proveedor,art).slice(0,5);
+                        const cands=buscar(l.desc,l.codDoc,rec.meta.proveedor,"","","","",art).slice(0,5);
                         return(
                           <tr key={i} style={{background:rowBg}}>
                             {td(i+1,{fontSize:9,color:C.mut})}
