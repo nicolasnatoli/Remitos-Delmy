@@ -3,6 +3,8 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import { SK, lsGet, lsSet, lsGetRaw, loadArt, getListaCompra } from '../../utils/db';
 
+async function apiFetch(path){const r=await fetch(path,{headers:{'Content-Type':'application/json'}});if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}
+
 const fn   = n => Number(n||0).toLocaleString('es-AR');
 const fp   = n => n>0 ? '$'+Number(n).toLocaleString('es-AR',{maximumFractionDigits:0}) : '—';
 const fpct = n => (n>=0?'+':'')+n.toFixed(1)+'%';
@@ -46,7 +48,7 @@ function cruzar(codExt,art,idx){
     const cpN=cp.replace(/^0+/,'');
     if(cpN&&codN&&codN.length>=3&&(cpN===codN||cpN.includes(codN)||codN.includes(cpN)))return cods[0];
   }
-  if(art[cod])return cod;
+  // No usar código interno como fallback — codDoc es siempre código proveedor
   return null;
 }
 
@@ -149,12 +151,40 @@ function NumIn({value,onChange,onEnterFix,color,disabled,width=72,placeholder='0
 }
 
 // ─── Cargar DB completa desde Redis + localStorage ────────────────────────────
+async function loadFromRedisIfEmpty(sk, expandFn, lsGetFn) {
+  // Intentar localStorage primero, si vacío buscar en Redis
+  const local = lsGetFn();
+  if (local && Object.keys(local).length > 10) return local;
+  try {
+    const { value, exists } = await apiFetch(`/api/store/${sk}`);
+    if (exists && value) {
+      // Cache en localStorage para esta sesión
+      try {
+        if (typeof value === 'string') localStorage.setItem(sk, value);
+        else localStorage.setItem(sk, JSON.stringify(value));
+      } catch {}
+      return expandFn(value);
+    }
+  } catch {}
+  return {};
+}
+
 async function loadDB(){
   const art=await loadArt(); // siempre expandido — lee de Redis
-  const stkC=lsGet(SK.stk,null); const stk=stkC?expandStk(stkC):{};
-  const vs=expandVent(lsGetRaw(SK.vs)||'');
-  const vq=expandVent(lsGetRaw(SK.vq)||'');
-  const vm=expandVent(lsGetRaw(SK.vm)||'');
+
+  // stk/ventas: localStorage primero, Redis como fallback
+  const stkC=lsGet(SK.stk,null);
+  const stk=stkC?expandStk(stkC):await loadFromRedisIfEmpty(SK.stk, expandStk, ()=>null).then(v=>Object.keys(v).length?v:{});
+
+  const vsRaw=lsGetRaw(SK.vs)||'';
+  const vs=vsRaw?expandVent(vsRaw):await loadFromRedisIfEmpty(SK.vs, v=>expandVent(typeof v==='string'?v:JSON.stringify(v)), ()=>null).then(v=>v||{});
+
+  const vqRaw=lsGetRaw(SK.vq)||'';
+  const vq=vqRaw?expandVent(vqRaw):await loadFromRedisIfEmpty(SK.vq, v=>expandVent(typeof v==='string'?v:JSON.stringify(v)), ()=>null).then(v=>v||{});
+
+  const vmRaw=lsGetRaw(SK.vm)||'';
+  const vm=vmRaw?expandVent(vmRaw):await loadFromRedisIfEmpty(SK.vm, v=>expandVent(typeof v==='string'?v:JSON.stringify(v)), ()=>null).then(v=>v||{});
+
   console.log('[DB] arts:',Object.keys(art).length,'stk:',Object.keys(stk).length,'vs:',Object.keys(vs).length,'vm:',Object.keys(vm).length);
   const sh=lsGet(SK.share,null);
   const planC=sh?.planC||lsGet(SK.plan,null);

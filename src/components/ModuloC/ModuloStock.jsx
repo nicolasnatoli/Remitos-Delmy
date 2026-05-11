@@ -1,7 +1,7 @@
 // ===== MÓDULO STOCK+ V5 =====
 import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
-import { SK, lsGet, lsSet, lsSetRaw, lsGetRaw, saveArt, loadArt, getMeta, saveMeta, getListaCompra, saveListaCompra, clearListaCompra } from '../../utils/db';
+import { SK, lsGet, lsSet, lsSetRaw, lsGetRaw, saveArt, loadArt, getMeta, saveMeta, getListaCompra, saveListaCompra, clearListaCompra, api } from '../../utils/db';
 
 const fn = n => Number(n||0).toLocaleString('es-AR');
 
@@ -281,13 +281,19 @@ export default function ModuloStock(){
         setMem(prev=>({...prev,art,meta}));
       } else if(tipo==='stk'){
         const stk=parseStk(wb);
-        lsSet(SK.stk,compactStk(stk));
+        const compact=compactStk(stk);
+        lsSet(SK.stk,compact);
+        // Guardar también en Redis para persistencia entre sesiones
+        api.set(SK.stk,compact).catch(e=>console.error('[Redis stk]',e.message));
         meta.stk={f:file.name,n:Object.keys(stk).length,t:Date.now()};
         saveMeta(meta);
         setMem(prev=>({...prev,stk,meta}));
       } else {
         const v=parseVentas(wb);
-        lsSetRaw(SK[tipo],compactVent(v));
+        const compactV=compactVent(v);
+        lsSetRaw(SK[tipo],compactV);
+        // Guardar también en Redis para persistencia entre sesiones
+        api.set(SK[tipo],compactV).catch(e=>console.error('[Redis vent]',e.message));
         meta[tipo]={f:file.name,n:Object.keys(v).length,t:Date.now()};
         saveMeta(meta);
         setMem(prev=>({...prev,[tipo]:v,meta}));

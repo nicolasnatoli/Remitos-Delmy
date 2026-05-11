@@ -16,7 +16,7 @@ function generarRC(proveedor){
 
 // ─── Cruce códigos (mismo que Compras) ────────────────────────────────────────
 function buildIdx(art){const idx={};for(const[cod,a]of Object.entries(art)){const cp=String(a.codp||'').trim();if(cp){if(!idx[cp])idx[cp]=[];idx[cp].push(cod);}const cpN=cp.replace(/^0+/,'');if(cpN&&cpN!==cp){if(!idx[cpN])idx[cpN]=[];idx[cpN].push(cod);}}return idx;}
-function cruzar(codExt,art,idx){if(!codExt)return null;const cod=String(codExt).trim();const codN=cod.replace(/^0+/,'');if(idx[cod]?.length)return idx[cod][0];if(idx[codN]?.length)return idx[codN][0];for(const[cp,cods]of Object.entries(idx)){const cpN=cp.replace(/^0+/,'');if(cpN&&codN&&(cpN===codN||cpN.includes(codN)||codN.includes(cpN)))return cods[0];}if(art[cod])return cod;return null;}
+function cruzar(codExt,art,idx){if(!codExt)return null;const cod=String(codExt).trim();const codN=cod.replace(/^0+/,'');if(idx[cod]?.length)return idx[cod][0];if(idx[codN]?.length)return idx[codN][0];for(const[cp,cods]of Object.entries(idx)){const cpN=cp.replace(/^0+/,'');if(cpN&&codN&&(cpN===codN||cpN.includes(codN)||codN.includes(cpN)))return cods[0];}return null;}
 
 function buscar(desc,codDoc,prov,art){
   if(!art||!Object.keys(art).length)return[];
