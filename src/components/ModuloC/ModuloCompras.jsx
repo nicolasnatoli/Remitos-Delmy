@@ -240,6 +240,9 @@ function enriquecerLinea(codDoc,cant,precioDoc,descDoc,prov,db){
   if(!db||!db.art)return{cod:codDoc,codp:codDoc,desc:descDoc||'',prov:prov||'',fam:'',cat:'',costoReal:0,pvMin:0,mostrador:0,cantOC:cant||0,dc:0,d1:0,d3:0,precioDoc:precioDoc||0,cantRemito:cant||0,stkDMCN:0,stkDM01:0,stkDM03:0,vs:0,vq:0,vm:0,reconocido:false,aprobado:false,rechazado:false,esSobrante:false};
   const codI=cruzar(codDoc,descDoc||"",prov||"",db.art)||codDoc;
   const a=db.art[codI]||{desc:descDoc||'',codp:codDoc,prov:'',fam:'',cat:'',costoReal:0,pvMin:0,mostrador:0};
+  // Determinar tipo de match: exacto solo si codp===codDoc
+  const codp=String(a.codp||'').trim();
+  const matchTipo=!db.art[codI]?'none':codp===String(codDoc).trim()?'exacto':codI!==codDoc?'sugerido':'none';
   const s=db.stk[codI]||{DM01:0,DM03:0,DMCN:0};
   const sh=lsGet(SK.share,null);
   const planC=sh?.planC||lsGet(SK.plan,null);
@@ -253,7 +256,8 @@ function enriquecerLinea(codDoc,cant,precioDoc,descDoc,prov,db){
     precioDoc:precioDoc||0, cantRemito:cant||0,
     stkDMCN:s.DMCN, stkDM01:s.DM01, stkDM03:s.DM03,
     vs:db.vs[codI]||0, vq:db.vq[codI]||0, vm:db.vm[codI]||0,
-    reconocido:!!(a.desc&&a.desc!==descDoc), // reconocido si tiene desc en la base
+    reconocido:!!(a.desc&&a.desc!==descDoc),
+    matchTipo, // 'exacto'|'sugerido'|'none'
     aprobado:false, rechazado:false, esSobrante:false,
   };
 }
@@ -441,7 +445,7 @@ export default function ModuloCompras(){
         const codpOC=new Set(prev.lineas.map(l=>l.codp));
         const sobrantes=[];
         for(const dl of docLineas){
-          const ci=cruzar(dl.cod,db.art)||dl.cod;
+          const ci=cruzar(dl.cod,dl.desc||"",OCdata.meta.proveedor||"",db.art)||dl.cod;
           if(!codsOC.has(ci)&&!codsOC.has(dl.cod)&&!codpOC.has(dl.cod)){
             sobrantes.push({...enriquecerLinea(dl.cod,dl.cant,dl.precio,dl.desc,OCdata.meta.proveedor||"",db),esSobrante:true});
           }
@@ -697,7 +701,8 @@ function EtCarga({OCdata,setOCdata,importarDesdeStock,fileRef,procesarDoc,onNext
 function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OCact,abrirModal,onBack,onNext}){
   if(!OCdata.lineas.length)return<div><Alrt cls="warn">Sin líneas. Volvé a Carga.</Alrt><button onClick={onBack} style={Btn()}>← Volver</button></div>;
 
-  const rec=OCdata.lineas.filter(l=>l.reconocido).length;
+  const rec=OCdata.lineas.filter(l=>l.reconocido&&l.matchTipo==='exacto').length;
+  const sugeridos=OCdata.lineas.filter(l=>l.reconocido&&l.matchTipo==='sugerido'&&!l.aprobado).length;
   const noRec=OCdata.lineas.filter(l=>!l.reconocido).length;
   const sobrantes=OCdata.lineas.filter(l=>l.esSobrante).length;
   const conFac=OCdata.lineas.some(l=>l.precioDoc>0);
@@ -714,7 +719,7 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
     <div>
       {/* KPIs */}
       <div style={{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:6,marginBottom:8}}>
-        {[{l:'LÍNEAS',v:OCdata.lineas.length,c:C.txt},{l:'RECONOCIDAS',v:rec,c:C.green},{l:'SIN RECONOCER',v:noRec,c:noRec>0?C.red:C.mut},{l:'SOBRANTES',v:sobrantes,c:sobrantes>0?C.ora:C.mut},{l:'PRECIO ↑',v:suben,c:suben>0?C.red:C.mut},{l:'PRECIO ↓',v:bajan,c:bajan>0?C.green:C.mut}].map(k=>(
+        {[{l:'LÍNEAS',v:OCdata.lineas.length,c:C.txt},{l:'EXACTAS',v:rec,c:C.green},{l:'SUGERIDAS',v:sugeridos,c:sugeridos>0?C.ora:C.mut},{l:'SIN RECONOCER',v:noRec,c:noRec>0?C.red:C.mut},{l:'SOBRANTES',v:sobrantes,c:sobrantes>0?C.ora:C.mut},{l:'PRECIO ↑',v:suben,c:suben>0?C.red:C.mut}].map(k=>(
           <div key={k.l} style={{background:C.p2,border:`1px solid ${C.b1}`,borderRadius:4,padding:'6px 9px'}}>
             <div style={{fontSize:7,color:C.mut,letterSpacing:'.07em',textTransform:'uppercase',marginBottom:2}}>{k.l}</div>
             <div style={{fontFamily:'Syne,sans-serif',fontSize:16,fontWeight:700,color:k.c}}>{k.v}</div>
@@ -758,14 +763,30 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
               const totStk=(l.stkDMCN||0)+(l.stkDM01||0)+(l.stkDM03||0);
               const sc=stkColor(totStk,l.vm||0,l.vq||0,l.vs||0);
               const subtotal=l.cantOC*(l.precioDoc||0);
-              const rowBg=l.esSobrante?'rgba(251,146,60,.04)':!l.reconocido?'rgba(248,113,113,.04)':diff!==null&&diff>0&&!l.aprobado?'rgba(248,113,113,.02)':'transparent';
+              const rowBg=l.esSobrante?'rgba(251,146,60,.04)':!l.reconocido?'rgba(248,113,113,.04)':l.matchTipo==='sugerido'&&!l.aprobado?'rgba(251,146,60,.04)':diff!==null&&diff>0&&!l.aprobado?'rgba(248,113,113,.02)':'transparent';
               let accion=null;
-              if(!l.reconocido)accion=<button onClick={()=>abrirModal(i)} style={{...Btn(C.acc,'rgba(240,192,64,.12)'),fontSize:9,padding:'2px 7px'}}>Resolver →</button>;
-              else if(diff!==null&&diff>0&&!l.aprobado)accion=<div style={{display:'flex',gap:2}}><button onClick={()=>aprobar(i,true)} style={{...Btn(C.green,'rgba(74,222,128,.1)'),fontSize:9,padding:'2px 4px'}}>✓</button><button onClick={()=>aprobar(i,false)} style={{...Btn(C.red,'rgba(248,113,113,.1)'),fontSize:9,padding:'2px 4px'}}>✗</button></div>;
-              else if(l.aprobado)accion=<span style={bStyle('ok')}>OK</span>;
-              else if(l.rechazado)accion=<span style={bStyle('err')}>✗</span>;
-              else if(l.esSobrante)accion=<span style={bStyle('ora')}>⚡ Sobrante</span>;
-              else accion=<span style={{fontSize:9,color:C.green}}>✓</span>;
+              if(!l.reconocido){
+                accion=<button onClick={()=>abrirModal(i)} style={{...Btn(C.acc,'rgba(240,192,64,.12)'),fontSize:9,padding:'2px 7px'}}>Resolver →</button>;
+              } else if(l.matchTipo==='sugerido'&&!l.aprobado&&!l.rechazado){
+                // Match sugerido — requiere confirmación
+                accion=<div style={{display:'flex',gap:2,flexDirection:'column',alignItems:'flex-end'}}>
+                  <span style={{fontSize:7,color:C.ora,marginBottom:1}}>⚡ SUGERIDO</span>
+                  <div style={{display:'flex',gap:2}}>
+                    <button onClick={()=>aprobar(i,true)} style={{...Btn(C.green,'rgba(74,222,128,.1)'),fontSize:9,padding:'2px 5px'}}>✓ OK</button>
+                    <button onClick={()=>abrirModal(i)} style={{...Btn(C.acc,'rgba(240,192,64,.1)'),fontSize:9,padding:'2px 5px'}}>↺</button>
+                  </div>
+                </div>;
+              } else if(diff!==null&&diff>0&&!l.aprobado){
+                accion=<div style={{display:'flex',gap:2}}><button onClick={()=>aprobar(i,true)} style={{...Btn(C.green,'rgba(74,222,128,.1)'),fontSize:9,padding:'2px 4px'}}>✓</button><button onClick={()=>aprobar(i,false)} style={{...Btn(C.red,'rgba(248,113,113,.1)'),fontSize:9,padding:'2px 4px'}}>✗</button></div>;
+              } else if(l.aprobado){
+                accion=<span style={bStyle('ok')}>✓ OK</span>;
+              } else if(l.rechazado){
+                accion=<span style={bStyle('err')}>✗</span>;
+              } else if(l.esSobrante){
+                accion=<span style={bStyle('ora')}>⚡ Sobrante</span>;
+              } else {
+                accion=<span style={{fontSize:9,color:C.green}}>✓ Exacto</span>;
+              }
               const td=(c,s)=><td style={{padding:'4px 5px',borderBottom:`1px solid ${C.b2}`,fontSize:10,verticalAlign:'middle',...s}}>{c}</td>;
               return(
                 <tr key={i} style={{background:rowBg}}>
