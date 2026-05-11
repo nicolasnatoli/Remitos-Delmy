@@ -26,6 +26,19 @@ const ESTADOS={
 };
 
 
+
+// Match de proveedor — tolerante a variaciones (S.A / SRL / S.R.L. / etc)
+function provMatch(provDoc, provBase) {
+  if (!provDoc || !provBase) return false;
+  const clean = s => s.toLowerCase().replace(/[.\s]/g,'').replace(/srl|sa|sas|sl/g,'');
+  const a = clean(provDoc); const b = clean(provBase);
+  if (a === b) return true;
+  // Al menos 2 palabras significativas en común
+  const wordsA = provDoc.toLowerCase().replace(/[^\w\s]/g,' ').split(/\s+/).filter(w=>w.length>2&&!['srl','s.a','s.r.l'].includes(w));
+  const wordsB = provBase.toLowerCase().replace(/[^\w\s]/g,' ').split(/\s+/).filter(w=>w.length>2&&!['srl','s.a','s.r.l'].includes(w));
+  const common = wordsA.filter(w => wordsB.some(wb=>wb.startsWith(w)||w.startsWith(wb)));
+  return common.length >= 1; // al menos 1 palabra clave en común
+}
 // ─── Cruce de códigos — 3 niveles con filtro proveedor ───────────────────────
 // Nivel 1 EXACTO:   codDoc === codp exacto → sin intervención
 // Nivel 2 PARCIAL:  codDoc contenido en codp o cod interno → confirmar + exportar
@@ -56,7 +69,7 @@ function cruzar(codDoc, descDoc, prov, art, ocLineas) {
   // Sin proveedor no se puede filtrar — no matchear
   if (!prov) return {cod:null, nivel:null};
   const artsProv = Object.entries(art).filter(([,a]) =>
-    a && (a.prov||'').toLowerCase() === prov.toLowerCase()
+    a && provMatch(prov, a.prov||'')
   );
 
   // Nivel 1: codp exacto (misma base, mismo proveedor)
@@ -98,7 +111,7 @@ function buscar(descDoc, codDoc, prov, famF, catF, marcaF, q, art) {
 
   for (const [k, a] of Object.entries(art)) {
     if (!a) continue;
-    const esMismo = prov && (a.prov||'').toLowerCase() === prov.toLowerCase();
+    const esMismo = prov ? provMatch(prov, a.prov||'') : false;
     if (famF && (a.fam||'') !== famF) continue;
     if (catF  && (a.cat||'') !== catF)  continue;
     if (marcaF && (a.marca||'') !== marcaF) continue;
@@ -233,7 +246,7 @@ async function loadDB(){
 
 function getFreq(prov,art){
   const fams={},cats={},marcas={};
-  Object.values(art).filter(a=>!prov||(a.prov||'').toLowerCase()===prov.toLowerCase()).forEach(a=>{
+  Object.values(art).filter(a=>!prov||provMatch(prov, a.prov||'')).forEach(a=>{
     if(a.fam)fams[a.fam]=(fams[a.fam]||0)+1;
     if(a.cat)cats[a.cat]=(cats[a.cat]||0)+1;
     if(a.marca)marcas[a.marca]=(marcas[a.marca]||0)+1;
@@ -437,10 +450,23 @@ export default function ModuloCompras(){
             return dl.cod===l.codp||dl.cod===l.cod||(ci&&ci===l.cod);
           });
           if(match){
-            // Actualizar precio y cantidad del remito, mantener todo lo demás
+            // Recalcular matchTipo con el código de la factura vs la OC
+            const {nivel:nivelFC}=cruzar(match.cod,match.desc||"",OCdata.meta.proveedor||"",db.art,prev.lineas);
+            // Si el codDoc de la FC es exactamente igual al codp → exacto
+            // Si está contenido en el codp → parcial_codp
+            const codDocFC=String(match.cod||'').trim();
+            const codpOC=String(l.codp||'').trim();
+            let matchTipoFC='none';
+            if(codDocFC===codpOC) matchTipoFC='exacto';
+            else if(codpOC.includes(codDocFC)) matchTipoFC='parcial_codp';
+            else if(l.cod.includes(codDocFC)) matchTipoFC='parcial_cod';
+            else matchTipoFC=nivelFC||'descripcion';
             return{...l,
+              codDocFC:match.cod,  // código original de la FC
               precioDoc:match.precio||l.precioDoc||0,
               cantRemito:match.cant||l.cantRemito||l.cantOC,
+              matchTipo:matchTipoFC,
+              aprobado:matchTipoFC==='exacto'?l.aprobado:false,
             };
           }
           return l;
@@ -451,9 +477,15 @@ export default function ModuloCompras(){
         const codpOC=new Set(prev.lineas.map(l=>l.codp));
         const sobrantes=[];
         for(const dl of docLineas){
-          const ci=cruzar(dl.cod,dl.desc||"",OCdata.meta.proveedor||"",db.art,prev.lineas).cod||dl.cod;
-          if(!codsOC.has(ci)&&!codsOC.has(dl.cod)&&!codpOC.has(dl.cod)){
-            sobrantes.push({...enriquecerLinea(dl.cod,dl.cant,dl.precio,dl.desc,OCdata.meta.proveedor||"",db,prev.lineas),esSobrante:true});
+          const ci=cruzar(dl.cod,dl.desc||"",OCdata.meta.proveedor||"",db.art,prev.lineas).cod;
+          const ciKey=ci||dl.cod;
+          // Verificar si alguna línea de la OC ya matchea con este código de FC
+          const yaEnOC=codsOC.has(ciKey)||codsOC.has(dl.cod)||codpOC.has(dl.cod)||
+            // También verificar si el código de FC está contenido en algún codp de la OC
+            prev.lineas.some(l=>String(l.codp||'').includes(String(dl.cod||'').trim())||
+              String(l.cod||'').includes(String(dl.cod||'').trim()));
+          if(!yaEnOC){
+            sobrantes.push({...enriquecerLinea(dl.cod,dl.cant,dl.precio,dl.desc,OCdata.meta.proveedor||"",db,prev.lineas),esSobrante:true,codDocFC:dl.cod});
           }
         }
 
@@ -503,8 +535,10 @@ export default function ModuloCompras(){
 
   const abrirModal=(idx)=>{
     const l=OCdata.lineas[idx];
+    // Usar proveedor de la OC como contexto principal
+    const provContexto=OCdata.meta.proveedor||l?.prov||db.provStock||'';
     setModal({open:true,idx,tab:'buscar',busqQ:'',selFam:'',selCat:'',selMarca:'',
-      nuevoForm:{cod:'',desc:l?.desc||'',codp:l?.codp||l?.cod||'',prov:l?.prov||db.provStock||OCdata.meta.proveedor||'',fam:'',cat:'',marca:'',costoReal:l?.precioDoc||0,pvMin:0,mostrador:0}});
+      nuevoForm:{cod:'',desc:l?.desc||'',codp:l?.codp||l?.cod||'',prov:provContexto,fam:'',cat:'',marca:'',costoReal:l?.precioDoc||0,pvMin:0,mostrador:0}});
   };
 
   const nuevaOC=()=>{
@@ -814,7 +848,7 @@ const rowBg=l.esSobrante?'rgba(251,146,60,.04)':!l.reconocido?'rgba(248,113,113,
                 <tr key={i} style={{background:rowBg}}>
                   {/* Indicador sobrante */}
                   {td(l.esSobrante?<span title="Sobrante" style={{color:C.ora}}>⚡</span>:l.otroProveedor?<span title="Otro proveedor" style={{color:C.vio}}>★</span>:'',{textAlign:'center',width:24})}
-                  {td(l.codp||l.cod,{fontSize:9,color:C.blue,fontFamily:'DM Mono,monospace'})}
+                  {td(l.codDocFC||l.codp||l.cod,{fontSize:9,color:l.codDocFC?C.acc:C.blue,fontFamily:'DM Mono,monospace'})}
                   {td(l.reconocido?l.cod:'—?',{fontSize:9,color:l.reconocido?C.teal:C.red,fontFamily:'DM Mono,monospace'})}
                   {td(<span title={l.desc} style={{display:'block',maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{l.desc||'—'}</span>)}
                   {td(l.fam||'—',{fontSize:9,color:C.mut})}
@@ -975,7 +1009,7 @@ function EtConfirmar({OCdata,saveOC,OCact,transicion,onBack}){
 // ─── MODAL ARTÍCULO NO RECONOCIDO ────────────────────────────────────────────
 function ModalArt({modal,setModal,linea,db,onAsignar,onNuevo,OCprov}){
   if(!linea)return null;
-  const prov=linea.prov||OCprov||'';
+  const prov=OCprov||linea.prov||''; // OC provider is the main context
   const freq=getFreq(prov,db.art);
   const res=buscar(linea.desc,linea.codp||linea.cod,prov,modal.selFam,modal.selCat,modal.selMarca,modal.busqQ,db.art);
   const palabras=(linea.desc||'').toLowerCase().split(/\s+/).filter(w=>w.length>2).slice(0,4).join(' · ');

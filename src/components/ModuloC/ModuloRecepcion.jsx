@@ -15,6 +15,19 @@ function generarRC(proveedor){
 }
 
 
+
+// Match de proveedor — tolerante a variaciones (S.A / SRL / S.R.L. / etc)
+function provMatch(provDoc, provBase) {
+  if (!provDoc || !provBase) return false;
+  const clean = s => s.toLowerCase().replace(/[.\s]/g,'').replace(/srl|sa|sas|sl/g,'');
+  const a = clean(provDoc); const b = clean(provBase);
+  if (a === b) return true;
+  // Al menos 2 palabras significativas en común
+  const wordsA = provDoc.toLowerCase().replace(/[^\w\s]/g,' ').split(/\s+/).filter(w=>w.length>2&&!['srl','s.a','s.r.l'].includes(w));
+  const wordsB = provBase.toLowerCase().replace(/[^\w\s]/g,' ').split(/\s+/).filter(w=>w.length>2&&!['srl','s.a','s.r.l'].includes(w));
+  const common = wordsA.filter(w => wordsB.some(wb=>wb.startsWith(w)||w.startsWith(wb)));
+  return common.length >= 1; // al menos 1 palabra clave en común
+}
 // ─── Cruce de códigos — reglas estrictas con filtro proveedor ─────────────────
 // Regla 1: codp exacto (filtro proveedor)
 // Regla 2: codDoc contenido TAL CUAL en codp (filtro proveedor)  
@@ -39,7 +52,7 @@ function cruzar(codDoc, descDoc, prov, art, ocLineas) {
   }
   if (!prov) return {cod:null, nivel:null};
   const artsProv = Object.entries(art).filter(([,a]) =>
-    a && (a.prov||'').toLowerCase() === prov.toLowerCase()
+    a && provMatch(prov, a.prov||'')
   );
   for (const [k, a] of artsProv) {
     if (String(a.codp||'').trim() === cod) return {cod:k, nivel:'exacto'};
@@ -74,7 +87,7 @@ function buscar(descDoc, codDoc, prov, famF, catF, marcaF, q, art) {
   const mismoProveedor = []; const otrosProveedor = [];
   for (const [k, a] of Object.entries(art)) {
     if (!a) continue;
-    const esMismo = prov && (a.prov||'').toLowerCase() === prov.toLowerCase();
+    const esMismo = prov ? provMatch(prov, a.prov||'') : false;
     if (famF && (a.fam||'') !== famF) continue;
     if (catF  && (a.cat||'') !== catF)  continue;
     const hay = (a.desc||'').toLowerCase();
@@ -630,7 +643,7 @@ ${etiquetas.map(n=>`<div class="etq">
           const l=rec.lineas[modalRec.idx];if(!l)return null;
           const prov=rec.meta.proveedor||'';
           const resBusq=buscar(l.desc,l.codDoc,prov,modalRec.selFam,'','',modalRec.busqQ,art);
-          const fams=[...new Set(Object.values(art).filter(a=>(a.prov||'').toLowerCase()===prov.toLowerCase()).map(a=>a.fam).filter(Boolean))].sort();
+          const fams=[...new Set(Object.values(art).filter(a=>provMatch(prov, a.prov||'')).map(a=>a.fam).filter(Boolean))].sort();
           return(
             <div style={{background:'rgba(0,0,0,.8)',padding:12,flexShrink:0}}>
               <div style={{background:C.panel,border:`1px solid ${C.b1}`,borderRadius:6,maxHeight:'65vh',display:'flex',flexDirection:'column'}}>
