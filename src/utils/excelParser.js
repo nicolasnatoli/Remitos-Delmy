@@ -28,9 +28,27 @@ export async function parseExcelRemitos(file) {
         const iEstado  = col('estado');
         const iFechaAn = col('fecha de anulación') !== -1 ? col('fecha de anulación') : col('anulacion');
         const iObs     = col('observaciones');
-        const iCod     = col('código') !== -1 ? col('código') : col('codigo');
-        const iDesc    = col('descripción') !== -1 ? col('descripción') : col('descripcion');
-        const iCant    = col('cantidad');
+        // Búsqueda flexible — el Excel puede tener variaciones de encoding
+        const iCod  = col('digo') !== -1 ? col('digo')   // có-digo sin tilde inicial
+                    : col('codigo') !== -1 ? col('codigo')
+                    : col('código') !== -1 ? col('código')
+                    : headers.findIndex(h => /cod/i.test(h) && !/sucursal|estado|anulac/i.test(h));
+        const iDesc = col('descripci') !== -1 ? col('descripci')
+                    : col('descripcion') !== -1 ? col('descripcion')
+                    : col('descripción') !== -1 ? col('descripción')
+                    : headers.findIndex(h => /desc/i.test(h));
+        const iCant = col('cantidad') !== -1 ? col('cantidad')
+                    : headers.findIndex(h => /cant/i.test(h));
+
+        // Debug — mostrar headers y columnas detectadas (solo primera carga)
+        console.log('[ExcelParser] Headers:', headers);
+        console.log('[ExcelParser] Cols detectadas:', {
+          fecha:iDate, hora:iHora, cat:iCat, remito:iRemito,
+          origen:iOrigen, destino:iDestino, estado:iEstado,
+          obs:iObs, cod:iCod, desc:iDesc, cant:iCant
+        });
+        const primeraFila = dataRows[0];
+        if(primeraFila) console.log('[ExcelParser] Primera fila:', primeraFila);
 
         const remitoMap = {};
 
