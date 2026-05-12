@@ -12,8 +12,22 @@ export async function parseExcelRemitos(file) {
         const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
         if (rows.length < 3) { resolve({}); return; }
 
-        const headers = rows[1].map(h => String(h).trim());
-        const dataRows = rows.slice(2);
+        // Detectar la fila de headers dinámicamente
+        // Buscar la fila que contiene "Remito" o "# Remito" — esa es la cabecera real
+        let headerRowIdx = 1; // default: fila 2 (índice 1)
+        for (let i = 0; i < Math.min(rows.length, 10); i++) {
+          const row = rows[i];
+          const hasRemito = row.some(c => String(c||'').toLowerCase().includes('remito'));
+          const hasFecha  = row.some(c => String(c||'').toLowerCase().includes('fecha'));
+          const hasCat    = row.some(c => String(c||'').toLowerCase().includes('categ'));
+          if (hasRemito && (hasFecha || hasCat)) { headerRowIdx = i; break; }
+        }
+
+        const headers = rows[headerRowIdx].map(h => String(h).trim());
+        const dataRows = rows.slice(headerRowIdx + 1).filter(r =>
+          // Filtrar filas vacías o de totales
+          r.some(c => c !== '' && c !== null && c !== undefined)
+        );
 
         // Mapeo de columnas
         const col = (name) => headers.findIndex(h => h.toLowerCase().includes(name.toLowerCase()));

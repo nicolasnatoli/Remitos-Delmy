@@ -505,12 +505,12 @@ export default function ModuloCompras(){
         // Para cada línea del doc, buscar su correspondiente en la OC
         const lineasActualizadas=prev.lineas.map(l=>{
           const match=docLineas.find(dl=>{
-            const ci=cruzar(dl.cod,dl.desc||"",OCdata.meta.proveedor||"",db.art,prev.lineas).cod;
+            const ci=cruzar(dl.cod,dl.desc||"",meta.proveedor||docMeta.proveedor||"",db.art,prev.lineas).cod;
             return dl.cod===l.codp||dl.cod===l.cod||(ci&&ci===l.cod);
           });
           if(match){
             // Recalcular matchTipo con el código de la factura vs la OC
-            const {nivel:nivelFC}=cruzar(match.cod,match.desc||"",OCdata.meta.proveedor||"",db.art,prev.lineas);
+            const {nivel:nivelFC}=cruzar(match.cod,match.desc||"",meta.proveedor||docMeta.proveedor||"",db.art,prev.lineas);
             // Si el codDoc de la FC es exactamente igual al codp → exacto
             // Si está contenido en el codp → parcial_codp
             const codDocFC=String(match.cod||'').trim();
@@ -537,7 +537,7 @@ export default function ModuloCompras(){
         const codpOC=new Set(prev.lineas.map(l=>l.codp));
         const sobrantes=[];
         for(const dl of docLineas){
-          const ci=cruzar(dl.cod,dl.desc||"",OCdata.meta.proveedor||"",db.art,prev.lineas).cod;
+          const ci=cruzar(dl.cod,dl.desc||"",meta.proveedor||docMeta.proveedor||"",db.art,prev.lineas).cod;
           const ciKey=ci||dl.cod;
           // Verificar si alguna línea de la OC ya matchea con este código de FC
           const yaEnOC=codsOC.has(ciKey)||codsOC.has(dl.cod)||codpOC.has(dl.cod)||
@@ -545,7 +545,7 @@ export default function ModuloCompras(){
             prev.lineas.some(l=>String(l.codp||'').includes(String(dl.cod||'').trim())||
               String(l.cod||'').includes(String(dl.cod||'').trim()));
           if(!yaEnOC){
-            sobrantes.push({...enriquecerLinea(dl.cod,dl.cant,dl.precio,dl.desc,OCdata.meta.proveedor||"",db,prev.lineas),esSobrante:true,codDocFC:dl.cod,cantFC:dl.cant||0});
+            sobrantes.push({...enriquecerLinea(dl.cod,dl.cant,dl.precio,dl.desc,meta.proveedor||docMeta.proveedor||"",db,prev.lineas),esSobrante:true,codDocFC:dl.cod,cantFC:dl.cant||0});
           }
         }
 
@@ -554,7 +554,8 @@ export default function ModuloCompras(){
         return updated;
       });
     } else {
-      const lineas=docLineas.map(dl=>enriquecerLinea(dl.cod,dl.cant,dl.precio,dl.desc,OCdata.meta.proveedor||"",db,OCdata.lineas));
+      const provDoc=docMeta.proveedor||OCdata.meta.proveedor||"";
+      const lineas=docLineas.map(dl=>enriquecerLinea(dl.cod,dl.cant,dl.precio,dl.desc,provDoc,db,[]));
       const prov=docMeta.proveedor||lineas.find(l=>l.prov)?.prov||'';
       const id='oc_'+Date.now();
       const data={meta:{proveedor:prov,fecha:new Date().toISOString().slice(0,10),documento:docMeta.nDocumento||'',origen:'Documento',estado:'generada',historial:[{estado:'generada',ts:now(),label:nowLabel(),usuario:'Operario',desdePrev:0}]},lineas};
