@@ -156,8 +156,11 @@ function calcDiff(cr,pd){if(!cr||!pd)return null;return((pd-cr)/cr)*100;}
 
 // ─── Estado completo de línea OC vs FC ───────────────────────────────────────
 function estadoLinea(l) {
-  const enFC = l.precioDoc > 0 || l.cantRemito > 0;
-  const cantFC = l.cantRemito || 0;
+  // enFC: verdadero SOLO si la factura fue cargada Y este artículo apareció en ella
+  // l.cantFC se setea únicamente al cruzar con la FC (no viene de la OC)
+  const conFac = l.precioDoc > 0 || l.cantFC > 0;  // ¿hay FC cargada para esta línea?
+  const enFC = conFac;
+  const cantFC = l.cantFC || 0;  // cantidad según FC — 0 si no vino en la FC
   const cantOC = l.cantOC || 0;
   const precioFC = l.precioDoc || 0;
   const precioCR = l.costoReal || 0;
@@ -491,6 +494,7 @@ export default function ModuloCompras(){
             else matchTipoFC=nivelFC||'descripcion';
             return{...l,
               codDocFC:match.cod,  // código original de la FC
+              cantFC:match.cant||0, // cantidad según FC — campo dedicado
               precioDoc:match.precio||l.precioDoc||0,
               cantRemito:match.cant||l.cantRemito||l.cantOC,
               matchTipo:matchTipoFC,
@@ -513,7 +517,7 @@ export default function ModuloCompras(){
             prev.lineas.some(l=>String(l.codp||'').includes(String(dl.cod||'').trim())||
               String(l.cod||'').includes(String(dl.cod||'').trim()));
           if(!yaEnOC){
-            sobrantes.push({...enriquecerLinea(dl.cod,dl.cant,dl.precio,dl.desc,OCdata.meta.proveedor||"",db,prev.lineas),esSobrante:true,codDocFC:dl.cod});
+            sobrantes.push({...enriquecerLinea(dl.cod,dl.cant,dl.precio,dl.desc,OCdata.meta.proveedor||"",db,prev.lineas),esSobrante:true,codDocFC:dl.cod,cantFC:dl.cant||0});
           }
         }
 
@@ -843,7 +847,8 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
               const diff=calcDiff(l.costoReal,l.precioDoc);
               const totStk=(l.stkDMCN||0)+(l.stkDM01||0)+(l.stkDM03||0);
               const sc=stkColor(totStk,l.vm||0,l.vq||0,l.vs||0);
-              const subtotal=l.cantRemito>0?(l.cantRemito*(l.precioDoc||0)):(l.cantOC*(l.precioDoc||0));
+              const cantFCrow=l.cantFC||0;
+              const subtotal=cantFCrow>0?(cantFCrow*(l.precioDoc||0)):l.esSobrante?(l.cantOC*(l.precioDoc||0)):0;
               const est=estadoLinea(l);
               const esParcial=est==='PARCIAL_CODP'||est==='PARCIAL_DESC';
               const estCfg=ESTADO_CONFIG[est]||ESTADO_CONFIG.SIN_RECONOCER;
@@ -895,8 +900,13 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
                   {td(l.vm||'—',{textAlign:'right',fontSize:9,color:C.mut})}
                   {/* CANT OC */}
                   {td(<NumIn value={l.cantOC} onChange={v=>updLinea(i,'cantOC',v)} color={est==='NO_ENTREGADO'?C.red:C.txt} width={50} />,{textAlign:'right',padding:'3px 4px'})}
-                  {/* CANT FC — rojo si falta, teal si sobra */}
-                  {td(l.cantRemito>0?<span style={{color:l.cantRemito<l.cantOC?C.red:l.cantRemito>l.cantOC?C.teal:C.green,fontWeight:600}}>{l.cantRemito}</span>:<span style={{color:C.red,fontSize:9}}>—</span>,{textAlign:'right'})}
+                  {/* CANT FC — rojo si falta, teal si sobra, — si no vino en FC */}
+                  {td((()=>{
+                    const cf=l.cantFC||0;
+                    if(!cf&&!l.esSobrante)return <span style={{color:C.red,fontSize:9,fontWeight:600}}>—</span>;
+                    const color=cf<l.cantOC?C.red:cf>l.cantOC?C.teal:C.green;
+                    return <span style={{color,fontWeight:600}}>{cf||'—'}</span>;
+                  })(),{textAlign:'right'})}
                   {td(<NumIn value={l.precioDoc} onChange={v=>updLinea(i,'precioDoc',v)} color={C.acc} width={77} />,{textAlign:'right',padding:'3px 4px'})}
                   {td(fp(l.costoReal),{textAlign:'right',color:C.mut})}
                   {td(fp(l.mostrador),{textAlign:'right',color:C.blue})}
@@ -911,7 +921,7 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
               <td colSpan={6} style={{padding:'5px 5px',fontSize:9,color:C.mut,textAlign:'right',borderTop:`1px solid ${C.b1}`}}>TOTALES →</td>
               <td colSpan={7} style={{padding:'5px 5px',borderTop:`1px solid ${C.b1}`}}></td>
               <td style={{padding:'5px 5px',textAlign:'right',borderTop:`1px solid ${C.b1}`,fontSize:10,fontWeight:600}}>{fn(OCdata.lineas.reduce((s,l)=>s+l.cantOC,0))}</td>
-              <td style={{padding:'5px 5px',textAlign:'right',borderTop:`1px solid ${C.b1}`,fontSize:10,fontWeight:600,color:C.acc}}>{fn(OCdata.lineas.reduce((s,l)=>s+(l.cantRemito||0),0))}</td>
+              <td style={{padding:'5px 5px',textAlign:'right',borderTop:`1px solid ${C.b1}`,fontSize:10,fontWeight:600,color:C.acc}}>{fn(OCdata.lineas.reduce((s,l)=>s+(l.cantFC||0),0))}</td>
               <td colSpan={4} style={{padding:'5px 5px',borderTop:`1px solid ${C.b1}`}}></td>
               <td style={{padding:'5px 5px',textAlign:'right',borderTop:`1px solid ${C.b1}`,fontSize:10,color:C.acc,fontWeight:700}}>${fn(OCdata.lineas.reduce((s,l)=>s+(l.cantRemito>0?l.cantRemito*(l.precioDoc||0):l.cantOC*(l.precioDoc||0)),0))}</td>
               <td style={{padding:'5px 5px',borderTop:`1px solid ${C.b1}`}}></td>

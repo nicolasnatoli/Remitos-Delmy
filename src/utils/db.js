@@ -16,8 +16,56 @@ export const SK = {
   ocs:    'dm_ocs_v3',
   rec:    'dm_rec_v3',
   nuevos: 'dm_nuevos_art',
-  lista:  'dm_lista_compra',  // listado activo de compra
+  lista:  'dm_lista_compra',
+  combos: 'dm_combos_v1',    // tabla de combos y componentes
 };
+
+// ─── Combos ───────────────────────────────────────────────────────────────────
+export async function loadCombos() {
+  try {
+    const { value, exists } = await api.get(SK.combos);
+    if (exists && value && Object.keys(value).length > 0) return value;
+  } catch {}
+  try {
+    const local = localStorage.getItem(SK.combos);
+    if (local) return JSON.parse(local);
+  } catch {}
+  return {};
+}
+
+export async function saveCombos(combos) {
+  try { localStorage.setItem(SK.combos, JSON.stringify(combos)); } catch {}
+  return api.set(SK.combos, combos);
+}
+
+// Expandir un remito: si una línea es un combo, devuelve sus componentes unitarios
+// Si no es combo, devuelve la línea tal cual
+export function expandirLineasConCombos(lineas, combos) {
+  if (!combos || !Object.keys(combos).length) return lineas;
+  const expandidas = [];
+  for (const l of lineas) {
+    const combo = combos[l.cod];
+    if (combo && combo.componentes?.length > 0) {
+      // Es un combo — expandir en componentes
+      for (const comp of combo.componentes) {
+        expandidas.push({
+          ...l,
+          cod:        comp.cod,
+          desc:       comp.desc,
+          cant:       l.cant * comp.cant,
+          esCombo:    true,
+          codCombo:   l.cod,
+          descCombo:  combo.desc,
+          cantCombo:  l.cant,
+          cantPorUn:  comp.cant,
+        });
+      }
+    } else {
+      expandidas.push(l);
+    }
+  }
+  return expandidas;
+}
 
 // ─── localStorage ─────────────────────────────────────────────────────────────
 export const lsGet    = (k,d=null)  => { try { const v=localStorage.getItem(k); return v?JSON.parse(v):d; } catch { return d; } };

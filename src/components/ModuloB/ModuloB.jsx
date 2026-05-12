@@ -1,16 +1,19 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { storage, KEYS, mergeRemitos } from '../../utils/storage';
 import { parseExcelRemitos } from '../../utils/excelParser';
+import { loadCombos, saveCombos } from '../../utils/db';
 import Dashboard from './Dashboard';
 import TabPedidos from './TabPedidos';
 import TabPendientes from './TabPendientes';
 import TabAnomalias from './TabAnomalias';
+import TabCombos from './TabCombos';
 
 const TABS = [
   { id: 'dashboard',  label: '◈ Dashboard' },
   { id: 'pedidos',    label: '▤ Pedidos' },
   { id: 'pendientes', label: '⧖ Pendientes' },
   { id: 'anomalias',  label: '⚠ Anomalías' },
+  { id: 'combos',     label: '⊕ Combos' },
 ];
 
 export default function ModuloB() {
@@ -20,6 +23,35 @@ export default function ModuloB() {
   const [lastLoad, setLastLoad] = useState(null);
   const [loadStats, setLoadStats] = useState(null);
   const [dragOver, setDragOver] = useState(false);
+  const [combos, setCombos] = useState({});
+  const [combosLoaded, setCombosLoaded] = useState(false);
+  const [combosStats, setCombosStats] = useState(null);
+  const combosFileRef = useRef();
+
+  useEffect(() => {
+    loadCombos().then(c => {
+      if (c && Object.keys(c).length > 0) {
+        setCombos(c); setCombosLoaded(true);
+      }
+    });
+  }, []);
+
+  const handleCombosFile = useCallback(async (file) => {
+    if (!file || !file.name.includes('.json')) {
+      alert('Subí el archivo combos_delmy.json generado por el sistema');
+      return;
+    }
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      await saveCombos(data);
+      setCombos(data);
+      setCombosLoaded(true);
+      const total = Object.keys(data).length;
+      const multiComp = Object.values(data).filter(c => c.componentes?.length > 1).length;
+      setCombosStats({ total, multiComp, archivo: file.name });
+    } catch(e) { alert('Error al procesar el archivo: ' + e.message); }
+  }, []);
 
   const handleFile = useCallback(async (file) => {
     if (!file) return;
@@ -123,9 +155,10 @@ export default function ModuloB() {
         ) : (
           <>
             {tab === 'dashboard'  && <Dashboard  remitos={remitos} />}
-            {tab === 'pedidos'    && <TabPedidos  remitos={remitos} />}
-            {tab === 'pendientes' && <TabPendientes remitos={remitos} />}
+            {tab === 'pedidos'    && <TabPedidos  remitos={remitos} combos={combos} />}
+            {tab === 'pendientes' && <TabPendientes remitos={remitos} combos={combos} />}
             {tab === 'anomalias'  && <TabAnomalias  remitos={remitos} />}
+            {tab === 'combos'     && <TabCombos combos={combos} onLoad={handleCombosFile} loaded={combosLoaded} stats={combosStats} fileRef={combosFileRef} />}
           </>
         )}
       </div>

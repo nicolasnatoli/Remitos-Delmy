@@ -286,6 +286,18 @@ Respondé SOLO con JSON:
     }
   },[art,ocSel,rec.meta.proveedor,saveRec,updMeta]);
 
+  // Líneas de OC que NO vinieron en el remito → aparecen como faltantes en E4
+  const lineasFaltantesOC = React.useMemo(()=>{
+    if(!ocSel?.lineas?.length) return [];
+    const codsRemito=new Set(rec.lineas.map(l=>l.codI||l.codDoc));
+    return ocSel.lineas.filter(ol=>!codsRemito.has(ol.cod)&&!codsRemito.has(ol.codp)).map(ol=>({
+      codDoc:ol.codp||ol.cod, codI:ol.cod, desc:ol.desc||'', 
+      cantOC:ol.cantOC||0, cantRemito:0, cantFis:0,
+      matchTipo:'none', ok:false, diff:-(ol.cantOC||0),
+      ub:'', bultos:null, artsPorBulto:null, esFaltanteOC:true,
+    }));
+  },[rec.lineas, ocSel]);
+
   // ─── Control físico ───────────────────────────────────────────────────────
   const updLinea=useCallback((idx,field,val)=>{
     setRec(prev=>{
@@ -372,7 +384,15 @@ ${etiquetas.map(n=>`<div class="etq">
 
   const ETAPAS=[{id:'documento',n:1,l:'DOCUMENTO',s:'Remito/Factura'},{id:'registro',n:2,l:'REGISTRO',s:'Datos llegada'},{id:'control',n:3,l:'CONTROL',s:'Verificación física'},{id:'validacion',n:4,l:'VALIDACIÓN',s:'OC vs Físico'},{id:'cierre',n:5,l:'CIERRE',s:'Confirmar'}];
   const etIdx=ETAPAS.findIndex(e=>e.id===etapa);
-  const stats={total:rec.lineas.length,conformes:rec.lineas.filter(l=>l.ok===true).length,faltantes:rec.lineas.filter(l=>l.ok===false).length,sinCtrl:rec.lineas.filter(l=>l.cantFis===null).length};
+  const todasLineasE4=React.useMemo(()=>[...rec.lineas,...lineasFaltantesOC],[rec.lineas,lineasFaltantesOC]);
+  const stats={
+    total:   todasLineasE4.length,
+    conformes: rec.lineas.filter(l=>l.ok===true).length,
+    faltantes: rec.lineas.filter(l=>l.ok===false).length + lineasFaltantesOC.length,
+    sinCtrl:   rec.lineas.filter(l=>l.cantFis===null&&!l.esFaltanteOC).length,
+    faltantesOC: lineasFaltantesOC.length,
+    recepcionParcial: lineasFaltantesOC.length > 0,
+  };
 
   return(
     <div style={{display:'flex',flexDirection:'column',height:'calc(100vh - 56px)',background:C.bg}}>
@@ -540,7 +560,7 @@ ${etiquetas.map(n=>`<div class="etq">
                       </tr>
                     </thead>
                     <tbody>
-                      {rec.lineas.map((l,i)=>{
+                      {todasLineasE4.map((l,i)=>{
                         const rowBg=l.ok===false?'rgba(248,113,113,.04)':l.ok===true?'rgba(74,222,128,.02)':'transparent';
                         const td=(c,s)=><td style={{padding:'4px 6px',borderBottom:`1px solid ${C.b2}`,fontSize:10,verticalAlign:'middle',...s}}>{c}</td>;
                         return(
@@ -610,9 +630,11 @@ ${etiquetas.map(n=>`<div class="etq">
                 </div>
               ))}
             </div>
-            {stats.faltantes>0&&<Alrt cls="err">✗ {stats.faltantes} artículos con faltante físico vs remito</Alrt>}
-            {stats.sinCtrl>0&&<Alrt cls="warn">⚠ {stats.sinCtrl} artículos sin controlar — volvé a E3</Alrt>}
-            {stats.faltantes===0&&stats.sinCtrl===0&&<Alrt cls="ok">✓ Recepción conforme — todos controlados sin diferencias</Alrt>}
+            {stats.faltantesOC>0&&<Alrt cls="err">✗ {stats.faltantesOC} artículo(s) de la OC NO vinieron en el remito — recepción PARCIAL</Alrt>}
+            {stats.faltantes>0&&!stats.faltantesOC&&<Alrt cls="err">✗ {stats.faltantes} artículo(s) con faltante físico vs remito</Alrt>}
+            {stats.sinCtrl>0&&<Alrt cls="warn">⚠ {stats.sinCtrl} artículo(s) sin controlar — volvé a E3 para completar</Alrt>}
+            {stats.faltantes===0&&stats.sinCtrl===0&&stats.faltantesOC===0&&<Alrt cls="ok">✓ Recepción conforme — todos los artículos de la OC recibidos y controlados</Alrt>}
+            {stats.faltantes===0&&stats.sinCtrl===0&&stats.faltantesOC>0&&<Alrt cls="warn">⚠ Recepción parcial — {stats.faltantesOC} artículo(s) pendientes de entrega por parte del proveedor</Alrt>}
 
             <div style={{overflowX:'auto',background:C.panel,border:`1px solid ${C.b1}`,borderRadius:5,marginBottom:10}}>
               <table style={{borderCollapse:'collapse',width:'100%',minWidth:900}}>
@@ -622,7 +644,7 @@ ${etiquetas.map(n=>`<div class="etq">
                   ))}
                 </tr></thead>
                 <tbody>
-                  {rec.lineas.map((l,i)=>{
+                  {todasLineasE4.map((l,i)=>{
                     const ocLinea=ocSel?ocSel.lineas?.find(ol=>ol.cod===l.codI||ol.codp===l.codDoc):null;
                     const cantOC=ocLinea?.cantOC??l.cantOC??null;
                     const difRO=cantOC!==null?(l.cantRemito||0)-cantOC:null;
@@ -630,7 +652,7 @@ ${etiquetas.map(n=>`<div class="etq">
                     const estado=l.cantFis===null?{t:'Sin controlar',c:C.mut}:l.cantFis>=(l.cantRemito||0)?{t:'✓ Conforme',c:C.green}:{t:'✗ Faltante',c:C.red};
                     const td=(c,s)=><td style={{padding:'5px 6px',borderBottom:`1px solid ${C.b2}`,fontSize:10,verticalAlign:'middle',...s}}>{c}</td>;
                     return(
-                      <tr key={i} style={{background:l.ok===false?'rgba(248,113,113,.04)':l.ok===true?'rgba(74,222,128,.02)':'transparent'}}>
+                      <tr key={i} style={{background:l.esFaltanteOC?'rgba(248,113,113,.08)':l.ok===false?'rgba(248,113,113,.04)':l.ok===true?'rgba(74,222,128,.02)':'transparent'}}>
                         {td(l.codI||l.codDoc||'—',{fontSize:9,color:C.teal,fontFamily:'DM Mono,monospace'})}
                         {td(<span title={l.desc} style={{display:'block',maxWidth:170,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{l.desc||'—'}</span>)}
                         {td(cantOC??'—',{textAlign:'right',color:cantOC?C.blue:C.mut})}
@@ -726,8 +748,11 @@ ${etiquetas.map(n=>`<div class="etq">
                 <span style={{fontFamily:'Syne,sans-serif',fontSize:13,fontWeight:700}}>E5 — Cierre de recepción</span>
               </div>
               <div style={{padding:14}}>
-                <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:12}}>
-                  {[{l:'ARTÍCULOS',v:stats.total,c:C.txt},{l:'CONFORMES',v:stats.conformes,c:C.green},{l:'FALTANTES',v:stats.faltantes,c:stats.faltantes>0?C.red:C.mut},{l:'SIN UBICAR',v:rec.lineas.filter(l=>!l.ub).length,c:rec.lineas.filter(l=>!l.ub).length>0?C.ora:C.mut}].map(k=>(
+                {lineasFaltantesOC.length>0&&<div style={{marginBottom:10,padding:'8px 12px',background:'rgba(248,113,113,.08)',border:'1px solid rgba(248,113,113,.2)',borderRadius:4,fontSize:11,color:C.red}}>
+                ⚠ RECEPCIÓN PARCIAL — {lineasFaltantesOC.length} artículo(s) de la OC no recibidos: {lineasFaltantesOC.map(l=>l.desc?.slice(0,20)||l.codDoc).join(' · ')}
+              </div>}
+              <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:12}}>
+                  {[{l:'ARTÍCULOS OC',v:todasLineasE4.length,c:C.txt},{l:'CONFORMES',v:stats.conformes,c:C.green},{l:'FALTANTES',v:stats.faltantes,c:stats.faltantes>0?C.red:C.mut},{l:'SIN OC',v:lineasFaltantesOC.length,c:lineasFaltantesOC.length>0?C.red:C.mut}].map(k=>(
                     <div key={k.l} style={{background:C.p2,border:`1px solid ${C.b1}`,borderRadius:4,padding:'8px 10px',textAlign:'center'}}>
                       <div style={{fontSize:8,color:C.mut,letterSpacing:'.07em',textTransform:'uppercase',marginBottom:3}}>{k.l}</div>
                       <div style={{fontFamily:'Syne,sans-serif',fontSize:19,fontWeight:700,color:k.c}}>{k.v}</div>
@@ -769,7 +794,17 @@ ${etiquetas.map(n=>`<div class="etq">
                     ?<Alrt cls="ok" style={{margin:0,padding:'6px 14px'}}>✓ Cerrada {new Date(rec.fechaCierre).toLocaleString('es-AR')}</Alrt>
                     :<button onClick={()=>{
   if(!window.confirm('¿Confirmar cierre de recepción? Se guardará en el historial y se limpiará la pantalla.'))return;
-  const cerrada={...rec,cerrada:true,fechaCierre:now()};
+  const estadoRec=lineasFaltantesOC.length>0?'parcial':
+    rec.lineas.some(l=>l.ok===false)?'con_diferencias':'completa';
+  const cerrada={...rec,cerrada:true,fechaCierre:now(),estadoRec,
+    resumen:{
+      total:todasLineasE4.length,
+      conformes:stats.conformes,
+      faltantes:stats.faltantes,
+      faltantesOC:stats.faltantesOC,
+      sinCtrl:stats.sinCtrl,
+    }
+  };
   // Guardar en historial
   const hist=JSON.parse(localStorage.getItem('dm_rec_hist')||'[]');
   hist.unshift(cerrada);

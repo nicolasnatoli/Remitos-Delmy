@@ -1,190 +1,123 @@
-import React, { useMemo } from 'react';
+import React from 'react';
 import { usePedidos } from '../../hooks/usePedidos';
-import { esEntrega, esError, hoy, formatFecha, ultimosCinco } from '../../utils/remitos';
+import { formatFecha } from '../../utils/remitos';
+
+const C = {
+  panel:'#111420',b1:'#1e2133',b2:'#181b27',acc:'#f0c040',green:'#4ade80',
+  red:'#f87171',blue:'#60a5fa',teal:'#2dd4bf',ora:'#fb923c',
+  txt:'#e8eaf0',mut:'#6b7280',ambar:'#f0c040',azul:'#60a5fa',
+};
+
+function SeccionAnomalia({ titulo, items, tipo, render }) {
+  const border = { err: C.red, warn: C.ambar, info: C.azul }[tipo];
+  if (items.length === 0) return (
+    <div style={{ background: C.panel, border: `1px solid ${C.b1}`, borderRadius: 8, padding: '12px 14px' }}>
+      <div style={{ fontSize: 10, color: C.mut, marginBottom: 4, fontWeight: 600 }}>{titulo}</div>
+      <div style={{ fontSize: 11, color: C.green }}>✓ Sin anomalías en esta categoría</div>
+    </div>
+  );
+  return (
+    <div style={{ background: C.panel, border: `1px solid ${C.b1}`, borderRadius: 8, overflow: 'hidden' }}>
+      <div style={{ padding: '10px 14px', borderBottom: `1px solid ${C.b1}`, display: 'flex', alignItems: 'center', gap: 8, borderLeft: `3px solid ${border}` }}>
+        <span style={{ color: border, fontSize: 14 }}>{tipo === 'err' ? '✕' : '⚠'}</span>
+        <span style={{ fontSize: 11, fontWeight: 600, color: C.txt }}>{titulo}</span>
+        <span style={{ marginLeft: 'auto', fontSize: 10, color: border, fontWeight: 700 }}>{items.length}</span>
+      </div>
+      <div>{items.map((item, i) => render(item, i))}</div>
+    </div>
+  );
+}
 
 export default function TabAnomalias({ remitos }) {
-  const { pedidosConEstado, entregas, todos } = usePedidos(remitos);
-  const hoyStr = hoy();
+  const { anomalias } = usePedidos(remitos);
+  const { recepcionesSinConfirmar, entregasSinReferencia, erroresSinResolver } = anomalias;
 
-  const { sinConfirmar, sinRef, errores } = useMemo(() => {
-    // 1. Recepciones sin confirmar en el día
-    const sinConfirmar = entregas.filter(e => e.fecha === hoyStr && e.estado === 'En tránsito');
+  const totalAnomalias = recepcionesSinConfirmar.length + entregasSinReferencia.length + erroresSinResolver.length;
 
-    // 2. Entregas sin referencia a pedido
-    const pedidoTags = new Set(pedidosConEstado.map(p => ultimosCinco(p.remito)));
-    const sinRef = entregas.filter(e => {
-      if (!esEntrega(e.categoria)) return false;
-      const hasTag = e.obs && [...pedidoTags].some(t => e.obs.includes(t));
-      if (hasTag) return false;
-      // Fallback: match por artículo/sucursal
-      const pMatch = pedidosConEstado.find(p =>
-        p.origen === e.destino &&
-        e.fecha >= p.fecha &&
-        e.lineas.some(el => p.lineas.some(pl => pl.cod === el.cod))
-      );
-      return !pMatch;
-    });
-
-    // 3. Errores de remito
-    const errores = todos.filter(r => {
-      if (!esError(r.categoria)) return false;
-      const sinResolver = r.estado === 'En tránsito';
-      const hasTag = r.obs && [...pedidoTags].some(t => r.obs.includes(t));
-      return sinResolver || !hasTag;
-    });
-
-    return { sinConfirmar, sinRef, errores };
-  }, [pedidosConEstado, entregas, todos, hoyStr]);
-
-  const total = sinConfirmar.length + sinRef.length + errores.length;
+  const row = (remito, cols) => (
+    <div key={remito} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', borderBottom: `1px solid ${C.b2}` }}>
+      {cols}
+    </div>
+  );
 
   return (
-    <div>
-      {/* Resumen */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 24 }}>
-        <AnomaliaKPI label="Recepciones sin confirmar" value={sinConfirmar.length} color="var(--naranja)" />
-        <AnomaliaKPI label="Entregas sin referencia" value={sinRef.length} color="var(--ambar)" />
-        <AnomaliaKPI label="Errores sin resolver" value={errores.length} color="var(--rojo)" />
-      </div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
 
-      {total === 0 ? (
-        <div style={{ textAlign: 'center', padding: 60 }}>
-          <div style={{ fontSize: 36, marginBottom: 12 }}>✓</div>
-          <div style={{ color: 'var(--verde)', fontFamily: 'var(--font-syne)', fontSize: 18 }}>Sin anomalías detectadas</div>
-          <div style={{ color: 'var(--text-3)', fontSize: 12, marginTop: 6 }}>Todos los remitos están en orden</div>
+      {totalAnomalias === 0 && (
+        <div style={{ textAlign: 'center', padding: '60px 20px', color: C.mut }}>
+          <div style={{ fontSize: 40, marginBottom: 12, opacity: 0.3 }}>✓</div>
+          <div style={{ fontFamily: 'Syne,sans-serif', fontSize: 18, color: C.green, marginBottom: 6 }}>Sin anomalías</div>
+          <div style={{ fontSize: 13 }}>Operación normal — todos los remitos en orden</div>
         </div>
-      ) : (
-        <>
-          {/* 1. Recepciones sin confirmar */}
-          {sinConfirmar.length > 0 && (
-            <AnomaliaSection
-              titulo="Recepciones sin confirmar hoy"
-              descripcion="Remitos de entrega en estado 'En tránsito' del día. Deben cerrarse antes del cierre."
-              color="var(--naranja)"
-              items={sinConfirmar}
-              renderItem={r => (
-                <div key={r.remito} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 12, fontFamily: 'var(--font-mono)' }}>{r.remito}</div>
-                    <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
-                      {r.origen} → {r.destino} · {r.hora}
-                    </div>
-                  </div>
-                  <div style={{ fontSize: 11, color: 'var(--text-3)', textAlign: 'right' }}>
-                    <div>{r.lineas.length} artículos</div>
-                    <div>{r.lineas.reduce((s,l) => s + Number(l.cant||0), 0)} uds</div>
-                  </div>
-                  <span className="badge badge-naranja">En tránsito</span>
-                </div>
-              )}
-            />
-          )}
+      )}
 
-          {/* 2. Sin referencia */}
-          {sinRef.length > 0 && (
-            <AnomaliaSection
-              titulo="Entregas sin referencia a pedido"
-              descripcion="Remitos de entrega cuyas observaciones no referencian ningún pedido conocido y no pudieron matchearse por artículo/sucursal."
-              color="var(--ambar)"
-              items={sinRef}
-              renderItem={r => (
-                <div key={r.remito} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 12, fontFamily: 'var(--font-mono)' }}>{r.remito}</div>
-                    <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
-                      {r.origen} → {r.destino} · {formatFecha(r.fecha)}
-                    </div>
-                    {r.obs && (
-                      <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
-                        Obs: {r.obs}
-                      </div>
-                    )}
-                  </div>
-                  <span className={`badge ${r.estado === 'Recibido' ? 'badge-verde' : r.estado === 'En tránsito' ? 'badge-ambar' : 'badge-gray'}`}>
-                    {r.estado}
-                  </span>
-                </div>
-              )}
-            />
-          )}
+      {/* 1. Recepciones sin confirmar */}
+      <SeccionAnomalia
+        titulo="Recepciones sin confirmar en el día"
+        items={recepcionesSinConfirmar}
+        tipo="warn"
+        render={(e, i) => row(e.remito + i, [
+          <div key="r" style={{ width: 160, fontSize: 11, color: C.azul, fontFamily: 'DM Mono,monospace', flexShrink: 0 }}>{e.remito}</div>,
+          <div key="d" style={{ flex: 1, fontSize: 11, color: C.txt }}>{e.origen} → {e.destino}</div>,
+          <div key="f" style={{ fontSize: 10, color: C.mut, flexShrink: 0 }}>{formatFecha(e.fecha)}</div>,
+          <span key="s" style={{ padding: '2px 8px', borderRadius: 10, fontSize: 9, background: 'rgba(240,192,64,.15)', color: C.ambar, fontWeight: 600, flexShrink: 0 }}>En tránsito</span>,
+        ])}
+      />
 
-          {/* 3. Errores */}
-          {errores.length > 0 && (
-            <AnomaliaSection
-              titulo="Errores de remito sin resolver"
-              descripcion="Remitos de error (faltantes/sobrantes) que permanecen en tránsito o sin referencia a pedido."
-              color="var(--rojo)"
-              items={errores}
-              renderItem={r => (
-                <div key={r.remito} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 12, fontFamily: 'var(--font-mono)' }}>{r.remito}</div>
-                    <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
-                      {r.categoria} · {r.origen} → {r.destino} · {formatFecha(r.fecha)}
-                    </div>
-                    {r.obs && <div style={{ fontSize: 11, color: 'var(--text-3)' }}>Obs: {r.obs}</div>}
-                  </div>
-                  <span className={`badge ${r.estado === 'En tránsito' ? 'badge-rojo' : 'badge-gray'}`}>
-                    {r.estado}
-                  </span>
-                </div>
-              )}
-            />
-          )}
-        </>
+      {/* 2. Entregas sin referencia */}
+      <SeccionAnomalia
+        titulo="Entregas sin referencia a pedido conocido"
+        items={entregasSinReferencia}
+        tipo="warn"
+        render={(e, i) => row(e.remito + i, [
+          <div key="r" style={{ width: 160, fontSize: 11, color: C.azul, fontFamily: 'DM Mono,monospace', flexShrink: 0 }}>{e.remito}</div>,
+          <div key="d" style={{ flex: 1 }}>
+            <div style={{ fontSize: 11, color: C.txt }}>{e.origen} → {e.destino}</div>
+            <div style={{ fontSize: 9, color: C.mut, marginTop: 2 }}>Cat: {e.categoria} · Obs: {e.obs || '—'}</div>
+          </div>,
+          <div key="f" style={{ fontSize: 10, color: C.mut, flexShrink: 0 }}>{formatFecha(e.fecha)}</div>,
+          <span key="s" style={{ padding: '2px 8px', borderRadius: 10, fontSize: 9, background: 'rgba(248,113,113,.15)', color: C.red, flexShrink: 0 }}>Sin referencia</span>,
+        ])}
+      />
+
+      {/* 3. Errores sin resolver */}
+      <SeccionAnomalia
+        titulo="Errores de remito sin resolver"
+        items={erroresSinResolver}
+        tipo="err"
+        render={(e, i) => row(e.remito + i, [
+          <div key="r" style={{ width: 160, fontSize: 11, color: C.azul, fontFamily: 'DM Mono,monospace', flexShrink: 0 }}>{e.remito}</div>,
+          <div key="d" style={{ flex: 1 }}>
+            <div style={{ fontSize: 11, color: C.txt }}>{e.categoria}</div>
+            <div style={{ fontSize: 9, color: C.mut, marginTop: 2 }}>{e.origen} → {e.destino} · Obs: {e.obs || '—'}</div>
+          </div>,
+          <div key="f" style={{ fontSize: 10, color: C.mut, flexShrink: 0 }}>{formatFecha(e.fecha)}</div>,
+          <span key="s" style={{ padding: '2px 8px', borderRadius: 10, fontSize: 9,
+            background: e.estado === 'En tránsito' ? 'rgba(248,113,113,.15)' : 'rgba(240,192,64,.15)',
+            color: e.estado === 'En tránsito' ? C.red : C.ambar, fontWeight: 600, flexShrink: 0 }}>
+            {e.estado}
+          </span>,
+        ])}
+      />
+
+      {/* Resumen */}
+      {totalAnomalias > 0 && (
+        <div style={{ background: C.panel, border: `1px solid ${C.b1}`, borderRadius: 8, padding: '12px 14px' }}>
+          <div style={{ fontSize: 9, color: C.mut, letterSpacing: '.08em', marginBottom: 10 }}>RESUMEN DE ANOMALÍAS</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10 }}>
+            {[
+              { l: 'Recepciones pendientes', v: recepcionesSinConfirmar.length, c: C.ambar },
+              { l: 'Entregas sin referencia', v: entregasSinReferencia.length, c: C.ambar },
+              { l: 'Errores sin resolver', v: erroresSinResolver.length, c: C.red },
+            ].map(({ l, v, c }) => (
+              <div key={l} style={{ background: C.b2, borderRadius: 6, padding: '8px 10px', textAlign: 'center' }}>
+                <div style={{ fontSize: 9, color: C.mut, marginBottom: 4 }}>{l}</div>
+                <div style={{ fontFamily: 'Syne,sans-serif', fontSize: 22, fontWeight: 700, color: v > 0 ? c : C.green }}>{v}</div>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   );
-}
-
-function AnomaliaKPI({ label, value, color }) {
-  return (
-    <div className="card" style={{ padding: 20 }}>
-      <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.07em', marginBottom: 8 }}>{label.toUpperCase()}</div>
-      <div style={{ fontFamily: 'var(--font-syne)', fontSize: 36, fontWeight: 700, color: value > 0 ? color : 'var(--verde)' }}>
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function AnomaliaSection({ titulo, descripcion, color, items, renderItem }) {
-  return (
-    <div className="card" style={{ marginBottom: 16, overflow: 'hidden' }}>
-      <div style={{
-        padding: '12px 16px', borderBottom: '1px solid var(--border)',
-        display: 'flex', alignItems: 'center', gap: 10,
-        background: `rgba(${colorToRgb(color)},0.06)`,
-      }}>
-        <div style={{ width: 3, height: 24, background: color, borderRadius: 2, flexShrink: 0 }} />
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 600, color }}>{titulo}</div>
-          <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{descripcion}</div>
-        </div>
-        <div style={{ marginLeft: 'auto', fontFamily: 'var(--font-syne)', fontSize: 20, fontWeight: 700, color }}>
-          {items.length}
-        </div>
-      </div>
-      <div>
-        {items.map((item, i) => (
-          <div key={i} style={{
-            padding: '10px 16px',
-            borderBottom: i < items.length - 1 ? '1px solid var(--border)' : 'none',
-          }}>
-            {renderItem(item)}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function colorToRgb(cssVar) {
-  const map = {
-    'var(--naranja)': '251,146,60',
-    'var(--ambar)':   '240,192,64',
-    'var(--rojo)':    '248,113,113',
-    'var(--verde)':   '74,222,128',
-  };
-  return map[cssVar] || '255,255,255';
 }

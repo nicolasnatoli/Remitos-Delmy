@@ -1,8 +1,9 @@
 import React, { useState, useMemo } from 'react';
 import { usePedidos, getComparacion, groupByFecha } from '../../hooks/usePedidos';
 import { getEstadoConfig, formatFecha } from '../../utils/remitos';
+import { expandirLineasConCombos } from '../../utils/db';
 
-export default function TabPedidos({ remitos }) {
+export default function TabPedidos({ remitos, combos }) {
   const { pedidosConEstado } = usePedidos(remitos);
   const [expandido, setExpandido] = useState(null);
   const [filtroEstado, setFiltroEstado] = useState('todos');
@@ -96,6 +97,7 @@ export default function TabPedidos({ remitos }) {
                 <PedidoRow
                   key={pedido.remito}
                   pedido={pedido}
+                  combos={combos}
                   isLast={idx === lista.length - 1}
                   isExpanded={expandido === pedido.remito}
                   onToggle={() => setExpandido(expandido === pedido.remito ? null : pedido.remito)}
@@ -116,7 +118,11 @@ export default function TabPedidos({ remitos }) {
   );
 }
 
-function PedidoRow({ pedido, isLast, isExpanded, onToggle, showFecha }) {
+function PedidoRow({ pedido, combos, isLast, isExpanded, onToggle, showFecha }) {
+  // Expandir combos en las líneas para el detalle
+  const lineasExpandidas = useMemo(() =>
+    expandirLineasConCombos(pedido.lineas || [], combos || {}),
+  [pedido.lineas, combos]);
   const cfg = getEstadoConfig(pedido.estadoCalculado);
   const totalPedido   = pedido.lineas.reduce((s,l) => s + Number(l.cant||0), 0);
   const totalEntregado = pedido.entregasAsociadas.reduce((s,e) =>
@@ -196,10 +202,11 @@ function PedidoRow({ pedido, isLast, isExpanded, onToggle, showFecha }) {
           padding: '14px 20px',
         }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-            {/* Comparación artículos */}
+            {/* Comparación artículos con combos expandidos */}
             <div>
-              <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.07em', marginBottom: 8 }}>
-                DETALLE DE ARTÍCULOS
+              <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.07em', marginBottom: 8, display:'flex', justifyContent:'space-between' }}>
+                <span>DETALLE DE ARTÍCULOS</span>
+                {lineasExpandidas.some(l=>l.esCombo) && <span style={{color:'var(--violeta)',fontSize:9}}>⊕ combos expandidos</span>}
               </div>
               <table>
                 <thead>
@@ -213,9 +220,14 @@ function PedidoRow({ pedido, isLast, isExpanded, onToggle, showFecha }) {
                 </thead>
                 <tbody>
                   {comparacion.map(item => (
-                    <tr key={item.cod}>
-                      <td style={{ fontSize: 11, color: 'var(--text-2)' }}>{item.cod}</td>
-                      <td style={{ fontSize: 11 }}>{item.desc}</td>
+                    <tr key={item.cod} style={{background: item.pendiente>0?'rgba(240,192,64,.04)':'transparent'}}>
+                      <td style={{ fontSize: 11, color: 'var(--text-2)', fontFamily:'var(--font-mono)' }}>{item.cod}</td>
+                      <td style={{ fontSize: 11 }}>
+                        {item.desc}
+                        {lineasExpandidas.find(l=>l.cod===item.cod&&l.esCombo) && (
+                          <span style={{fontSize:9,color:'var(--violeta)',marginLeft:5}}>⊕ {lineasExpandidas.find(l=>l.cod===item.cod&&l.esCombo)?.descCombo?.slice(0,20)}</span>
+                        )}
+                      </td>
                       <td style={{ textAlign: 'right', fontSize: 12 }}>{item.pedida}</td>
                       <td style={{ textAlign: 'right', fontSize: 12, color: 'var(--verde)' }}>{item.entregada}</td>
                       <td style={{ textAlign: 'right', fontSize: 12, color: item.pendiente > 0 ? 'var(--ambar)' : 'var(--verde)', fontWeight: item.pendiente > 0 ? 600 : 400 }}>
