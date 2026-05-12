@@ -84,6 +84,30 @@ function cruzar(codDoc, descDoc, prov, art, ocLineas) {
   for (const [k] of artsProv) {
     if (k.includes(cod)) return {cod:k, nivel:'parcial_cod'};
   }
+
+  // Nivel 2c: sufijo — codDoc aparece al FINAL del codp (ej: '0302' en '694035120302')
+  // Requiere validación — puede ser coincidencia parcial
+  if (cod.length >= 4) {
+    for (const [k, a] of artsProv) {
+      const cp = String(a.codp||'').trim();
+      if (cp.length > cod.length && cp.endsWith(cod)) return {cod:k, nivel:'parcial_sufijo'};
+    }
+    for (const [k] of artsProv) {
+      if (k.length > cod.length && k.endsWith(cod)) return {cod:k, nivel:'parcial_sufijo'};
+    }
+  }
+
+  // Nivel 2d: prefijo — codDoc aparece al INICIO del codp (ej: '6940' en '694035120302')
+  if (cod.length >= 4) {
+    for (const [k, a] of artsProv) {
+      const cp = String(a.codp||'').trim();
+      if (cp.length > cod.length && cp.startsWith(cod)) return {cod:k, nivel:'parcial_prefijo'};
+    }
+    for (const [k] of artsProv) {
+      if (k.length > cod.length && k.startsWith(cod)) return {cod:k, nivel:'parcial_prefijo'};
+    }
+  }
+
   // Nivel 3: descripción (2+ palabras coincidentes)
   if (descDoc) {
     const words = descDoc.toLowerCase().replace(/[^\w\s]/g,' ').split(/\s+/).filter(w=>w.length>2).slice(0,5);
@@ -172,6 +196,8 @@ function estadoLinea(l) {
   }
   if (!enFC) return 'NO_ENTREGADO';
   if (matchTipo === 'parcial_codp' || matchTipo === 'parcial_cod') return 'PARCIAL_CODP';
+  if (matchTipo === 'parcial_sufijo') return 'PARCIAL_SUFIJO';
+  if (matchTipo === 'parcial_prefijo') return 'PARCIAL_PREFIJO';
   if (matchTipo === 'descripcion') return 'PARCIAL_DESC';
   if (!l.reconocido) return 'SIN_RECONOCER';
   if (cantFC > cantOC) return 'CANT_MAYOR_FC';
@@ -189,6 +215,8 @@ const ESTADO_CONFIG = {
   CANT_MENOR_FC:      { color:'#f87171', bg:'rgba(248,113,113,.06)', label:'⚠ Cant. menor',    badge:'err' },
   PARCIAL_CODP:       { color:'#f0c040', bg:'rgba(240,192,64,.06)',  label:'⚡ Cód parcial',   badge:'warn'},
   PARCIAL_DESC:       { color:'#f0c040', bg:'rgba(240,192,64,.06)',  label:'⚡ Por desc.',      badge:'warn'},
+  PARCIAL_SUFIJO:    { color:'#f0c040', bg:'rgba(240,192,64,.06)',  label:'⚡ Sufijo cód.',    badge:'warn'},
+  PARCIAL_PREFIJO:   { color:'#f0c040', bg:'rgba(240,192,64,.06)',  label:'⚡ Prefijo cód.',   badge:'warn'},
   NO_ENTREGADO:       { color:'#f87171', bg:'rgba(248,113,113,.08)', label:'✗ No entregado',   badge:'err' },
   SOBRANTE_CONOCIDO:  { color:'#fb923c', bg:'rgba(251,146,60,.06)',  label:'⚡ Sobrante',       badge:'ora' },
   SOBRANTE_NUEVO:     { color:'#fb923c', bg:'rgba(251,146,60,.08)',  label:'⚡ Nuevo',          badge:'ora' },

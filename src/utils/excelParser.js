@@ -28,27 +28,34 @@ export async function parseExcelRemitos(file) {
         const iEstado  = col('estado');
         const iFechaAn = col('fecha de anulación') !== -1 ? col('fecha de anulación') : col('anulacion');
         const iObs     = col('observaciones');
-        // Búsqueda flexible — el Excel puede tener variaciones de encoding
-        const iCod  = col('digo') !== -1 ? col('digo')   // có-digo sin tilde inicial
-                    : col('codigo') !== -1 ? col('codigo')
-                    : col('código') !== -1 ? col('código')
-                    : headers.findIndex(h => /cod/i.test(h) && !/sucursal|estado|anulac/i.test(h));
-        const iDesc = col('descripci') !== -1 ? col('descripci')
-                    : col('descripcion') !== -1 ? col('descripcion')
-                    : col('descripción') !== -1 ? col('descripción')
-                    : headers.findIndex(h => /desc/i.test(h));
-        const iCant = col('cantidad') !== -1 ? col('cantidad')
-                    : headers.findIndex(h => /cant/i.test(h));
+        // Detección de columnas — tolerante a acentos y columnas extra
+        const normalize = s => String(s||'').toLowerCase()
+          .normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
+        const nHeaders = headers.map(normalize);
+        const nCol = term => nHeaders.findIndex(h => h.includes(normalize(term)));
 
-        // Debug — mostrar headers y columnas detectadas (solo primera carga)
-        console.log('[ExcelParser] Headers:', headers);
-        console.log('[ExcelParser] Cols detectadas:', {
-          fecha:iDate, hora:iHora, cat:iCat, remito:iRemito,
-          origen:iOrigen, destino:iDestino, estado:iEstado,
-          obs:iObs, cod:iCod, desc:iDesc, cant:iCant
-        });
-        const primeraFila = dataRows[0];
-        if(primeraFila) console.log('[ExcelParser] Primera fila:', primeraFila);
+        // Código: buscar por header, si no encontrado usar posición conocida (col 22 en export estándar)
+        const iCodByHeader = nCol('codigo') !== -1 ? nCol('codigo')
+          : headers.findIndex((h,i) => normalize(h) === 'codigo' || (normalize(h).startsWith('cod') && !normalize(h).includes('sucursal') && !normalize(h).includes('estado') && !normalize(h).includes('postal')));
+        
+        // Si el header falla, detectar por contenido de primera fila de datos
+        // El código del artículo es alfanumérico corto, la descripción es texto largo
+        // En el export de Delmy: cod=col22, desc=col23, cant=col27
+        const totalCols = headers.length;
+        const iCod  = iCodByHeader !== -1 ? iCodByHeader 
+                    : totalCols >= 23 ? 22 : nCol('cod');
+        const iDesc = nCol('descripcion') !== -1 ? nCol('descripcion')
+                    : nCol('desc') !== -1 ? nCol('desc')
+                    : totalCols >= 24 ? 23 : -1;
+        // Cantidad: en export estándar col27, pero buscar primero por header
+        const iCantByHeader = nCol('cantidad') !== -1 ? nCol('cantidad') : nCol('cant');
+        const iCant = iCantByHeader !== -1 ? iCantByHeader
+                    : totalCols >= 28 ? 27 : -1;
+        // Observaciones: puede estar en col 13 en el export extendido
+        const iObsDetected = nCol('observacion') !== -1 ? nCol('observacion') : iObs;
+
+        console.log('[ExcelParser] totalCols:', totalCols, '| iCod:', iCod, '| iDesc:', iDesc, '| iCant:', iCant, '| iObs:', iObsDetected);
+        if(dataRows[0]) console.log('[ExcelParser] Fila1[cod]:', dataRows[0][iCod], '| desc:', dataRows[0][iDesc], '| cant:', dataRows[0][iCant]);
 
         const remitoMap = {};
 
@@ -79,7 +86,7 @@ export async function parseExcelRemitos(file) {
               destino:        String(row[iDestino] || '').trim(),
               estado:         String(row[iEstado]  || '').trim(),
               fechaAnulacion: toDate(row[iFechaAn]),
-              obs:            String(row[iObs] || '').trim(),
+              obs:            String(row[iObsDetected] || '').trim(),
               lineas:         [],
             };
           }

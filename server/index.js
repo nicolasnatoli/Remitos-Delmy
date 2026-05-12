@@ -134,17 +134,23 @@ app.post('/api/ia/extract', auth, async (req, res) => {
       ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } }
       : { type: 'image',    source: { type: 'base64', media_type: mediaType, data: base64 } };
 
-    const defaultPrompt = `Analizá este documento (factura o remito de proveedor) y extraé:
-1. Proveedor, número de documento, fecha
-2. Líneas de detalle: código del proveedor, descripción, cantidad, precio unitario (si existe)
+    const defaultPrompt = `Sos un extractor de datos de facturas. Analizá TODAS las páginas de este documento y extraé TODOS los artículos sin excepción.
 
-Respondé SOLO con JSON (sin markdown):
+REGLAS IMPORTANTES:
+- Extraé CADA LÍNEA de artículo — el documento puede tener 100+ artículos en múltiples páginas
+- El código del artículo es el número al inicio de cada línea (puede tener 6-14 dígitos, incluidos los que empiezan con ceros como 000000050581)
+- La cantidad es el número en la columna "Cant."
+- El precio unitario es el número en la columna "P.Unit."
+- Ignorá las líneas de transporte/subtotal/total
+- Si el código tiene ceros al inicio (ej: 000000050581), incluilos completos
+
+Respondé SOLO con JSON válido, sin markdown, sin explicaciones:
 {
-  "proveedor": "nombre",
-  "nDocumento": "número",
+  "proveedor": "nombre completo del proveedor",
+  "nDocumento": "número de factura/remito",
   "fecha": "DD/MM/YYYY",
   "lineas": [
-    {"cod": "código proveedor", "desc": "descripción completa", "cant": número, "precioUnit": número_o_0}
+    {"cod": "código completo", "desc": "descripción completa", "cant": número, "precioUnit": número_o_0}
   ]
 }`;
 
@@ -157,7 +163,7 @@ Respondé SOLO con JSON (sin markdown):
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-5',
-        max_tokens: 2000,
+        max_tokens: 8000,
         messages: [{
           role: 'user',
           content: [contentBlock, { type: 'text', text: prompt || defaultPrompt }],

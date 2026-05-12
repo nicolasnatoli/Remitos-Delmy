@@ -64,6 +64,26 @@ function cruzar(codDoc, descDoc, prov, art, ocLineas) {
   for (const [k] of artsProv) {
     if (k.includes(cod)) return {cod:k, nivel:'parcial_cod'};
   }
+  // Nivel 2c: sufijo
+  if (cod.length >= 4) {
+    for (const [k, a] of artsProv) {
+      const cp = String(a.codp||'').trim();
+      if (cp.length > cod.length && cp.endsWith(cod)) return {cod:k, nivel:'parcial_sufijo'};
+    }
+    for (const [k] of artsProv) {
+      if (k.length > cod.length && k.endsWith(cod)) return {cod:k, nivel:'parcial_sufijo'};
+    }
+  }
+  // Nivel 2d: prefijo
+  if (cod.length >= 4) {
+    for (const [k, a] of artsProv) {
+      const cp = String(a.codp||'').trim();
+      if (cp.length > cod.length && cp.startsWith(cod)) return {cod:k, nivel:'parcial_prefijo'};
+    }
+    for (const [k] of artsProv) {
+      if (k.length > cod.length && k.startsWith(cod)) return {cod:k, nivel:'parcial_prefijo'};
+    }
+  }
   if (descDoc) {
     const words = descDoc.toLowerCase().replace(/[^\w\s]/g,' ').split(/\s+/).filter(w=>w.length>2).slice(0,5);
     if (words.length >= 2) {
