@@ -34,28 +34,67 @@ export async function parseExcelRemitos(file) {
         const nHeaders = headers.map(normalize);
         const nCol = term => nHeaders.findIndex(h => h.includes(normalize(term)));
 
-        // Código: buscar por header, si no encontrado usar posición conocida (col 22 en export estándar)
-        const iCodByHeader = nCol('codigo') !== -1 ? nCol('codigo')
-          : headers.findIndex((h,i) => normalize(h) === 'codigo' || (normalize(h).startsWith('cod') && !normalize(h).includes('sucursal') && !normalize(h).includes('estado') && !normalize(h).includes('postal')));
-        
-        // Si el header falla, detectar por contenido de primera fila de datos
-        // El código del artículo es alfanumérico corto, la descripción es texto largo
-        // En el export de Delmy: cod=col22, desc=col23, cant=col27
+        // Detección de columnas con validación por contenido
         const totalCols = headers.length;
-        const iCod  = iCodByHeader !== -1 ? iCodByHeader 
-                    : totalCols >= 23 ? 22 : nCol('cod');
-        const iDesc = nCol('descripcion') !== -1 ? nCol('descripcion')
-                    : nCol('desc') !== -1 ? nCol('desc')
-                    : totalCols >= 24 ? 23 : -1;
-        // Cantidad: en export estándar col27, pero buscar primero por header
-        const iCantByHeader = nCol('cantidad') !== -1 ? nCol('cantidad') : nCol('cant');
-        const iCant = iCantByHeader !== -1 ? iCantByHeader
-                    : totalCols >= 28 ? 27 : -1;
-        // Observaciones: puede estar en col 13 en el export extendido
+        const firstDataRow = dataRows[0] || [];
+
+        // Función: verificar si una columna contiene códigos de artículo válidos
+        // (alfanumérico, no solo números, no vacío)
+        const esColCodigo = (iCol) => {
+          if (iCol < 0 || iCol >= firstDataRow.length) return false;
+          const val = String(firstDataRow[iCol]||'').trim();
+          return val.length > 0 && val.length < 30 && /[A-Za-z]/.test(val);
+        };
+        const esColDesc = (iCol) => {
+          if (iCol < 0 || iCol >= firstDataRow.length) return false;
+          const val = String(firstDataRow[iCol]||'').trim();
+          return val.length > 10; // descripciones son largas
+        };
+        const esColCant = (iCol) => {
+          if (iCol < 0 || iCol >= firstDataRow.length) return false;
+          const val = firstDataRow[iCol];
+          return !isNaN(parseFloat(val)) && parseFloat(val) > 0 && parseFloat(val) < 100000;
+        };
+
+        // Buscar código: primero por header, validar con contenido
+        let iCod = -1;
+        const candidatosCod = [];
+        nHeaders.forEach((h,i) => {
+          if (h.includes('codigo') || h === 'cod' || h.includes('código'))
+            candidatosCod.push(i);
+        });
+        // Tomar el que realmente tenga códigos alfanuméricos
+        for (const i of candidatosCod) {
+          if (esColCodigo(i)) { iCod = i; break; }
+        }
+        // Si ningún candidato funciona, buscar por contenido en toda la fila
+        if (iCod === -1) {
+          for (let i = 0; i < Math.min(totalCols, 36); i++) {
+            if (esColCodigo(i) && !candidatosCod.includes(i)) {
+              // Verificar que la siguiente columna sea descripción larga
+              if (esColDesc(i+1)) { iCod = i; break; }
+            }
+          }
+        }
+
+        // Descripción: columna siguiente al código, o por header
+        let iDesc = nCol('descripcion') !== -1 ? nCol('descripcion') : nCol('desc');
+        if (iDesc === -1 && iCod !== -1 && esColDesc(iCod + 1)) iDesc = iCod + 1;
+
+        // Cantidad: por header primero, luego buscar número pequeño positivo
+        let iCant = nCol('cantidad') !== -1 ? nCol('cantidad') : nCol('cant');
+        if (iCant === -1 && iCod !== -1) {
+          // Buscar en columnas posteriores al código
+          for (let i = iCod + 2; i < Math.min(iCod + 10, totalCols); i++) {
+            if (esColCant(i)) { iCant = i; break; }
+          }
+        }
+
+        // Observaciones
         const iObsDetected = nCol('observacion') !== -1 ? nCol('observacion') : iObs;
 
-        console.log('[ExcelParser] totalCols:', totalCols, '| iCod:', iCod, '| iDesc:', iDesc, '| iCant:', iCant, '| iObs:', iObsDetected);
-        if(dataRows[0]) console.log('[ExcelParser] Fila1[cod]:', dataRows[0][iCod], '| desc:', dataRows[0][iDesc], '| cant:', dataRows[0][iCant]);
+        console.log('[ExcelParser] iCod:', iCod, '| iDesc:', iDesc, '| iCant:', iCant,
+          '| val:', firstDataRow[iCod], '|', firstDataRow[iDesc]?.toString().slice(0,20), '|', firstDataRow[iCant]);
 
         const remitoMap = {};
 
