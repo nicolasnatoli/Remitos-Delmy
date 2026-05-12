@@ -335,13 +335,10 @@ export default function ModuloCompras(){
   useEffect(()=>{
     loadDB().then(fresh=>{
       setDb(fresh);setDbReady(true);
-      // Restaurar OC activa
+      // Solo cargar lista de OCs — el usuario elige cuál activar
       const ocs=lsGet(SK.ocs,[]);
-      if(ocs.length){
-        const id=ocs[ocs.length-1];
-        const d=lsGet('dm_oc_v3_'+id,null);
-        if(d&&d.lineas?.length){setOCact(id);setOCdata({meta:d.meta||{},lineas:d.lineas||[]});setEtC('validacion');}
-      }
+      if(ocs.length) setOCS(ocs);
+      // No auto-activar ninguna OC
     });
   },[]);
 

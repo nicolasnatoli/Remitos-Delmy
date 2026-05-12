@@ -2,14 +2,12 @@ import React, { useState } from 'react';
 import ModuloCompras   from './components/ModuloC/ModuloCompras';
 import ModuloRecepcion from './components/ModuloC/ModuloRecepcion';
 import ModuloStock     from './components/ModuloC/ModuloStock';
-import ModuloA         from './components/ModuloA/ModuloA';
 import ModuloB         from './components/ModuloB/ModuloB';
 
 const NAV = [
   { id: 'compras',        icon: '\ud83d\uded2', label: 'Compras',       desc: 'OC y distribuci\u00f3n'    },
   { id: 'recepcion_prov', icon: '\ud83d\udce6', label: 'Recepci\u00f3n',     desc: 'Control de ingresos'  },
   { id: 'stock',          icon: '\ud83d\udccb', label: 'Stock+',        desc: 'Maestro de art\u00edculos'  },
-  { id: 'recepcion',      icon: '\ud83d\udcc4', label: 'Rec. Facturas', desc: 'Facturas \u00b7 IA'        },
   { id: 'movimientos',    icon: '\ud83d\udd04', label: 'Movimientos',   desc: 'Remitos internos'     },
 ];
 
@@ -87,7 +85,6 @@ export default function App() {
           {modulo === 'compras'        && <ModuloCompras />}
           {modulo === 'recepcion_prov' && <ModuloRecepcion />}
           {modulo === 'stock'          && <ModuloStock />}
-          {modulo === 'recepcion'      && <ModuloA />}
           {modulo === 'movimientos'    && <ModuloB />}
         </main>
       </div>

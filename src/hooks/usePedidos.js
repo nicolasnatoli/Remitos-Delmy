@@ -1,75 +1,141 @@
+// ===== HOOK — usePedidos =====
 import { useMemo } from 'react';
 import {
-  esPedido, esEntrega,
+  esPedido, esEntrega, esError,
   calcularEstadoPedido, ultimosCinco,
-  hoy, ayer,
+  hoy, ayer, ORDEN_ESTADO,
 } from '../utils/remitos';
 
-export function usePedidos(remitos) {
-  return useMemo(() => {
-    const todos = Object.values(remitos);
-    const pedidos  = todos.filter(r => esPedido(r.categoria));
-    const entregas = todos.filter(r => esEntrega(r.categoria));
-
-    // Calcular estado de cada pedido
-    const pedidosConEstado = pedidos.map(p => ({
-      ...p,
-      estadoCalculado: calcularEstadoPedido(p, entregas),
-      entregasAsociadas: getEntregasAsociadas(p, entregas),
-    }));
-
-    return { pedidosConEstado, entregas, todos };
-  }, [remitos]);
+function linkearEntregas(pedido, entregas) {
+  const tag = ultimosCinco(pedido.remito);
+  const codsPedido = new Set(pedido.lineas.map(l => l.cod));
+  return entregas.filter(e => {
+    if (!esEntrega(e.categoria)) return false;
+    if (e.obs && e.obs.includes(tag)) return true;
+    return (
+      e.origen === pedido.destino &&
+      e.fecha >= pedido.fecha &&
+      e.lineas.some(l => codsPedido.has(l.cod))
+    );
+  });
 }
 
-export function getEntregasAsociadas(pedido, todasLasEntregas) {
-  const tag = ultimosCinco(pedido.remito);
-  return todasLasEntregas.filter(e => {
-    if (e.obs && e.obs.includes(tag)) return true;
-    if (e.destino === pedido.origen && e.fecha >= pedido.fecha) {
-      const codsPedido = new Set(pedido.lineas.map(l => l.cod));
-      return e.lineas.some(l => codsPedido.has(l.cod));
+export function usePedidos(remitos) {
+  const todosLosRemitos = useMemo(() => Object.values(remitos || {}), [remitos]);
+  const pedidos  = useMemo(() => todosLosRemitos.filter(r => esPedido(r.categoria)),  [todosLosRemitos]);
+  const entregas = useMemo(() => todosLosRemitos.filter(r => esEntrega(r.categoria)), [todosLosRemitos]);
+  const errores  = useMemo(() => todosLosRemitos.filter(r => esError(r.categoria)),   [todosLosRemitos]);
+
+  const pedidosConEstado = useMemo(() => {
+    return pedidos.map(pedido => ({
+      ...pedido,
+      entregasAsociadas: linkearEntregas(pedido, entregas),
+      estadoCalculado:   calcularEstadoPedido(pedido, entregas),
+    })).sort((a, b) => {
+      if (b.fecha !== a.fecha) return b.fecha.localeCompare(a.fecha);
+      return (ORDEN_ESTADO||[]).indexOf(a.estadoCalculado) - (ORDEN_ESTADO||[]).indexOf(b.estadoCalculado);
+    });
+  }, [pedidos, entregas]);
+
+  const kpis = useMemo(() => {
+    const hoyStr = hoy();
+    return {
+      total:        pedidosConEstado.length,
+      sinConfirmar: pedidosConEstado.filter(p => p.estadoCalculado === 'sin_confirmar').length,
+      abiertos:     pedidosConEstado.filter(p => p.estadoCalculado === 'abierto').length,
+      parciales:    pedidosConEstado.filter(p => p.estadoCalculado === 'parcial').length,
+      conFaltantes: pedidosConEstado.filter(p => p.estadoCalculado === 'con_faltantes').length,
+      completos:    pedidosConEstado.filter(p => p.estadoCalculado === 'completo').length,
+      hoy:          pedidosConEstado.filter(p => p.fecha === hoyStr).length,
+      entregasHoy:  entregas.filter(e => e.fecha === hoyStr).length,
+      enTransito:   entregas.filter(e => e.estado === 'En transito' || e.estado === 'En tránsito').length,
+    };
+  }, [pedidosConEstado, entregas]);
+
+  const anomalias = useMemo(() => {
+    const hoyStr  = hoy();
+    const ayerStr = ayer();
+    const tagsPedidos = new Set(pedidos.map(p => ultimosCinco(p.remito)));
+
+    const recepcionesSinConfirmar = entregas.filter(e =>
+      (e.estado === 'En transito' || e.estado === 'En tránsito') &&
+      (e.fecha === hoyStr || e.fecha === ayerStr)
+    );
+
+    const entregasSinReferencia = entregas.filter(e => {
+      if (e.estado === 'Anulado') return false;
+      const tieneRef = e.obs && [...tagsPedidos].some(tag => e.obs.includes(tag));
+      if (tieneRef) return false;
+      const matchoFallback = pedidos.some(p => {
+        const codsPedido = new Set(p.lineas.map(l => l.cod));
+        return e.origen === p.destino && e.fecha >= p.fecha && e.lineas.some(l => codsPedido.has(l.cod));
+      });
+      return !matchoFallback;
+    });
+
+    const erroresSinResolver = errores.filter(e =>
+      e.estado === 'En transito' || e.estado === 'En tránsito' ||
+      !([...tagsPedidos].some(tag => e.obs && e.obs.includes(tag)))
+    );
+
+    return { recepcionesSinConfirmar, entregasSinReferencia, erroresSinResolver };
+  }, [pedidos, entregas, errores]);
+
+  const pendientesConsolidados = useMemo(() => {
+    const mapa = {};
+    const hoyStr = hoy();
+    for (const pedido of pedidosConEstado) {
+      if (pedido.estadoCalculado !== 'parcial' && pedido.estadoCalculado !== 'abierto') continue;
+      const entregadoMap = {};
+      for (const e of pedido.entregasAsociadas) {
+        for (const l of e.lineas) entregadoMap[l.cod] = (entregadoMap[l.cod]||0) + Number(l.cant||0);
+      }
+      for (const linea of pedido.lineas) {
+        const pendiente = Math.max(0, Number(linea.cant||0) - (entregadoMap[linea.cod]||0));
+        if (!pendiente) continue;
+        if (!mapa[linea.cod]) mapa[linea.cod] = { cod: linea.cod, desc: linea.desc, cant: 0, pedidos: [] };
+        mapa[linea.cod].cant += pendiente;
+        mapa[linea.cod].pedidos.push({ remito: pedido.remito, sucursal: pedido.origen, fecha: pedido.fecha, esHoy: pedido.fecha === hoyStr, pendiente });
+      }
     }
-    return false;
-  });
+    return Object.values(mapa).sort((a, b) => b.cant - a.cant);
+  }, [pedidosConEstado]);
+
+  return { pedidosConEstado, pedidos, entregas, errores, kpis, anomalias, pendientesConsolidados };
 }
 
 export function getComparacion(pedido, entregasAsociadas) {
   const pedidoMap = {};
   for (const l of pedido.lineas) {
-    pedidoMap[l.cod] = { cod: l.cod, desc: l.desc, pedida: (pedidoMap[l.cod]?.pedida || 0) + Number(l.cant) };
+    if (!pedidoMap[l.cod]) pedidoMap[l.cod] = { cod: l.cod, desc: l.desc, pedida: 0 };
+    pedidoMap[l.cod].pedida += Number(l.cant||0);
   }
   const entregadoMap = {};
   for (const e of entregasAsociadas) {
-    for (const l of e.lineas) {
-      entregadoMap[l.cod] = (entregadoMap[l.cod] || 0) + Number(l.cant);
-    }
+    for (const l of e.lineas) entregadoMap[l.cod] = (entregadoMap[l.cod]||0) + Number(l.cant||0);
   }
   return Object.values(pedidoMap).map(item => ({
     ...item,
-    entregada: entregadoMap[item.cod] || 0,
-    pendiente: Math.max(0, item.pedida - (entregadoMap[item.cod] || 0)),
-    sobrante:  Math.max(0, (entregadoMap[item.cod] || 0) - item.pedida),
+    entregada: entregadoMap[item.cod]||0,
+    pendiente: Math.max(0, item.pedida - (entregadoMap[item.cod]||0)),
+    sobrante:  Math.max(0, (entregadoMap[item.cod]||0) - item.pedida),
   }));
 }
 
-export function groupByFecha(pedidosConEstado) {
+export function groupByFecha(pedidos) {
   const hoyStr  = hoy();
   const ayerStr = ayer();
-  const grupos  = { hoy: [], ayer: [], anteriores: [] };
-  for (const p of pedidosConEstado) {
-    if (p.fecha === hoyStr) grupos.hoy.push(p);
-    else if (p.fecha === ayerStr) grupos.ayer.push(p);
-    else grupos.anteriores.push(p);
-  }
-  const ordenEstados = ['sin_confirmar','abierto','parcial','con_faltantes','completo'];
-  const sortFn = (a, b) => {
-    const ea = ordenEstados.indexOf(a.estadoCalculado);
-    const eb = ordenEstados.indexOf(b.estadoCalculado);
+  const sortFn  = (a,b) => {
+    const order = ['sin_confirmar','abierto','parcial','con_faltantes','completo'];
+    const ea = order.indexOf(a.estadoCalculado), eb = order.indexOf(b.estadoCalculado);
     return ea !== eb ? ea - eb : b.fecha.localeCompare(a.fecha);
   };
-  grupos.hoy.sort(sortFn);
-  grupos.ayer.sort(sortFn);
-  grupos.anteriores.sort(sortFn);
-  return grupos;
+  const g = { hoy:[], ayer:[], anteriores:[] };
+  for (const p of pedidos) {
+    if (p.fecha === hoyStr) g.hoy.push(p);
+    else if (p.fecha === ayerStr) g.ayer.push(p);
+    else g.anteriores.push(p);
+  }
+  g.hoy.sort(sortFn); g.ayer.sort(sortFn); g.anteriores.sort(sortFn);
+  return g;
 }

@@ -173,6 +173,12 @@ export default function ModuloRecepcion(){
   const fileRef=useRef(); const fotoRef=useRef();
 
   useEffect(()=>{
+    // Si la recepción guardada está cerrada (sesión anterior), limpiarla
+    const recGuardada=lsGet(SK.rec,null);
+    if(recGuardada?.cerrada){
+      const fresh={meta:{proveedor:'',nRemito:'',nOC:'',fecha:new Date().toISOString().slice(0,10),transportista:'',patente:'',horaLlegada:'',obs:'',obsFinal:'',rc:'',totalBultos:null},lineas:[],fotoEvidencia:null,cerrada:false};
+      setRec(fresh);lsSet(SK.rec,fresh);
+    }
     loadArt().then(artExpanded=>{
       // loadArt() now returns already-expanded objects
       setArt(artExpanded);
@@ -761,7 +767,19 @@ ${etiquetas.map(n=>`<div class="etq">
                   <button onClick={imprimirRegistro}  style={Btn(C.teal,'rgba(45,212,191,.08)')}>🖨 Imprimir registro</button>
                   {rec.cerrada
                     ?<Alrt cls="ok" style={{margin:0,padding:'6px 14px'}}>✓ Cerrada {new Date(rec.fechaCierre).toLocaleString('es-AR')}</Alrt>
-                    :<button onClick={()=>{const n={...rec,cerrada:true,fechaCierre:now()};setRec(n);saveRec(n);alert('✓ Recepción cerrada');}} style={{background:C.green,color:'#0c0e14',border:'none',borderRadius:4,padding:'8px 20px',fontSize:12,fontFamily:'DM Mono,monospace',fontWeight:700,cursor:'pointer'}}>✓ Cerrar recepción</button>
+                    :<button onClick={()=>{
+  if(!window.confirm('¿Confirmar cierre de recepción? Se guardará en el historial y se limpiará la pantalla.'))return;
+  const cerrada={...rec,cerrada:true,fechaCierre:now()};
+  // Guardar en historial
+  const hist=JSON.parse(localStorage.getItem('dm_rec_hist')||'[]');
+  hist.unshift(cerrada);
+  if(hist.length>50)hist.pop();
+  localStorage.setItem('dm_rec_hist',JSON.stringify(hist));
+  // Limpiar estado activo
+  const fresh={meta:{proveedor:'',nRemito:'',nOC:'',fecha:new Date().toISOString().slice(0,10),transportista:'',patente:'',horaLlegada:'',obs:'',obsFinal:'',rc:'',totalBultos:null},lineas:[],fotoEvidencia:null,cerrada:false};
+  setRec(fresh);saveRec(fresh);setEtapa('documento');setIaStatus('');
+  alert('✓ Recepción confirmada y guardada en historial');
+}} style={{background:C.green,color:'#0c0e14',border:'none',borderRadius:4,padding:'8px 20px',fontSize:12,fontFamily:'DM Mono,monospace',fontWeight:700,cursor:'pointer'}}>✓ Confirmar y cerrar</button>
                   }
                 </div>
               </div>
