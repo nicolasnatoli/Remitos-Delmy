@@ -33,7 +33,7 @@ async function connectRedis() {
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(compression());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '25mb' }));
 app.use(cors({ origin: '*', methods: ['GET','POST','DELETE','OPTIONS'], allowedHeaders: ['Content-Type','x-delmy-key'] }));
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -120,6 +120,9 @@ app.delete('/api/store/:key', auth, async (req, res) => {
 
 // ─── IA Proxy — extracción de documentos ─────────────────────────────────────
 app.post('/api/ia/extract', auth, async (req, res) => {
+  // Timeout extendido para Railway — la IA puede tardar hasta 55 segundos
+  req.setTimeout(0);
+  res.setTimeout(0);
   const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
   if (!ANTHROPIC_KEY) {
     return res.status(503).json({ error: 'ANTHROPIC_API_KEY no configurada en Railway' });

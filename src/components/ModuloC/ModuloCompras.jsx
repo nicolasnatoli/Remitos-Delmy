@@ -181,13 +181,8 @@ function calcDiff(cr,pd){if(!cr||!pd)return null;return((pd-cr)/cr)*100;}
 // ─── Estado completo de línea OC vs FC ───────────────────────────────────────
 function estadoLinea(l) {
   // enFC: verdadero SOLO si la factura fue cargada Y este artículo apareció en ella
-  // l.cantFC se setea únicamente al cruzar con la FC (no viene de la OC)
-  const conFac = l.precioDoc > 0 || l.cantFC > 0;  // ¿hay FC cargada para esta línea?
+  const conFac = l.precioDoc > 0 || l.cantFC > 0;
   const enFC = conFac;
-  const cantFC = l.cantFC || 0;  // cantidad según FC — 0 si no vino en la FC
-  const cantOC = l.cantOC || 0;
-  const precioFC = l.precioDoc || 0;
-  const precioCR = l.costoReal || 0;
   const esSobrante = l.esSobrante;
   const matchTipo = l.matchTipo || 'none';
 
@@ -200,10 +195,25 @@ function estadoLinea(l) {
   if (matchTipo === 'parcial_prefijo') return 'PARCIAL_PREFIJO';
   if (matchTipo === 'descripcion') return 'PARCIAL_DESC';
   if (!l.reconocido) return 'SIN_RECONOCER';
-  if (cantFC > cantOC) return 'CANT_MAYOR_FC';
-  if (cantFC < cantOC) return 'CANT_MENOR_FC';
-  if (precioFC > 0 && precioCR > 0 && precioFC > precioCR * 1.001) return 'EXACTO_PRECIO_SUBE';
-  if (precioFC > 0 && precioCR > 0 && precioFC < precioCR * 0.999) return 'EXACTO_PRECIO_BAJA';
+
+  // ── Cantidades: siempre comparar en unidades BASE ──────────────────────────
+  const factor       = l.factor || 1;
+  const cantFCenBase = (l.cantFC || 0) * factor;     // FC viene en unidades combo
+  const cantOCenBase = l.cantOC || 0;                // OC ya está en unidades base
+
+  if (cantFCenBase > cantOCenBase) return 'CANT_MAYOR_FC';
+  if (cantFCenBase < cantOCenBase) return 'CANT_MENOR_FC';
+
+  // ── Precio: normalizar a unidades BASE antes de comparar ──────────────────
+  // precioDoc es precio por UNIDAD DE COMBO; costoReal es por UNIDAD BASE
+  const precioFCenBase = (l.precioDoc || 0) / factor;
+  const precioCR       = l.costoReal || 0;
+  if (precioFCenBase > 0 && precioCR > 0) {
+    const diff = Math.abs(precioFCenBase - precioCR) / precioCR;
+    if (diff > 0.02) {
+      return precioFCenBase > precioCR ? 'EXACTO_PRECIO_SUBE' : 'EXACTO_PRECIO_BAJA';
+    }
+  }
   return 'EXACTO_COMPLETO';
 }
 
@@ -552,42 +562,80 @@ export default function ModuloCompras(){
     const ext=file.name.toLowerCase().split('.').pop();
     let docLineas=[];
     let docMeta={};
-
-    if(ext==='xlsx'||ext==='xls'){
-      const ab=await file.arrayBuffer();
-      const wb=XLSX.read(ab,{type:'array'});
-      const ws=wb.Sheets[wb.SheetNames[0]];
-      const raw=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
-      let hRow=0;
-      for(let i=0;i<Math.min(raw.length,15);i++){if(raw[i].some(c=>/c[oó]d|descrip/i.test(String(c||'')))){hRow=i;break;}}
-      const hdrs=raw[hRow].map(h=>String(h||'').toLowerCase().trim());
-      const iCod=Math.max(0,hdrs.findIndex(h=>/c[oó]d/.test(h)));
-      const iDesc=Math.max(1,hdrs.findIndex(h=>h.includes('descrip')));
-      const iCant=Math.max(2,hdrs.findIndex(h=>h.includes('cant')));
-      const iPrecio=hdrs.findIndex(h=>/prec|cost/.test(h));
-      for(let i=hRow+1;i<raw.length;i++){
-        const r=raw[i];const cod=String(r[iCod]||'').trim();if(!cod||cod.length<2)continue;
-        docLineas.push({cod,desc:String(r[iDesc]||'').trim(),cant:parseFloat(String(r[iCant]||'0').replace(',','.'))||0,precio:parseFloat(String(r[iPrecio>=0?iPrecio:3]||'0').replace(',','.'))||0});
-      }
-    } else {
-      // IA
-      try{
+    setProcesando(true);
+    try{
+      if(ext==='xlsx'||ext==='xls'){
+        const ab=await file.arrayBuffer();
+        const wb=XLSX.read(ab,{type:'array'});
+        const ws=wb.Sheets[wb.SheetNames[0]];
+        const raw=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+        let hRow=0;
+        for(let i=0;i<Math.min(raw.length,15);i++){if(raw[i].some(c=>/c[oó]d|descrip/i.test(String(c||'')))){hRow=i;break;}}
+        const hdrs=raw[hRow].map(h=>String(h||'').toLowerCase().trim());
+        const iCod=Math.max(0,hdrs.findIndex(h=>/c[oó]d/.test(h)));
+        const iDesc=Math.max(1,hdrs.findIndex(h=>h.includes('descrip')));
+        const iCant=Math.max(2,hdrs.findIndex(h=>h.includes('cant')));
+        const iPrecio=hdrs.findIndex(h=>/prec|cost/.test(h));
+        for(let i=hRow+1;i<raw.length;i++){
+          const r=raw[i];const cod=String(r[iCod]||'').trim();if(!cod||cod.length<2)continue;
+          docLineas.push({cod,desc:String(r[iDesc]||'').trim(),cant:parseFloat(String(r[iCant]||'0').replace(',','.'))||0,precio:parseFloat(String(r[iPrecio>=0?iPrecio:3]||'0').replace(',','.'))||0});
+        }
+      } else {
+        // IA — imagen o PDF
         const isPdf=file.type==='application/pdf'||file.name.toLowerCase().endsWith('.pdf');
-        const reader=new FileReader();
-        const b64=await new Promise(res=>{reader.onload=e=>res(e.target.result.split(',')[1]);reader.readAsDataURL(file);});
-        const mtype=isPdf?'application/pdf':file.type||'image/jpeg';
+        let b64, mtype;
+        if(isPdf){
+          // PDF: leer directo, sin comprimir
+          const reader=new FileReader();
+          b64=await new Promise((res,rej)=>{reader.onload=e=>res(e.target.result.split(',')[1]);reader.onerror=()=>rej(new Error('No se pudo leer el archivo'));reader.readAsDataURL(file);});
+          mtype='application/pdf';
+        } else {
+          // Imagen: comprimir a máx 1200px y calidad 0.75 antes de enviar
+          b64=await new Promise((res,rej)=>{
+            const img=new Image();
+            const url=URL.createObjectURL(file);
+            img.onload=()=>{
+              const MAX=1200;
+              let w=img.width,h=img.height;
+              if(w>MAX||h>MAX){const r=Math.min(MAX/w,MAX/h);w=Math.round(w*r);h=Math.round(h*r);}
+              const canvas=document.createElement('canvas');
+              canvas.width=w;canvas.height=h;
+              canvas.getContext('2d').drawImage(img,0,0,w,h);
+              URL.revokeObjectURL(url);
+              res(canvas.toDataURL('image/jpeg',0.75).split(',')[1]);
+            };
+            img.onerror=()=>rej(new Error('No se pudo cargar la imagen'));
+            img.src=url;
+          });
+          mtype='image/jpeg';
+        }
         const res=await fetch('/api/ia/extract',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base64:b64,mediaType:mtype})});
-        if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e.error||'Error: '+res.status);}
+        if(!res.ok){
+          const errBody=await res.json().catch(()=>({}));
+          throw new Error(errBody.error||`Error servidor: ${res.status} ${res.statusText}`);
+        }
         const result=await res.json();
-        const parsed=JSON.parse((result.text||'').replace(/```json|```/g,'').trim());
+        if(!result.text)throw new Error('La IA no devolvió texto. Verificá ANTHROPIC_API_KEY en Railway.');
+        let parsed;
+        try{
+          parsed=JSON.parse(result.text.replace(/```json|```/g,'').trim());
+        }catch(pe){
+          throw new Error('Respuesta IA no es JSON válido. Primeros 300 chars: '+result.text.slice(0,300));
+        }
+        if(!parsed.lineas||!Array.isArray(parsed.lineas))
+          throw new Error('Falta campo "lineas" en respuesta IA. Keys recibidas: '+Object.keys(parsed).join(', '));
         docMeta={proveedor:parsed.proveedor||'',nDocumento:parsed.nDocumento||'',fecha:parsed.fecha||''};
-        docLineas=(parsed.lineas||[]).map(l=>({cod:l.cod,desc:l.desc||'',cant:Number(l.cant)||0,precio:Number(l.precioUnit)||0}));
-      }catch(e){alert('Error IA: '+e.message);return;}
+        docLineas=parsed.lineas.map(l=>({cod:String(l.cod||''),desc:l.desc||'',cant:Number(l.cant)||0,precio:Number(l.precioUnit)||0}));
+      }
+      if(!docLineas.length){alert('⚠ El documento no tiene líneas reconocibles');return;}
+      aplicarDocumento(docLineas,docMeta);
+    }catch(e){
+      console.error('[procesarDoc]',e);
+      alert('❌ Error al procesar el archivo:\n\n'+e.message);
+    }finally{
+      setProcesando(false);
     }
-
-    if(!docLineas.length){alert('Sin líneas en el documento');return;}
-    aplicarDocumento(docLineas,docMeta);
-  },[db,saveOC,OCact,OCdata]);// eslint-disable-line
+  },[db,saveOC,OCact,OCdata,aplicarDocumento]);// eslint-disable-line
 
   const aplicarDocumento=useCallback((docLineas,docMeta={})=>{
     // Si ya hay OC: cruzar precios y cantidades. NO reemplazar líneas.
@@ -766,6 +814,7 @@ export default function ModuloCompras(){
   const nOtroProv=OCdata.lineas.filter(l=>l.otroProveedor).length;
   const nParciales=OCdata.lineas.filter(l=>l.matchTipo==='parcial_codp'||l.matchTipo==='parcial_cod'||l.matchTipo==='descripcion').length;
 
+  const [procesando, setProcesando] = useState(false);
   const fileRef=useRef();
 
   return(
@@ -822,6 +871,7 @@ export default function ModuloCompras(){
             <EtCarga OCdata={OCdata} setOCdata={setOCdata}
               importarDesdeStock={importarDesdeStock}
               fileRef={fileRef} procesarDoc={procesarDoc}
+              procesando={procesando}
               onNext={()=>setEtC('validacion')}
               saveOC={saveOC} OCact={OCact} />
           )}
@@ -829,6 +879,7 @@ export default function ModuloCompras(){
             <EtValidacion OCdata={OCdata} setOCdata={setOCdata}
               db={db} dbReady={dbReady}
               fileRef={fileRef} procesarDoc={procesarDoc}
+              procesando={procesando}
               saveOC={saveOC} OCact={OCact}
               abrirModal={abrirModal}
               onBack={()=>setEtC('carga')}
@@ -891,7 +942,7 @@ function Steps({etC,setEtC}){
 }
 
 // ─── E1 CARGA ─────────────────────────────────────────────────────────────────
-function EtCarga({OCdata,setOCdata,importarDesdeStock,fileRef,procesarDoc,onNext,saveOC,OCact}){
+function EtCarga({OCdata,setOCdata,importarDesdeStock,fileRef,procesarDoc,procesando,onNext,saveOC,OCact}){
   const upd=(f,v)=>{const meta={...OCdata.meta,[f]:v};const d={...OCdata,meta};setOCdata(d);saveOC(OCact,d);};
   const hasOC=OCdata.lineas.length>0;
   return(
@@ -905,12 +956,12 @@ function EtCarga({OCdata,setOCdata,importarDesdeStock,fileRef,procesarDoc,onNext
         <div>
           <div style={{fontSize:9,color:C.mut,marginBottom:6}}>OPCIÓN 2 — PLANILLA EXCEL</div>
           <Alrt cls="info">Exportada desde Stock+ o del proveedor</Alrt>
-          <button onClick={()=>fileRef.current.click()} style={{...Btn(),width:'100%'}}>📋 Cargar .xlsx</button>
+          <button disabled={procesando} onClick={()=>fileRef.current.click()} style={{...Btn(),width:'100%',opacity:procesando?.5:1}}>{procesando?'⏳ Procesando...':'📋 Cargar .xlsx'}</button>
         </div>
         <div>
           <div style={{fontSize:9,color:C.mut,marginBottom:6}}>OPCIÓN 3 — FACTURA / REMITO</div>
           <Alrt cls="info">PDF, imagen o Excel — lectura con IA</Alrt>
-          <button onClick={()=>fileRef.current.click()} style={{...Btn(),width:'100%'}}>📄 Subir documento</button>
+          <button disabled={procesando} onClick={()=>fileRef.current.click()} style={{...Btn(),width:'100%',opacity:procesando?.5:1}}>{procesando?'⏳ Procesando IA...':'📄 Subir documento'}</button>
         </div>
       </div>
       {hasOC&&<Alrt cls="ok">✓ OC activa: {OCdata.lineas.length} artículos · {OCdata.meta.proveedor||'(sin prov)'} · {OCdata.meta.origen||'manual'} · <span style={{fontSize:9}}>Subir factura en Validación para cruzar precios sin reemplazar</span></Alrt>}
@@ -928,7 +979,7 @@ function EtCarga({OCdata,setOCdata,importarDesdeStock,fileRef,procesarDoc,onNext
 }
 
 // ─── E2 VALIDACIÓN ────────────────────────────────────────────────────────────
-function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OCact,abrirModal,onBack,onNext}){
+function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesando,saveOC,OCact,abrirModal,onBack,onNext}){
   if(!OCdata.lineas.length)return<div><Alrt cls="warn">Sin líneas. Volvé a Carga.</Alrt><button onClick={onBack} style={Btn()}>← Volver</button></div>;
 
   const rec=OCdata.lineas.filter(l=>l.reconocido&&l.matchTipo==='exacto').length;
@@ -966,8 +1017,27 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
 
       <div style={{display:'flex',gap:7,marginBottom:8,alignItems:'center',flexWrap:'wrap'}}>
         <span style={{fontSize:9,color:C.mut}}>Subir factura/remito para cruzar precios (no borra la OC):</span>
-        <button onClick={()=>fileRef.current.click()} style={Btn(C.mut)}>📄 Subir factura</button>
-        <button onClick={()=>{const d={...OCdata,lineas:OCdata.lineas.map(l=>({...l,precioDoc:0}))};setOCdata(d);saveOC(OCact,d);}} style={Btn(C.mut)}>Limpiar precios</button>
+        <button
+          disabled={procesando}
+          onClick={()=>fileRef.current.click()}
+          style={{...Btn(procesando?C.mut:C.acc,'rgba(240,192,64,.1)'),opacity:procesando?.5:1,cursor:procesando?'not-allowed':'pointer'}}
+        >
+          {procesando?'⏳ Procesando IA...':'📄 Subir factura'}
+        </button>
+        {!procesando&&<button onClick={()=>{const d={...OCdata,lineas:OCdata.lineas.map(l=>({...l,precioDoc:0}))};setOCdata(d);saveOC(OCact,d);}} style={Btn(C.mut)}>Limpiar precios</button>}
+        {procesando&&<span style={{fontSize:9,color:C.acc,fontStyle:'italic'}}>La IA está leyendo el documento, esperá unos segundos…</span>}
+      </div>
+
+      {/* Banner proveedor sticky — siempre visible al scrollear */}
+      <div style={{position:'sticky',top:0,zIndex:10,background:C.p2,borderBottom:`1px solid ${C.b1}`,borderTop:`1px solid ${C.b1}`,padding:'5px 10px',display:'flex',gap:16,alignItems:'center',flexWrap:'wrap',marginBottom:4}}>
+        <span style={{fontSize:9,color:C.mut,textTransform:'uppercase',letterSpacing:'.07em'}}>Proveedor</span>
+        <span style={{fontSize:12,fontWeight:700,color:C.acc,fontFamily:'DM Mono,monospace'}}>{OCdata.meta.proveedor||'(sin proveedor)'}</span>
+        {OCdata.meta.documento&&<><span style={{fontSize:9,color:C.mut}}>·</span><span style={{fontSize:9,color:C.mut,textTransform:'uppercase',letterSpacing:'.07em'}}>Doc</span><span style={{fontSize:11,color:C.txt,fontFamily:'DM Mono,monospace'}}>{OCdata.meta.documento}</span></>}
+        {OCdata.meta.fecha&&<><span style={{fontSize:9,color:C.mut}}>·</span><span style={{fontSize:9,color:C.mut,textTransform:'uppercase',letterSpacing:'.07em'}}>Fecha</span><span style={{fontSize:11,color:C.txt}}>{OCdata.meta.fecha}</span></>}
+        <span style={{marginLeft:'auto',display:'flex',gap:8,alignItems:'center'}}>
+          {OCdata.meta.estado&&<span style={{fontSize:9,padding:'2px 8px',borderRadius:3,background:(ESTADOS[OCdata.meta.estado]||{}).bg||'rgba(107,114,128,.1)',color:(ESTADOS[OCdata.meta.estado]||{}).color||C.mut,fontWeight:600}}>{(ESTADOS[OCdata.meta.estado]||{}).label||OCdata.meta.estado}</span>}
+          <span style={{fontSize:9,color:C.mut}}>{OCdata.lineas.length} líneas</span>
+        </span>
       </div>
 
       {/* Tabla completa */}
@@ -976,7 +1046,7 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
           <thead>
             <tr>
               {[
-                ['ESTADO',C.mut,90],['CÓD.PROV FC',C.acc,85],['CÓD.PROV BASE',C.teal,90],['CÓD.BASE',C.blue,85],['DESCRIPCIÓN',C.txt,140],['FAM.',C.mut,55],
+                ['ESTADO',C.mut,90],['CÓD.PROV BASE',C.teal,90],['CÓD.BASE',C.blue,85],['DESCRIPCIÓN',C.txt,200],['FAM.',C.mut,55],
                 ['CEN',C.teal,48],['SOL',C.blue,48],['VAR',C.green,48],['STK',C.txt,48],
                 ['V.SEM',C.mut,44],['V.QUIN',C.mut,44],['V.MES',C.mut,44],
                 ['CANT.OC',C.txt,55],['CANT.FC',C.acc,55],['FACTOR',C.vio,52],['CANT REAL',C.teal,62],['PRECIO FC',C.acc,80],['COSTO REAL',C.mut,75],['MOSTRADOR',C.blue,70],['PV MÍN.',C.vio,70],['SUBTOTAL',C.acc,80],
@@ -991,8 +1061,13 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
               const diff=calcDiff(l.costoReal,l.precioDoc);
               const totStk=(l.stkDMCN||0)+(l.stkDM01||0)+(l.stkDM03||0);
               const sc=stkColor(totStk,l.vm||0,l.vq||0,l.vs||0);
-              const cantFCrow=l.cantFC||0;
-              const subtotal=cantFCrow>0?(cantFCrow*(l.precioDoc||0)):l.esSobrante?(l.cantOC*(l.precioDoc||0)):0;
+              const factor = l.factor || 1;
+              const cantFCenBase = (l.cantFC||0) * factor;    // en unidades base
+              const precioFCenBase = (l.precioDoc||0) / factor; // precio/unidad base
+              // Subtotal = cant_FC_base × precio_FC_base = cantFC × precioDoc (simplificado)
+              const subtotal = l.cantFC > 0
+                ? (l.cantFC||0) * (l.precioDoc||0)
+                : l.esSobrante ? (l.cantOC||0) * (l.precioDoc||0) : 0;
               const est=estadoLinea(l);
               const esParcial=est==='PARCIAL_CODP'||est==='PARCIAL_DESC';
               const estCfg=ESTADO_CONFIG[est]||ESTADO_CONFIG.SIN_RECONOCER;
@@ -1030,10 +1105,16 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
               return(
                 <tr key={i} style={{background:rowBg}}>
                   {td(<div style={{display:'flex',flexDirection:'column',gap:1}}><span style={{fontSize:8,fontWeight:600,color:estCfg.color,whiteSpace:'nowrap'}}>{estCfg.label}</span>{l.esCombo&&<span style={{fontSize:7,color:l.comboTipo==='inferido'?C.ora:C.vio}}>⊕ {l.comboTipo==='conocido'?'combo':'combo?'}</span>}</div>,{width:90})}
-                  {td(codpFC,{fontSize:9,color:C.acc,fontFamily:'DM Mono,monospace',title:`Cód. FC: ${codpFC}`})}
                   {td(l.reconocido?codpBase:'—?',{fontSize:9,color:l.reconocido?C.teal:C.red,fontFamily:'DM Mono,monospace',title:`Cód.Prov Base: ${codpBase}`})}
                   {td(l.reconocido?l.cod:'—?',{fontSize:9,color:C.blue,fontFamily:'DM Mono,monospace'})}
-                  {td(<span title={l.desc} style={{display:'block',maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{l.desc||'—'}</span>)}
+                  {td(<div style={{display:'flex',flexDirection:'column',gap:1,maxWidth:200}}>
+                    <span style={{fontWeight:700,fontSize:10,color:C.txt,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}} title={l.desc}>{l.desc||'—'}</span>
+                    {l.descFC&&l.descFC!==l.desc&&<span style={{fontSize:9,color:C.mut,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}} title={`FC: ${l.descFC}`}>FC: {l.descFC}</span>}
+                    {(l.codDocFC||l.codp)&&<span style={{fontSize:9,fontFamily:'DM Mono,monospace',color:'#4b5275',whiteSpace:'nowrap'}}>
+                      {l.codDocFC&&l.codDocFC!==l.codp&&<span>CÓD FC: <span style={{color:C.acc}}>{l.codDocFC}</span>&nbsp;&nbsp;</span>}
+                      CÓD BASE: <span style={{color:C.teal}}>{l.codp||'—'}</span>
+                    </span>}
+                  </div>)}
                   {td(l.fam||'—',{fontSize:9,color:C.mut})}
                   {td(l.stkDMCN||'—',{textAlign:'right',color:l.stkDMCN>0?C.teal:C.mut,fontSize:9})}
                   {td(l.stkDM01||'—',{textAlign:'right',color:l.stkDM01>0?C.blue:C.mut,fontSize:9})}
@@ -1044,12 +1125,16 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
                   {td(l.vm||'—',{textAlign:'right',fontSize:9,color:C.mut})}
                   {/* CANT OC */}
                   {td(<NumIn value={l.cantOC} onChange={v=>updLinea(i,'cantOC',v)} color={est==='NO_ENTREGADO'?C.red:C.txt} width={50} />,{textAlign:'right',padding:'3px 4px'})}
-                  {/* CANT FC */}
+                  {/* CANT FC — siempre en unidades base */}
                   {td((()=>{
                     const cf=l.cantFC||0;
                     if(!cf&&!l.esSobrante)return <span style={{color:C.red,fontSize:9,fontWeight:600}}>—</span>;
-                    const color=cf<l.cantOC?C.red:cf>l.cantOC?C.teal:C.green;
-                    return <span style={{color,fontWeight:600}}>{cf||'—'}</span>;
+                    const cfBase = cf * factor;
+                    const color = cfBase < l.cantOC ? C.red : cfBase > l.cantOC ? C.teal : C.green;
+                    return <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:0}}>
+                      <span style={{color,fontWeight:600,fontSize:10}}>{cfBase.toLocaleString('es-AR')}</span>
+                      {l.esCombo&&<span style={{fontSize:8,color:C.mut}}>{cf}×{factor}</span>}
+                    </div>;
                   })(),{textAlign:'right'})}
                   {/* FACTOR combo */}
                   {td(l.esCombo
@@ -1064,7 +1149,11 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
                     ?<span style={{color:C.teal,fontWeight:700,fontSize:11}}>{(l.cantReal||l.cantOC).toLocaleString('es-AR')}</span>
                     :<span style={{color:C.mut,fontSize:9}}>—</span>,
                     {textAlign:'right'})}
-                  {td(<NumIn value={l.precioDoc} onChange={v=>updLinea(i,'precioDoc',v)} color={C.acc} width={77} />,{textAlign:'right',padding:'3px 4px'})}
+                  {/* PRECIO FC — editable (precio por unidad de combo). Sub-texto: precio/u.base si es combo */}
+                  {td(<div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:0}}>
+                    <NumIn value={l.precioDoc} onChange={v=>updLinea(i,'precioDoc',v)} color={C.acc} width={77} />
+                    {l.esCombo&&precioFCenBase>0&&<span style={{fontSize:8,color:C.mut,marginTop:1}}>${precioFCenBase.toLocaleString('es-AR',{maximumFractionDigits:2})}/u</span>}
+                  </div>,{textAlign:'right',padding:'3px 4px'})}
                   {td(fp(l.costoReal),{textAlign:'right',color:C.mut})}
                   {td(fp(l.mostrador),{textAlign:'right',color:C.blue})}
                   {td(fp(l.pvMin),{textAlign:'right',color:C.vio})}
@@ -1078,7 +1167,7 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
               <td colSpan={6} style={{padding:'5px 5px',fontSize:9,color:C.mut,textAlign:'right',borderTop:`1px solid ${C.b1}`}}>TOTALES →</td>
               <td colSpan={7} style={{padding:'5px 5px',borderTop:`1px solid ${C.b1}`}}></td>
               <td style={{padding:'5px 5px',textAlign:'right',borderTop:`1px solid ${C.b1}`,fontSize:10,fontWeight:600}}>{fn(OCdata.lineas.reduce((s,l)=>s+l.cantOC,0))}</td>
-              <td style={{padding:'5px 5px',textAlign:'right',borderTop:`1px solid ${C.b1}`,fontSize:10,fontWeight:600,color:C.acc}}>{fn(OCdata.lineas.reduce((s,l)=>s+(l.cantFC||0),0))}</td>
+              <td style={{padding:'5px 5px',textAlign:'right',borderTop:`1px solid ${C.b1}`,fontSize:10,fontWeight:600,color:C.acc}}>{fn(OCdata.lineas.reduce((s,l)=>s+(l.cantFC||0)*(l.factor||1),0))}</td>
               <td colSpan={4} style={{padding:'5px 5px',borderTop:`1px solid ${C.b1}`}}></td>
               <td style={{padding:'5px 5px',textAlign:'right',borderTop:`1px solid ${C.b1}`,fontSize:10,color:C.acc,fontWeight:700}}>${fn(OCdata.lineas.reduce((s,l)=>s+(l.cantRemito>0?l.cantRemito*(l.precioDoc||0):l.cantOC*(l.precioDoc||0)),0))}</td>
               <td style={{padding:'5px 5px',borderTop:`1px solid ${C.b1}`}}></td>
