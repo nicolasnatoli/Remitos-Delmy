@@ -420,13 +420,18 @@ function enriquecerLinea(codDoc,cant,precioDoc,descDoc,prov,db,ocLineas){
   if(!db||!db.art)return{cod:codDoc,codp:codDoc,desc:descDoc||'',prov:prov||'',fam:'',cat:'',costoReal:0,pvMin:0,mostrador:0,cantOC:cant||0,dc:0,d1:0,d3:0,precioDoc:precioDoc||0,cantRemito:cant||0,cantFC:0,stkDMCN:0,stkDM01:0,stkDM03:0,vs:0,vq:0,vm:0,reconocido:false,aprobado:false,rechazado:false,esSobrante:false};
   // Detectar si es un combo — prioridad: tabla de combos, luego descripción
   const comboTabla = db.combos?.[codDoc];
-  const factor = comboTabla?.componentes?.[0]?.cant || detectarFactorCombo(descDoc)?.factor || 1;
-  const cantReal = cant * factor;
-  const esComboDetectado = factor > 1;
   const matchResult=cruzar(codDoc,descDoc||"",prov||"",db.art,ocLineas||[]);
   const codI=matchResult.cod||codDoc;
-  const nivel=matchResult.nivel; // 'exacto'|'parcial_codp'|'parcial_cod'|'descripcion'|null
+  const nivel=matchResult.nivel;
   const a=db.art[codI]||{desc:descDoc||'',codp:codDoc,prov:'',fam:'',cat:'',costoReal:0,pvMin:0,mostrador:0};
+  // esCombo: solo cuando el artículo de la FC es un empaque MAYOR que el unitario de la base
+  // Si el codp del artículo en la base coincide exactamente con el codDoc → NO es combo, es el mismo artículo
+  const codpBase = a.codp || codDoc;
+  const mismoArticulo = codpBase.toLowerCase() === codDoc.toLowerCase();
+  const factorDesc = !mismoArticulo ? (comboTabla?.componentes?.[0]?.cant || detectarFactorCombo(descDoc)?.factor || 1) : 1;
+  const factor = factorDesc;
+  const cantReal = cant * factor;
+  const esComboDetectado = factor > 1 && !mismoArticulo;
   const s=db.stk[codI]||{DM01:0,DM03:0,DMCN:0};
   const sh=lsGet(SK.share,null);
   const planC=sh?.planC||lsGet(SK.plan,null);
@@ -1051,11 +1056,11 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
           <thead>
             <tr>
               {[
-                ['ESTADO',C.mut,88],['CÓD.PROV BASE',C.teal,82],['CÓD.BASE',C.blue,78],['DESCRIPCIÓN / FC',C.txt,230],
-                ['CEN',C.teal,36],['SOL',C.blue,36],['VAR',C.green,36],['STK',C.txt,36],
-                ['V.S',C.mut,32],['V.Q',C.mut,32],['V.M',C.mut,32],
-                ['CANT.OC',C.txt,52],['CANT.FC',C.acc,62],['FACTOR',C.vio,46],['CANT REAL',C.teal,56],['PRECIO FC',C.acc,78],['COSTO REAL',C.mut,72],['MOSTRADOR',C.blue,66],['PV MÍN.',C.vio,66],['SUBTOTAL',C.acc,76],
-                ['ACCIÓN',C.mut,88]
+                ['ESTADO',C.mut,82],['CÓD.PROV',C.teal,88],['CÓD.BASE',C.blue,75],['DESCRIPCIÓN / FC',C.txt,260],
+                ['CEN',C.teal,34],['SOL',C.blue,34],['VAR',C.green,34],['STK',C.txt,34],
+                ['V.S',C.mut,30],['V.Q',C.mut,30],['V.M',C.mut,30],
+                ['OC',C.txt,44],['FC',C.acc,58],['×',C.vio,38],['BASE',C.teal,50],['PRECIO/COSTO',C.acc,110],['MOSTRADOR',C.blue,62],['PV MÍN.',C.vio,62],['SUBTOTALES',C.acc,100],
+                ['ACCIÓN',C.mut,82]
               ].map(([h,c,w],i)=>(
                 <th key={i} style={{fontSize:8,color:c,padding:'4px 5px',borderBottom:`1px solid ${C.b1}`,whiteSpace:'nowrap',textTransform:'uppercase',letterSpacing:'.05em',textAlign:i>5?'right':'left',background:C.p2,width:w,minWidth:w}}>{h}</th>
               ))}
@@ -1113,10 +1118,11 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
                     <span style={{fontSize:8,fontWeight:600,color:estCfg.color,whiteSpace:'nowrap'}}>{estCfg.label}</span>
                     {l.esCombo&&<span style={{fontSize:7,color:l.comboTipo==='inferido'?C.ora:C.vio}}>⊕ {l.comboTipo==='conocido'?'combo':'combo?'}</span>}
                   </div>,{width:88,verticalAlign:'top'})}
-                  {/* CÓD.PROV BASE + código FC debajo si difiere */}
+                  {/* CÓD.PROV — base siempre + FC siempre debajo */}
                   {td(<div style={{display:'flex',flexDirection:'column',gap:1}}>
-                    <span style={{fontSize:9,color:l.reconocido?C.teal:C.red,fontFamily:'DM Mono,monospace'}}>{l.reconocido?codpBase:'—?'}</span>
-                    {l.codDocFC&&l.codDocFC!==codpBase&&hayFC&&<span style={{fontSize:8,color:C.acc,fontFamily:'DM Mono,monospace'}} title="Código en FC">↑{l.codDocFC}</span>}
+                    <span style={{fontSize:9,color:l.reconocido?C.teal:C.red,fontFamily:'DM Mono,monospace'}} title="Cód.Prov Base">{l.reconocido?codpBase:'—?'}</span>
+                    {l.codDocFC&&<span style={{fontSize:8,color:C.acc,fontFamily:'DM Mono,monospace',opacity:.85}} title="Código en FC">FC:{l.codDocFC}</span>}
+                    {!l.codDocFC&&hayFC&&<span style={{fontSize:8,color:C.mut,fontFamily:'DM Mono,monospace',opacity:.6}}>FC:—</span>}
                   </div>,{verticalAlign:'top'})}
                   {/* CÓD.BASE */}
                   {td(l.reconocido?<span style={{fontSize:9,color:C.blue,fontFamily:'DM Mono,monospace'}}>{l.cod}</span>:<span style={{fontSize:9,color:C.red}}>—?</span>,{verticalAlign:'top'})}
@@ -1185,15 +1191,28 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
                     ?<span style={{color:C.teal,fontWeight:700,fontSize:11}}>{(l.cantReal||l.cantOC).toLocaleString('es-AR')}</span>
                     :<span style={{color:C.mut,fontSize:9}}>—</span>,
                     {textAlign:'right'})}
-                  {/* PRECIO FC — editable (precio por unidad de combo). Sub-texto: precio/u.base si es combo */}
-                  {td(<div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:0}}>
-                    <NumIn value={l.precioDoc} onChange={v=>updLinea(i,'precioDoc',v)} color={C.acc} width={77} />
-                    {l.esCombo&&precioFCenBase>0&&<span style={{fontSize:8,color:C.mut,marginTop:1}}>${precioFCenBase.toLocaleString('es-AR',{maximumFractionDigits:2})}/u</span>}
-                  </div>,{textAlign:'right',padding:'3px 4px'})}
-                  {td(fp(l.costoReal),{textAlign:'right',color:C.mut})}
-                  {td(fp(l.mostrador),{textAlign:'right',color:C.blue})}
-                  {td(fp(l.pvMin),{textAlign:'right',color:C.vio})}
-                  {td(subtotal>0?'$'+fn(subtotal):<span style={{color:C.red,fontSize:9}}>—</span>,{textAlign:'right',color:C.acc,fontWeight:500})}
+                  {/* PRECIO FC / COSTO REAL — columna unificada */}
+                  {td(<div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:1}}>
+                    <NumIn value={l.precioDoc} onChange={v=>updLinea(i,'precioDoc',v)} color={C.acc} width={90} />
+                    {l.esCombo&&precioFCenBase>0&&<span style={{fontSize:7,color:C.acc,opacity:.7}}>${precioFCenBase.toLocaleString('es-AR',{maximumFractionDigits:2})}/u</span>}
+                    <div style={{width:'100%',borderTop:`1px solid ${C.b2}`,marginTop:1,paddingTop:1,display:'flex',justifyContent:'flex-end'}}>
+                      <span style={{fontSize:9,color:C.mut}}>{fp(l.costoReal)}</span>
+                    </div>
+                  </div>,{textAlign:'right',padding:'3px 4px',verticalAlign:'top'})}
+                  {td(fp(l.mostrador),{textAlign:'right',color:C.blue,fontSize:9})}
+                  {td(fp(l.pvMin),{textAlign:'right',color:C.vio,fontSize:9})}
+                  {td((()=>{
+                    const stFC   = l.cantFC>0 ? (l.cantFC*(l.precioDoc||0)) : null;
+                    const stBase = (l.cantOC||0)*(l.costoReal||0);
+                    return <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:1}}>
+                      {stFC!=null
+                        ?<span style={{color:C.acc,fontWeight:600,fontSize:10}}>${fn(stFC)}</span>
+                        :<span style={{color:C.red,fontSize:9}}>—</span>}
+                      <div style={{borderTop:`1px solid ${C.b2}`,paddingTop:1,width:'100%',textAlign:'right'}}>
+                        <span style={{fontSize:8,color:C.mut}} title="Subtotal costo base">${fn(stBase)}</span>
+                      </div>
+                    </div>;
+                  })(),{textAlign:'right',verticalAlign:'top',padding:'3px 4px'})}
                   {td(accion)}
                 </tr>
               );
