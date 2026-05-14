@@ -1073,9 +1073,6 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
               const sc=stkColor(totStk,l.vm||0,l.vq||0,l.vs||0);
               const factor = l.factor || 1;
               const precioFCenBase = (l.precioDoc||0) / factor;
-              const subtotal = l.cantFC > 0
-                ? (l.cantFC||0) * (l.precioDoc||0)
-                : l.esSobrante ? (l.cantOC||0) * (l.precioDoc||0) : 0;
               const est=estadoLinea(l);
               const esParcial=est==='PARCIAL_CODP'||est==='PARCIAL_DESC';
               const estCfg=ESTADO_CONFIG[est]||ESTADO_CONFIG.SIN_RECONOCER;
