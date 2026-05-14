@@ -181,13 +181,8 @@ function calcDiff(cr,pd){if(!cr||!pd)return null;return((pd-cr)/cr)*100;}
 // ─── Estado completo de línea OC vs FC ───────────────────────────────────────
 function estadoLinea(l) {
   // enFC: verdadero SOLO si la factura fue cargada Y este artículo apareció en ella
-  // l.cantFC se setea únicamente al cruzar con la FC (no viene de la OC)
-  const conFac = l.precioDoc > 0 || l.cantFC > 0;  // ¿hay FC cargada para esta línea?
+  const conFac = l.precioDoc > 0 || l.cantFC > 0;
   const enFC = conFac;
-  const cantFC = l.cantFC || 0;  // cantidad según FC — 0 si no vino en la FC
-  const cantOC = l.cantOC || 0;
-  const precioFC = l.precioDoc || 0;
-  const precioCR = l.costoReal || 0;
   const esSobrante = l.esSobrante;
   const matchTipo = l.matchTipo || 'none';
 
@@ -200,10 +195,25 @@ function estadoLinea(l) {
   if (matchTipo === 'parcial_prefijo') return 'PARCIAL_PREFIJO';
   if (matchTipo === 'descripcion') return 'PARCIAL_DESC';
   if (!l.reconocido) return 'SIN_RECONOCER';
-  if (cantFC > cantOC) return 'CANT_MAYOR_FC';
-  if (cantFC < cantOC) return 'CANT_MENOR_FC';
-  if (precioFC > 0 && precioCR > 0 && precioFC > precioCR * 1.001) return 'EXACTO_PRECIO_SUBE';
-  if (precioFC > 0 && precioCR > 0 && precioFC < precioCR * 0.999) return 'EXACTO_PRECIO_BAJA';
+
+  // ── Cantidades: siempre comparar en unidades BASE ──────────────────────────
+  const factor       = l.factor || 1;
+  const cantFCenBase = (l.cantFC || 0) * factor;     // FC viene en unidades combo
+  const cantOCenBase = l.cantOC || 0;                // OC ya está en unidades base
+
+  if (cantFCenBase > cantOCenBase) return 'CANT_MAYOR_FC';
+  if (cantFCenBase < cantOCenBase) return 'CANT_MENOR_FC';
+
+  // ── Precio: normalizar a unidades BASE antes de comparar ──────────────────
+  // precioDoc es precio por UNIDAD DE COMBO; costoReal es por UNIDAD BASE
+  const precioFCenBase = (l.precioDoc || 0) / factor;
+  const precioCR       = l.costoReal || 0;
+  if (precioFCenBase > 0 && precioCR > 0) {
+    const diff = Math.abs(precioFCenBase - precioCR) / precioCR;
+    if (diff > 0.02) {
+      return precioFCenBase > precioCR ? 'EXACTO_PRECIO_SUBE' : 'EXACTO_PRECIO_BAJA';
+    }
+  }
   return 'EXACTO_COMPLETO';
 }
 
@@ -970,13 +980,25 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
         <button onClick={()=>{const d={...OCdata,lineas:OCdata.lineas.map(l=>({...l,precioDoc:0}))};setOCdata(d);saveOC(OCact,d);}} style={Btn(C.mut)}>Limpiar precios</button>
       </div>
 
+      {/* Banner proveedor sticky — siempre visible al scrollear */}
+      <div style={{position:'sticky',top:0,zIndex:10,background:C.p2,borderBottom:`1px solid ${C.b1}`,borderTop:`1px solid ${C.b1}`,padding:'5px 10px',display:'flex',gap:16,alignItems:'center',flexWrap:'wrap',marginBottom:4}}>
+        <span style={{fontSize:9,color:C.mut,textTransform:'uppercase',letterSpacing:'.07em'}}>Proveedor</span>
+        <span style={{fontSize:12,fontWeight:700,color:C.acc,fontFamily:'DM Mono,monospace'}}>{OCdata.meta.proveedor||'(sin proveedor)'}</span>
+        {OCdata.meta.documento&&<><span style={{fontSize:9,color:C.mut}}>·</span><span style={{fontSize:9,color:C.mut,textTransform:'uppercase',letterSpacing:'.07em'}}>Doc</span><span style={{fontSize:11,color:C.txt,fontFamily:'DM Mono,monospace'}}>{OCdata.meta.documento}</span></>}
+        {OCdata.meta.fecha&&<><span style={{fontSize:9,color:C.mut}}>·</span><span style={{fontSize:9,color:C.mut,textTransform:'uppercase',letterSpacing:'.07em'}}>Fecha</span><span style={{fontSize:11,color:C.txt}}>{OCdata.meta.fecha}</span></>}
+        <span style={{marginLeft:'auto',display:'flex',gap:8,alignItems:'center'}}>
+          {OCdata.meta.estado&&<span style={{fontSize:9,padding:'2px 8px',borderRadius:3,background:(ESTADOS[OCdata.meta.estado]||{}).bg||'rgba(107,114,128,.1)',color:(ESTADOS[OCdata.meta.estado]||{}).color||C.mut,fontWeight:600}}>{(ESTADOS[OCdata.meta.estado]||{}).label||OCdata.meta.estado}</span>}
+          <span style={{fontSize:9,color:C.mut}}>{OCdata.lineas.length} líneas</span>
+        </span>
+      </div>
+
       {/* Tabla completa */}
       <div style={{overflowX:'auto',background:C.p2,border:`1px solid ${C.b1}`,borderRadius:5}}>
         <table style={{borderCollapse:'collapse',width:'100%',minWidth:1200}}>
           <thead>
             <tr>
               {[
-                ['ESTADO',C.mut,90],['CÓD.PROV FC',C.acc,85],['CÓD.PROV BASE',C.teal,90],['CÓD.BASE',C.blue,85],['DESCRIPCIÓN',C.txt,140],['FAM.',C.mut,55],
+                ['ESTADO',C.mut,90],['CÓD.PROV BASE',C.teal,90],['CÓD.BASE',C.blue,85],['DESCRIPCIÓN',C.txt,200],['FAM.',C.mut,55],
                 ['CEN',C.teal,48],['SOL',C.blue,48],['VAR',C.green,48],['STK',C.txt,48],
                 ['V.SEM',C.mut,44],['V.QUIN',C.mut,44],['V.MES',C.mut,44],
                 ['CANT.OC',C.txt,55],['CANT.FC',C.acc,55],['FACTOR',C.vio,52],['CANT REAL',C.teal,62],['PRECIO FC',C.acc,80],['COSTO REAL',C.mut,75],['MOSTRADOR',C.blue,70],['PV MÍN.',C.vio,70],['SUBTOTAL',C.acc,80],
@@ -991,8 +1013,13 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
               const diff=calcDiff(l.costoReal,l.precioDoc);
               const totStk=(l.stkDMCN||0)+(l.stkDM01||0)+(l.stkDM03||0);
               const sc=stkColor(totStk,l.vm||0,l.vq||0,l.vs||0);
-              const cantFCrow=l.cantFC||0;
-              const subtotal=cantFCrow>0?(cantFCrow*(l.precioDoc||0)):l.esSobrante?(l.cantOC*(l.precioDoc||0)):0;
+              const factor = l.factor || 1;
+              const cantFCenBase = (l.cantFC||0) * factor;    // en unidades base
+              const precioFCenBase = (l.precioDoc||0) / factor; // precio/unidad base
+              // Subtotal = cant_FC_base × precio_FC_base = cantFC × precioDoc (simplificado)
+              const subtotal = l.cantFC > 0
+                ? (l.cantFC||0) * (l.precioDoc||0)
+                : l.esSobrante ? (l.cantOC||0) * (l.precioDoc||0) : 0;
               const est=estadoLinea(l);
               const esParcial=est==='PARCIAL_CODP'||est==='PARCIAL_DESC';
               const estCfg=ESTADO_CONFIG[est]||ESTADO_CONFIG.SIN_RECONOCER;
@@ -1030,10 +1057,16 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
               return(
                 <tr key={i} style={{background:rowBg}}>
                   {td(<div style={{display:'flex',flexDirection:'column',gap:1}}><span style={{fontSize:8,fontWeight:600,color:estCfg.color,whiteSpace:'nowrap'}}>{estCfg.label}</span>{l.esCombo&&<span style={{fontSize:7,color:l.comboTipo==='inferido'?C.ora:C.vio}}>⊕ {l.comboTipo==='conocido'?'combo':'combo?'}</span>}</div>,{width:90})}
-                  {td(codpFC,{fontSize:9,color:C.acc,fontFamily:'DM Mono,monospace',title:`Cód. FC: ${codpFC}`})}
                   {td(l.reconocido?codpBase:'—?',{fontSize:9,color:l.reconocido?C.teal:C.red,fontFamily:'DM Mono,monospace',title:`Cód.Prov Base: ${codpBase}`})}
                   {td(l.reconocido?l.cod:'—?',{fontSize:9,color:C.blue,fontFamily:'DM Mono,monospace'})}
-                  {td(<span title={l.desc} style={{display:'block',maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{l.desc||'—'}</span>)}
+                  {td(<div style={{display:'flex',flexDirection:'column',gap:1,maxWidth:200}}>
+                    <span style={{fontWeight:700,fontSize:10,color:C.txt,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}} title={l.desc}>{l.desc||'—'}</span>
+                    {l.descFC&&l.descFC!==l.desc&&<span style={{fontSize:9,color:C.mut,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}} title={`FC: ${l.descFC}`}>FC: {l.descFC}</span>}
+                    {(l.codDocFC||l.codp)&&<span style={{fontSize:9,fontFamily:'DM Mono,monospace',color:'#4b5275',whiteSpace:'nowrap'}}>
+                      {l.codDocFC&&l.codDocFC!==l.codp&&<span>CÓD FC: <span style={{color:C.acc}}>{l.codDocFC}</span>&nbsp;&nbsp;</span>}
+                      CÓD BASE: <span style={{color:C.teal}}>{l.codp||'—'}</span>
+                    </span>}
+                  </div>)}
                   {td(l.fam||'—',{fontSize:9,color:C.mut})}
                   {td(l.stkDMCN||'—',{textAlign:'right',color:l.stkDMCN>0?C.teal:C.mut,fontSize:9})}
                   {td(l.stkDM01||'—',{textAlign:'right',color:l.stkDM01>0?C.blue:C.mut,fontSize:9})}
@@ -1044,12 +1077,16 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
                   {td(l.vm||'—',{textAlign:'right',fontSize:9,color:C.mut})}
                   {/* CANT OC */}
                   {td(<NumIn value={l.cantOC} onChange={v=>updLinea(i,'cantOC',v)} color={est==='NO_ENTREGADO'?C.red:C.txt} width={50} />,{textAlign:'right',padding:'3px 4px'})}
-                  {/* CANT FC */}
+                  {/* CANT FC — siempre en unidades base */}
                   {td((()=>{
                     const cf=l.cantFC||0;
                     if(!cf&&!l.esSobrante)return <span style={{color:C.red,fontSize:9,fontWeight:600}}>—</span>;
-                    const color=cf<l.cantOC?C.red:cf>l.cantOC?C.teal:C.green;
-                    return <span style={{color,fontWeight:600}}>{cf||'—'}</span>;
+                    const cfBase = cf * factor;
+                    const color = cfBase < l.cantOC ? C.red : cfBase > l.cantOC ? C.teal : C.green;
+                    return <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:0}}>
+                      <span style={{color,fontWeight:600,fontSize:10}}>{cfBase.toLocaleString('es-AR')}</span>
+                      {l.esCombo&&<span style={{fontSize:8,color:C.mut}}>{cf}×{factor}</span>}
+                    </div>;
                   })(),{textAlign:'right'})}
                   {/* FACTOR combo */}
                   {td(l.esCombo
@@ -1064,7 +1101,11 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
                     ?<span style={{color:C.teal,fontWeight:700,fontSize:11}}>{(l.cantReal||l.cantOC).toLocaleString('es-AR')}</span>
                     :<span style={{color:C.mut,fontSize:9}}>—</span>,
                     {textAlign:'right'})}
-                  {td(<NumIn value={l.precioDoc} onChange={v=>updLinea(i,'precioDoc',v)} color={C.acc} width={77} />,{textAlign:'right',padding:'3px 4px'})}
+                  {/* PRECIO FC — editable (precio por unidad de combo). Sub-texto: precio/u.base si es combo */}
+                  {td(<div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:0}}>
+                    <NumIn value={l.precioDoc} onChange={v=>updLinea(i,'precioDoc',v)} color={C.acc} width={77} />
+                    {l.esCombo&&precioFCenBase>0&&<span style={{fontSize:8,color:C.mut,marginTop:1}}>${precioFCenBase.toLocaleString('es-AR',{maximumFractionDigits:2})}/u</span>}
+                  </div>,{textAlign:'right',padding:'3px 4px'})}
                   {td(fp(l.costoReal),{textAlign:'right',color:C.mut})}
                   {td(fp(l.mostrador),{textAlign:'right',color:C.blue})}
                   {td(fp(l.pvMin),{textAlign:'right',color:C.vio})}
@@ -1078,7 +1119,7 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
               <td colSpan={6} style={{padding:'5px 5px',fontSize:9,color:C.mut,textAlign:'right',borderTop:`1px solid ${C.b1}`}}>TOTALES →</td>
               <td colSpan={7} style={{padding:'5px 5px',borderTop:`1px solid ${C.b1}`}}></td>
               <td style={{padding:'5px 5px',textAlign:'right',borderTop:`1px solid ${C.b1}`,fontSize:10,fontWeight:600}}>{fn(OCdata.lineas.reduce((s,l)=>s+l.cantOC,0))}</td>
-              <td style={{padding:'5px 5px',textAlign:'right',borderTop:`1px solid ${C.b1}`,fontSize:10,fontWeight:600,color:C.acc}}>{fn(OCdata.lineas.reduce((s,l)=>s+(l.cantFC||0),0))}</td>
+              <td style={{padding:'5px 5px',textAlign:'right',borderTop:`1px solid ${C.b1}`,fontSize:10,fontWeight:600,color:C.acc}}>{fn(OCdata.lineas.reduce((s,l)=>s+(l.cantFC||0)*(l.factor||1),0))}</td>
               <td colSpan={4} style={{padding:'5px 5px',borderTop:`1px solid ${C.b1}`}}></td>
               <td style={{padding:'5px 5px',textAlign:'right',borderTop:`1px solid ${C.b1}`,fontSize:10,color:C.acc,fontWeight:700}}>${fn(OCdata.lineas.reduce((s,l)=>s+(l.cantRemito>0?l.cantRemito*(l.precioDoc||0):l.cantOC*(l.precioDoc||0)),0))}</td>
               <td style={{padding:'5px 5px',borderTop:`1px solid ${C.b1}`}}></td>
