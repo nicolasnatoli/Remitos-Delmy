@@ -1062,9 +1062,7 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
               const totStk=(l.stkDMCN||0)+(l.stkDM01||0)+(l.stkDM03||0);
               const sc=stkColor(totStk,l.vm||0,l.vq||0,l.vs||0);
               const factor = l.factor || 1;
-              const cantFCenBase = (l.cantFC||0) * factor;    // en unidades base
-              const precioFCenBase = (l.precioDoc||0) / factor; // precio/unidad base
-              // Subtotal = cant_FC_base × precio_FC_base = cantFC × precioDoc (simplificado)
+              const precioFCenBase = (l.precioDoc||0) / factor;
               const subtotal = l.cantFC > 0
                 ? (l.cantFC||0) * (l.precioDoc||0)
                 : l.esSobrante ? (l.cantOC||0) * (l.precioDoc||0) : 0;
@@ -1072,7 +1070,6 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
               const esParcial=est==='PARCIAL_CODP'||est==='PARCIAL_DESC';
               const estCfg=ESTADO_CONFIG[est]||ESTADO_CONFIG.SIN_RECONOCER;
               const rowBg=estCfg.bg;
-              const codpFC=l.codDocFC||l.codp||l.cod||'—';
               const codpBase=l.reconocido&&db.art[l.cod]?(db.art[l.cod].codp||l.codp||'—'):l.codp||'—';
               let accion=null;
               if(l.esSobrante&&!l.reconocido){
