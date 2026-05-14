@@ -33,8 +33,11 @@ async function connectRedis() {
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(compression());
-app.use(express.json({ limit: '25mb' }));
+app.use(express.json({ limit: '25mb', strict: false }));
+app.use(express.urlencoded({ limit: '25mb', extended: true }));
 app.use(cors({ origin: '*', methods: ['GET','POST','DELETE','OPTIONS'], allowedHeaders: ['Content-Type','x-delmy-key'] }));
+// Timeout global extendido para uploads grandes
+app.use((req, res, next) => { req.setTimeout(120000); res.setTimeout(120000); next(); });
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 const DELMY_PIN = process.env.DELMY_PIN || null;
