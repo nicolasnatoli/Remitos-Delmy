@@ -328,6 +328,84 @@ function getFreq(prov,art){
 }
 
 // ─── Enriquecer línea con todos los datos de la base ─────────────────────────
+
+// ════ Clasificador de no reconocidos — 3 casos distintos ══════════════════
+// Caso 1: typo/formato — el artículo existe pero el código no matcheó
+// Caso 2: combo_nuevo — existe el artículo base pero en otra presentación
+// Caso 3: nuevo — artículo genuinamente nuevo
+function clasificarNoReconocido(codDoc, descDoc, precioUnit, prov, db) {
+  const art = db?.art || {};
+  const combos = db?.combos || {};
+  const normalize = s => String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  const codN = normalize(codDoc);
+
+  // ── Caso 1: normalizar código y buscar de nuevo ──────────────────────────
+  const artsProv = Object.entries(art).filter(([,a]) => provMatch(prov, a.prov||''));
+  for (const [k, a] of artsProv) {
+    const codpN = normalize(a.codp||'');
+    const codkN = normalize(k);
+    if (codpN === codN || codkN === codN) {
+      return { tipo: 'typo', codI: k, art: a, confianza: 0.95 };
+    }
+  }
+
+  // ── Caso 2: combo nuevo — buscar artículo base + factor de descripción ───
+  const factorInfo = detectarFactorCombo(descDoc);
+  if (factorInfo && factorInfo.factor > 1) {
+    // Extraer código base: quitar sufijo numérico o /N o :N
+    const codBase = codDoc.replace(/[/:\d-]+$/, '').trim();
+    const codBaseN = normalize(codBase);
+
+    // Buscar en base: código exacto o codp exacto del artículo base
+    let artBase = null, codBaseI = null;
+    for (const [k, a] of artsProv) {
+      const cpN = normalize(a.codp||'');
+      const kkN = normalize(k);
+      if (cpN === codBaseN || kkN === codBaseN ||
+          cpN === codN.replace(/\d+$/,'') || kkN === codBaseN) {
+        artBase = a; codBaseI = k; break;
+      }
+    }
+    // También buscar en combos existentes del mismo base
+    const combosBase = Object.entries(combos).filter(([cod]) =>
+      normalize(cod).startsWith(codBaseN) || codBaseN.startsWith(normalize(cod).replace(/\d+$/,''))
+    );
+
+    if (artBase || combosBase.length > 0) {
+      const baseRef = artBase || combosBase[0]?.[1];
+      const costoSugerido = (baseRef?.costoReal || 0) * factorInfo.factor;
+      const descNorm = descDoc
+        .replace(/\s+x\s*(\d+)\s*u?n?/gi, ' x$1u')
+        .replace(/(\d+)\s*(bolsas?|packs?|cajas?)\s*x\s*(\d+)/gi, '$1 paq x $3u')
+        .toUpperCase().trim();
+      return {
+        tipo: 'combo_nuevo',
+        codBase: codBaseI || codBase,
+        artBase: artBase || null,
+        combosBase,
+        factor: factorInfo.factor,
+        factorTipo: factorInfo.tipo,
+        factorDetalle: factorInfo.detalle || String(factorInfo.factor),
+        costoSugerido: costoSugerido > 0 ? costoSugerido : precioUnit,
+        costoCoincide: costoSugerido > 0 && Math.abs(costoSugerido - precioUnit) / precioUnit < 0.02,
+        codSugerido: codBase + '/' + factorInfo.factor,
+        descSugerida: descNorm,
+        confianza: artBase ? 0.9 : 0.7,
+      };
+    }
+  }
+
+  // ── Caso 3: genuinamente nuevo ───────────────────────────────────────────
+  const descNorm = String(descDoc||'').toUpperCase().trim()
+    .replace(/X\s*(\d+)\s*U/g,'X$1U').replace(/\s+/g,' ');
+  return {
+    tipo: 'nuevo',
+    descSugerida: descNorm,
+    codSugerido: '',
+    confianza: 0,
+  };
+}
+
 function enriquecerLinea(codDoc,cant,precioDoc,descDoc,prov,db,ocLineas){
   if(!db||!db.art)return{cod:codDoc,codp:codDoc,desc:descDoc||'',prov:prov||'',fam:'',cat:'',costoReal:0,pvMin:0,mostrador:0,cantOC:cant||0,dc:0,d1:0,d3:0,precioDoc:precioDoc||0,cantRemito:cant||0,cantFC:0,stkDMCN:0,stkDM01:0,stkDM03:0,vs:0,vq:0,vm:0,reconocido:false,aprobado:false,rechazado:false,esSobrante:false};
   // Detectar si es un combo — prioridad: tabla de combos, luego descripción
@@ -370,7 +448,7 @@ export default function ModuloCompras(){
   const [OCact,  setOCact] = useState(null);
   const [OCdata, setOCdata]= useState({meta:{proveedor:'',fecha:'',documento:'',estado:'generada',historial:[]},lineas:[]});
   const [etC,    setEtC]   = useState('carga');
-  const [modal,  setModal] = useState({open:false,idx:0,tab:'buscar',busqQ:'',selFam:'',selCat:'',selMarca:'',nuevoForm:{cod:'',desc:'',codp:'',prov:'',fam:'',cat:'',marca:'',costoReal:0,pvMin:0,mostrador:0}});
+  const [modal,  setModal] = useState({open:false,idx:0,tab:'buscar',busqQ:'',selFam:'',selCat:'',selMarca:'',clasificacion:null,nuevoForm:{cod:'',desc:'',codp:'',prov:'',fam:'',cat:'',marca:'',costoReal:0,pvMin:0,mostrador:0}});
 
   // codpIdx removed — cruzar() no longer uses index
 
@@ -617,8 +695,26 @@ export default function ModuloCompras(){
     const l=OCdata.lineas[idx];
     // Usar proveedor de la OC como contexto principal
     const provContexto=OCdata.meta.proveedor||l?.prov||db.provStock||'';
-    setModal({open:true,idx,tab:'buscar',busqQ:'',selFam:'',selCat:'',selMarca:'',
-      nuevoForm:{cod:'',desc:l?.desc||'',codp:l?.codp||l?.cod||'',prov:provContexto,fam:'',cat:'',marca:'',costoReal:l?.precioDoc||0,pvMin:0,mostrador:0}});
+    // Clasificar automáticamente antes de abrir el modal
+    const clasificacion = clasificarNoReconocido(l?.codp||l?.cod||'', l?.desc||'', l?.precioDoc||0, OCdata.meta.proveedor||'', db);
+    const tabInicial = clasificacion.tipo === 'combo_nuevo' ? 'combo'
+                     : clasificacion.tipo === 'typo' ? 'buscar' : 'nuevo';
+    const nuevoBase = clasificacion.tipo === 'combo_nuevo' ? {
+      cod: clasificacion.codSugerido,
+      desc: clasificacion.descSugerida,
+      codp: clasificacion.codSugerido,
+      prov: provContexto,
+      fam: clasificacion.artBase?.fam || '',
+      cat: clasificacion.artBase?.cat || '',
+      marca: '',
+      costoReal: clasificacion.costoSugerido || l?.precioDoc || 0,
+      pvMin: 0, mostrador: 0,
+      esCombo: true,
+      codBase: clasificacion.codBase,
+      factor: clasificacion.factor,
+    } : {cod:'',desc:l?.desc||'',codp:l?.codp||l?.cod||'',prov:provContexto,fam:'',cat:'',marca:'',costoReal:l?.precioDoc||0,pvMin:0,mostrador:0};
+    setModal({open:true,idx,tab:tabInicial,busqQ:'',selFam:'',selCat:'',selMarca:'',clasificacion,
+      nuevoForm:nuevoBase});
   };
 
   const nuevaOC=()=>{
@@ -1217,6 +1313,65 @@ function ModalArt({modal,setModal,linea,db,onAsignar,onNuevo,OCprov}){
           </div>
         )}
 
+        {modal.tab==='combo'&&(()=>{
+          const cl=modal.clasificacion||{};
+          const f=modal.nuevoForm;
+          const costoCoincide=cl.costoCoincide;
+          return(
+          <div style={{display:'flex',flexDirection:'column',gap:10,padding:'12px 0'}}>
+            {cl.artBase&&(
+              <div style={{background:'rgba(45,212,191,.06)',border:`1px solid rgba(45,212,191,.2)`,borderRadius:6,padding:'10px 14px'}}>
+                <div style={{fontSize:10,color:C.teal,marginBottom:4}}>Artículo base encontrado</div>
+                <div style={{fontSize:12,fontWeight:600,color:C.txt}}>{cl.artBase.desc||'—'}</div>
+                <div style={{fontSize:10,color:C.mut,marginTop:2}}>
+                  Cod: {cl.codBase} · CR: ${(cl.artBase.costoReal||0).toLocaleString('es-AR')} · Factor: ×{cl.factor} = {cl.factor} unidades del base
+                </div>
+              </div>
+            )}
+            <div style={{background:`rgba(240,192,64,.06)`,border:`1px solid rgba(240,192,64,.2)`,borderRadius:6,padding:'10px 14px'}}>
+              <div style={{fontSize:10,color:C.acc,marginBottom:8}}>Combo a crear</div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+                <div>
+                  <div style={{fontSize:9,color:C.mut,marginBottom:3}}>Código sugerido</div>
+                  <input value={f.cod||''} onChange={e=>setModal(m=>({...m,nuevoForm:{...m.nuevoForm,cod:e.target.value}}))}
+                    style={{width:'100%',padding:'5px 8px',background:'rgba(255,255,255,.04)',border:`1px solid ${C.b1}`,borderRadius:4,color:C.txt,fontSize:11,fontFamily:'DM Mono,monospace'}}/>
+                </div>
+                <div>
+                  <div style={{fontSize:9,color:C.mut,marginBottom:3}}>Factor</div>
+                  <input value={f.factor||cl.factor||''} onChange={e=>setModal(m=>({...m,nuevoForm:{...m.nuevoForm,factor:Number(e.target.value)}}))}
+                    style={{width:'100%',padding:'5px 8px',background:'rgba(255,255,255,.04)',border:`1px solid ${C.b1}`,borderRadius:4,color:C.vio,fontSize:11,fontFamily:'DM Mono,monospace'}}/>
+                </div>
+              </div>
+              <div style={{marginTop:8}}>
+                <div style={{fontSize:9,color:C.mut,marginBottom:3}}>Descripción (editable)</div>
+                <input value={f.desc||''} onChange={e=>setModal(m=>({...m,nuevoForm:{...m.nuevoForm,desc:e.target.value}}))}
+                  style={{width:'100%',padding:'5px 8px',background:'rgba(255,255,255,.04)',border:`1px solid ${C.b1}`,borderRadius:4,color:C.txt,fontSize:11,fontFamily:'DM Mono,monospace'}}/>
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginTop:8}}>
+                <div>
+                  <div style={{fontSize:9,color:C.mut,marginBottom:3}}>Costo sugerido</div>
+                  <div style={{display:'flex',alignItems:'center',gap:6}}>
+                    <input value={f.costoReal||''} onChange={e=>setModal(m=>({...m,nuevoForm:{...m.nuevoForm,costoReal:Number(e.target.value)}}))}
+                      style={{flex:1,padding:'5px 8px',background:'rgba(255,255,255,.04)',border:`1px solid ${C.b1}`,borderRadius:4,color:C.teal,fontSize:11,fontFamily:'DM Mono,monospace'}}/>
+                    {costoCoincide&&<span style={{fontSize:9,color:C.green}}>✓ coincide FC</span>}
+                  </div>
+                </div>
+                <div>
+                  <div style={{fontSize:9,color:C.mut,marginBottom:3}}>Familia</div>
+                  <input value={f.fam||''} onChange={e=>setModal(m=>({...m,nuevoForm:{...m.nuevoForm,fam:e.target.value}}))}
+                    style={{width:'100%',padding:'5px 8px',background:'rgba(255,255,255,.04)',border:`1px solid ${C.b1}`,borderRadius:4,color:C.txt,fontSize:11,fontFamily:'DM Mono,monospace'}}/>
+                </div>
+              </div>
+            </div>
+            <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:4}}>
+              <button onClick={()=>setModal(m=>({...m,tab:'buscar'}))} style={Btn(C.mut)}>← Buscar en su lugar</button>
+              <button onClick={()=>{onNuevo();}} style={{background:C.vio,color:'#fff',border:'none',borderRadius:4,padding:'7px 18px',fontSize:11,fontFamily:'DM Mono,monospace',cursor:'pointer'}}>
+                ⊕ Confirmar combo nuevo
+              </button>
+            </div>
+          </div>
+          );
+        })()}
         {modal.tab==='nuevo'&&(
           <div style={{padding:14,overflow:'auto',flex:1}}>
             <Alrt cls="info">La base es de solo lectura. El artículo se agrega a la lista de importación al sistema. También se puede agregar como nueva línea de proveedor si ya existe el artículo con otro proveedor.</Alrt>
