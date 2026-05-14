@@ -40,29 +40,108 @@ export async function saveCombos(combos) {
 
 // Expandir un remito: si una línea es un combo, devuelve sus componentes unitarios
 // Si no es combo, devuelve la línea tal cual
-export function expandirLineasConCombos(lineas, combos) {
-  if (!combos || !Object.keys(combos).length) return lineas;
+// ─── Detectar factor de combo desde la descripción ──────────────────────────
+// Regla: el código del combo es opaco (depende del proveedor).
+// El factor real siempre está en la descripción.
+// Ejemplos:
+//   "20 Bolsas x 50u"   → 20 × 50 = 1000
+//   "12 Packs x10u"     → 12 × 10 = 120
+//   "X1000un"           → 1000
+//   "x 24"              → 24
+//   "Bolsita x10"       → 10
+export function detectarFactorCombo(desc) {
+  if (!desc) return null;
+  const d = desc.toLowerCase();
+
+  // Patrón 1: N bolsas/packs/cajas/unid × Mu  (combo doble)
+  const m1 = d.match(/(\d+)\s*(?:bolsas?|packs?|cajas?|unidades?|bols\.?)\s*[x]\s*(\d+)/i);
+  if (m1) return { factor: parseInt(m1[1]) * parseInt(m1[2]), tipo: 'doble', detalle: `${m1[1]}×${m1[2]}` };
+
+  // Patrón 2: X N unidades al inicio o final
+  const m2 = d.match(/[x]\s*(\d+)\s*(?:un?\.?|uds?\.?|u\.?)?/i);
+  if (m2) return { factor: parseInt(m2[1]), tipo: 'simple', detalle: 'x'+m2[1] };
+
+  // Patrón 3: "por N" o "de N unidades"
+  const m3 = d.match(/(?:por|de)\s+(\d+)\s*(?:unidades?|un?\.?)?/i);
+  if (m3 && parseInt(m3[1]) > 1) return { factor: parseInt(m3[1]), tipo: 'simple', detalle: `×${m3[1]}` };
+
+  return null; // artículo unitario
+}
+
+// ─── Expandir líneas con combos ───────────────────────────────────────────────
+// PRIORIDAD 1: combo conocido en dm_combos_v1 (factor exacto)
+// PRIORIDAD 2: factor inferido de la descripción (requiere confirmación)
+// PRIORIDAD 3: artículo unitario (factor = 1)
+export function expandirLineasConCombos(lineas, combos, modo = 'expandir') {
+  // modo='expandir' → devuelve artículos unitarios con cant real
+  // modo='anotar'   → devuelve líneas originales con metadata del combo
   const expandidas = [];
   for (const l of lineas) {
-    const combo = combos[l.cod];
+
+    // PRIORIDAD 1: combo conocido
+    const combo = combos?.[l.cod];
     if (combo && combo.componentes?.length > 0) {
-      // Es un combo — expandir en componentes
-      for (const comp of combo.componentes) {
+      if (modo === 'expandir') {
+        for (const comp of combo.componentes) {
+          expandidas.push({
+            ...l,
+            cod:       comp.cod,
+            desc:      comp.desc,
+            cant:      l.cant * comp.cant,
+            esCombo:   true,
+            comboTipo: 'conocido',
+            codCombo:  l.cod,
+            descCombo: combo.desc,
+            cantCombo: l.cant,
+            factor:    comp.cant,
+            factorDesc: comp.cant > 99 ? `${l.cant}×${comp.cant}=${l.cant*comp.cant}u` : `×${comp.cant}`,
+          });
+        }
+      } else {
         expandidas.push({
           ...l,
-          cod:        comp.cod,
-          desc:       comp.desc,
-          cant:       l.cant * comp.cant,
-          esCombo:    true,
-          codCombo:   l.cod,
-          descCombo:  combo.desc,
-          cantCombo:  l.cant,
-          cantPorUn:  comp.cant,
+          esCombo: true, comboTipo: 'conocido',
+          factor: combo.componentes[0]?.cant || 1,
+          factorDesc: `×${combo.componentes[0]?.cant || 1}`,
+          cantReal: l.cant * (combo.componentes[0]?.cant || 1),
         });
       }
-    } else {
-      expandidas.push(l);
+      continue;
     }
+
+    // PRIORIDAD 2: factor inferido de la descripción
+    const inferido = detectarFactorCombo(l.desc);
+    if (inferido && inferido.factor > 1) {
+      if (modo === 'expandir') {
+        // Intentar encontrar el artículo base (quitar sufijo del código)
+        const codBase = l.cod.replace(/[/\\-]\d+$/, '').trim() || l.cod;
+        expandidas.push({
+          ...l,
+          cod:       codBase,
+          cant:      l.cant * inferido.factor,
+          esCombo:   true,
+          comboTipo: 'inferido',   // requiere confirmación del usuario
+          codCombo:  l.cod,
+          descCombo: l.desc,
+          cantCombo: l.cant,
+          factor:    inferido.factor,
+          factorTipo: inferido.tipo,
+          factorDesc: `${l.cant}×${inferido.factor}=${l.cant*inferido.factor}u`,
+        });
+      } else {
+        expandidas.push({
+          ...l,
+          esCombo: true, comboTipo: 'inferido',
+          factor: inferido.factor,
+          factorDesc: inferido.detalle,
+          cantReal: l.cant * inferido.factor,
+        });
+      }
+      continue;
+    }
+
+    // PRIORIDAD 3: artículo unitario
+    expandidas.push({ ...l, esCombo: false, factor: 1, cantReal: l.cant });
   }
   return expandidas;
 }

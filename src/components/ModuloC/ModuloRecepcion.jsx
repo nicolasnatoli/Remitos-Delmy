@@ -1,7 +1,7 @@
 // ===== MÓDULO RECEPCIÓN V3 =====
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
-import { SK, lsGet, lsSet, loadArt } from '../../utils/db';
+import { SK, lsGet, lsSet, loadArt, detectarFactorCombo } from '../../utils/db';
 
 const fn  = n => Number(n||0).toLocaleString('es-AR');
 const now = () => new Date().toISOString();
@@ -185,6 +185,7 @@ export default function ModuloRecepcion(){
     lineas:[],fotoEvidencia:null,cerrada:false,
   });
   const [art,     setArt]    = useState({});
+  const [combos,  setCombos] = useState({}); // eslint-disable-line
   const artRef = React.useRef({});  // siempre tiene el último valor de art
   // artIdx removed
   const [OCS,     setOCS]    = useState([]);
@@ -272,7 +273,17 @@ export default function ModuloRecepcion(){
         const a=codI?(artActual[codI]||art[codI]):null;
         // Buscar en OC
         const ocLinea=ocSel?ocSel.lineas?.find(ol=>ol.cod===codI||ol.codp===codDoc):null;
-        lineas.push({codDoc,codI,desc:a?.desc||String(r[iDesc]||'').trim(),matchTipo:mNivel||'none',confirmado:false,cantRemito:parseFloat(String(r[iCant]||'0'))||0,precioUnit:iPrecio>=0?parseFloat(String(r[iPrecio]||'0'))||0:0,cantOC:ocLinea?.cantOC||null,bultos:null,artsPorBulto:null,cantFis:null,diff:null,ub:'',ok:null,obs:'',candidatos:[]});
+        const cantDoc=parseFloat(String(r[iCant]||'0'))||0;
+        const comboTablaEx=combos?.[codDoc];
+        const factorEx=comboTablaEx?.componentes?.[0]?.cant||detectarFactorCombo(String(r[iDesc]||''))?.factor||1;
+        lineas.push({codDoc,codI,desc:a?.desc||String(r[iDesc]||'').trim(),matchTipo:mNivel||'none',confirmado:false,
+          cantRemito:cantDoc,
+          cantReal:cantDoc*factorEx,
+          factor:factorEx,
+          esCombo:factorEx>1,
+          comboTipo:comboTablaEx?'conocido':factorEx>1?'inferido':'no',
+          precioUnit:iPrecio>=0?parseFloat(String(r[iPrecio]||'0'))||0:0,
+          cantOC:ocLinea?.cantOC||null,bultos:null,artsPorBulto:null,cantFis:null,diff:null,ub:'',ok:null,obs:'',candidatos:[]});
       }
       setRec(prev=>{const next={...prev,lineas};saveRec(next);return next;});
       setEtapa('registro');
@@ -298,13 +309,24 @@ Respondé SOLO con JSON:
           const {cod:codI,nivel:mNivel}=cruzar(l.cod,l.desc||"",rec.meta.proveedor||"",art,ocSel?.lineas||[]);
           const a=codI?(artActual[codI]||art[codI]):null;
           const ocLinea=ocSel?ocSel.lineas?.find(ol=>ol.cod===codI||ol.codp===l.cod):null;
-          return{codDoc:l.cod,codI,desc:a?.desc||l.desc||'',matchTipo:mNivel||'none',confirmado:false,cantRemito:Number(l.cant)||0,precioUnit:Number(l.precioUnit)||0,cantOC:ocLinea?.cantOC||null,bultos:l.bultos||null,artsPorBulto:null,cantFis:null,diff:null,ub:'',ok:null,obs:'',candidatos:[]};
+          const cantDocIA=Number(l.cant)||0;
+          const comboTablaIA=combos?.[l.cod];
+          const factorIA=comboTablaIA?.componentes?.[0]?.cant||detectarFactorCombo(l.desc||'')?.factor||1;
+          return{codDoc:l.cod,codI,desc:a?.desc||l.desc||'',matchTipo:mNivel||'none',confirmado:false,
+            cantRemito:cantDocIA,
+            cantReal:cantDocIA*factorIA,
+            factor:factorIA,
+            esCombo:factorIA>1,
+            comboTipo:comboTablaIA?'conocido':factorIA>1?'inferido':'no',
+            precioUnit:Number(l.precioUnit)||0,cantOC:ocLinea?.cantOC||null,
+            bultos:l.bultos||null,artsPorBulto:null,cantFis:null,diff:null,ub:'',ok:null,obs:'',candidatos:[]};
         });
         setRec(prev=>{const next={...prev,meta:{...prev.meta,proveedor:parsed.proveedor||prev.meta.proveedor,nRemito:parsed.nDocumento||prev.meta.nRemito,fecha:parsed.fecha?parsed.fecha.split('/').reverse().join('-'):prev.meta.fecha,totalBultos:parsed.totalBultos||null,rc},lineas};saveRec(next);return next;});
         setIaStatus('');setEtapa('registro');
       }catch(e){setIaStatus('Error: '+e.message);}
     }
-  },[art,ocSel,rec.meta.proveedor,saveRec,updMeta]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[art,ocSel,rec.meta.proveedor,saveRec,updMeta,combos]);
 
   // Líneas de OC que NO vinieron en el remito → aparecen como faltantes en E4
   const lineasFaltantesOC = React.useMemo(()=>{
@@ -330,14 +352,14 @@ Respondé SOLO con JSON:
           const a=field==='artsPorBulto'?val:l.artsPorBulto;
           if(b&&a)updated.cantFis=b*a;
         }
-        if(field==='cantFis'){updated.diff=val!==null?val-(l.cantRemito||0):null;updated.ok=val!==null?val>=(l.cantRemito||0):null;}
+        if(field==='cantFis'){const base=l.cantReal||l.cantRemito||0;updated.diff=val!==null?val-base:null;updated.ok=val!==null?val>=base:null;}
         return updated;
       });
       const next={...prev,lineas};saveRec(next);return next;
     });
   },[saveRec]);
 
-  const conformeTodo=()=>{setRec(prev=>{const lineas=prev.lineas.map(l=>({...l,cantFis:l.cantRemito||0,diff:0,ok:true}));const next={...prev,lineas};saveRec(next);return next;});};
+  const conformeTodo=()=>{setRec(prev=>{const lineas=prev.lineas.map(l=>({...l,cantFis:l.cantReal||l.cantRemito||0,diff:0,ok:true}));const next={...prev,lineas};saveRec(next);return next;});};
 
   // ─── Foto evidencia ───────────────────────────────────────────────────────
   const cargarFoto=async(file)=>{const reader=new FileReader();reader.onload=e=>{setRec(prev=>{const next={...prev,fotoEvidencia:e.target.result};saveRec(next);return next;});};reader.readAsDataURL(file);};
@@ -345,7 +367,7 @@ Respondé SOLO con JSON:
   // ─── Imprimir registro ────────────────────────────────────────────────────
   const imprimirRegistro=()=>{
     const w=window.open('','_blank');
-    const totRem=rec.lineas.reduce((s,l)=>s+(l.cantRemito||0),0);
+    const totRem=rec.lineas.reduce((s,l)=>s+(l.cantReal||l.cantRemito||0),0);
     const totFis=rec.lineas.reduce((s,l)=>s+(l.cantFis||0),0);
     w.document.write(`<!DOCTYPE html><html><head><title>RC ${rec.meta.rc}</title>
 <style>body{font-family:Arial,sans-serif;font-size:10px;margin:20px}h1{font-size:15px}h2{font-size:11px;margin-top:6px}.info{display:flex;gap:20px;margin:8px 0;padding:7px;background:#f8f8f8;border-radius:3px;flex-wrap:wrap}.ii{min-width:140px}.il{font-size:8px;color:#888;text-transform:uppercase;margin-bottom:1px}.iv{font-weight:600;font-size:10px}table{width:100%;border-collapse:collapse;margin-top:8px}th{background:#111;color:#fff;padding:4px 6px;font-size:8px;text-transform:uppercase;text-align:left}td{padding:4px 6px;border-bottom:1px solid #ddd;font-size:9px}.r{text-align:right}.red{color:#c00}.firma-row{display:flex;gap:40px;margin-top:40px}.fi{flex:1;text-align:center;border-top:1px solid #333;padding-top:5px;font-size:8px}</style></head>
@@ -608,7 +630,12 @@ ${etiquetas.map(n=>`<div class="etq">
                             )}
                             {td(<span title={l.desc} style={{display:'block',maxWidth:160,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{l.desc||'—'}</span>)}
                             {td(l.cantOC??'—',{textAlign:'right',color:C.mut,fontSize:9})}
-                            {td(l.cantRemito??'—',{textAlign:'right',fontWeight:500})}
+                            {td(<div style={{textAlign:'right'}}>
+                              <div style={{fontWeight:500}}>{l.cantReal??l.cantRemito??'—'}</div>
+                              {l.esCombo&&<div style={{fontSize:8,color:'#c084fc'}}>
+                                {l.cantRemito} doc × {l.factor} = {l.cantReal}u
+                              </div>}
+                            </div>,{textAlign:'right'})}
                             <td style={{padding:'3px 4px',borderBottom:`1px solid ${C.b2}`,textAlign:'right',verticalAlign:'middle'}}>
                               <NumIn value={l.bultos} onChange={v=>updLinea(i,'bultos',v)} color={C.vio} width={60} />
                             </td>

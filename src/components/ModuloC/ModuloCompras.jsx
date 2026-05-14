@@ -1,7 +1,7 @@
 // ===== MÓDULO COMPRAS V6 =====
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
-import { SK, lsGet, lsSet, lsGetRaw, loadArt, getListaCompra } from '../../utils/db';
+import { SK, lsGet, lsSet, lsGetRaw, loadArt, getListaCompra, detectarFactorCombo } from '../../utils/db';
 
 async function apiFetch(path){const r=await fetch(path,{headers:{'Content-Type':'application/json'}});if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}
 
@@ -297,12 +297,22 @@ async function loadDB(){
   const vm=vmRaw?expandVent(vmRaw):await loadFromRedisIfEmpty(SK.vm, v=>expandVent(typeof v==='string'?v:JSON.stringify(v)), ()=>null).then(v=>v||{});
 
   console.log('[DB] arts:',Object.keys(art).length,'stk:',Object.keys(stk).length,'vs:',Object.keys(vs).length,'vm:',Object.keys(vm).length);
+  // Cargar combos
+  let combos = {}; // used via db.combos in enriquecerLinea // eslint-disable-line
+  try {
+    const combosLocal = localStorage.getItem(SK.combos);
+    if (combosLocal) combos = JSON.parse(combosLocal);
+    else {
+      const { value, exists } = await apiFetch('/api/store/'+SK.combos);
+      if (exists && value) { combos = value; try{localStorage.setItem(SK.combos,JSON.stringify(value));}catch{} }
+    }
+  } catch {}
   const sh=lsGet(SK.share,null);
   const planC=sh?.planC||lsGet(SK.plan,null);
   const plan=planC?expandPlan(planC):{};
   const listaItems=sh?.listaItems||getListaCompra().items||{};
   const provStock=sh?.prov||null;
-  return{art,stk,vs,vq,vm,plan,listaItems,provStock};
+  return{art,stk,vs,vq,vm,combos,plan,listaItems,provStock};
 }
 
 
@@ -319,7 +329,12 @@ function getFreq(prov,art){
 
 // ─── Enriquecer línea con todos los datos de la base ─────────────────────────
 function enriquecerLinea(codDoc,cant,precioDoc,descDoc,prov,db,ocLineas){
-  if(!db||!db.art)return{cod:codDoc,codp:codDoc,desc:descDoc||'',prov:prov||'',fam:'',cat:'',costoReal:0,pvMin:0,mostrador:0,cantOC:cant||0,dc:0,d1:0,d3:0,precioDoc:precioDoc||0,cantRemito:cant||0,stkDMCN:0,stkDM01:0,stkDM03:0,vs:0,vq:0,vm:0,reconocido:false,aprobado:false,rechazado:false,esSobrante:false};
+  if(!db||!db.art)return{cod:codDoc,codp:codDoc,desc:descDoc||'',prov:prov||'',fam:'',cat:'',costoReal:0,pvMin:0,mostrador:0,cantOC:cant||0,dc:0,d1:0,d3:0,precioDoc:precioDoc||0,cantRemito:cant||0,cantFC:0,stkDMCN:0,stkDM01:0,stkDM03:0,vs:0,vq:0,vm:0,reconocido:false,aprobado:false,rechazado:false,esSobrante:false};
+  // Detectar si es un combo — prioridad: tabla de combos, luego descripción
+  const comboTabla = db.combos?.[codDoc];
+  const factor = comboTabla?.componentes?.[0]?.cant || detectarFactorCombo(descDoc)?.factor || 1;
+  const cantReal = cant * factor;
+  const esComboDetectado = factor > 1;
   const matchResult=cruzar(codDoc,descDoc||"",prov||"",db.art,ocLineas||[]);
   const codI=matchResult.cod||codDoc;
   const nivel=matchResult.nivel; // 'exacto'|'parcial_codp'|'parcial_cod'|'descripcion'|null
@@ -337,8 +352,12 @@ function enriquecerLinea(codDoc,cant,precioDoc,descDoc,prov,db,ocLineas){
     precioDoc:precioDoc||0, cantRemito:cant||0,
     stkDMCN:s.DMCN, stkDM01:s.DM01, stkDM03:s.DM03,
     vs:db.vs[codI]||0, vq:db.vq[codI]||0, vm:db.vm[codI]||0,
-    reconocido:!!(nivel), // reconocido si matcheó en cualquier nivel
-    matchTipo:nivel||'none', // 'exacto'|'parcial_codp'|'parcial_cod'|'descripcion'|'none'
+    reconocido:!!(nivel),
+    matchTipo:nivel||'none',
+    esCombo:esComboDetectado,
+    comboTipo:comboTabla?'conocido':esComboDetectado?'inferido':'no',
+    factor,
+    cantReal, // unidades base reales
     aprobado:false, rechazado:false, esSobrante:false,
   };
 }
@@ -864,7 +883,7 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
                 ['ESTADO',C.mut,90],['CÓD.PROV FC',C.acc,85],['CÓD.PROV BASE',C.teal,90],['CÓD.BASE',C.blue,85],['DESCRIPCIÓN',C.txt,140],['FAM.',C.mut,55],
                 ['CEN',C.teal,48],['SOL',C.blue,48],['VAR',C.green,48],['STK',C.txt,48],
                 ['V.SEM',C.mut,44],['V.QUIN',C.mut,44],['V.MES',C.mut,44],
-                ['CANT.OC',C.txt,55],['CANT.FC',C.acc,55],['PRECIO FC',C.acc,80],['COSTO REAL',C.mut,75],['MOSTRADOR',C.blue,70],['PV MÍN.',C.vio,70],['SUBTOTAL',C.acc,80],
+                ['CANT.OC',C.txt,55],['CANT.FC',C.acc,55],['FACTOR',C.vio,52],['CANT REAL',C.teal,62],['PRECIO FC',C.acc,80],['COSTO REAL',C.mut,75],['MOSTRADOR',C.blue,70],['PV MÍN.',C.vio,70],['SUBTOTAL',C.acc,80],
                 ['ACCIÓN',C.mut,90]
               ].map(([h,c,w],i)=>(
                 <th key={i} style={{fontSize:8,color:c,padding:'4px 5px',borderBottom:`1px solid ${C.b1}`,whiteSpace:'nowrap',textTransform:'uppercase',letterSpacing:'.05em',textAlign:i>5?'right':'left',background:C.p2,width:w,minWidth:w}}>{h}</th>
@@ -914,7 +933,7 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
               const td=(c,s)=><td style={{padding:'4px 5px',borderBottom:`1px solid ${C.b2}`,fontSize:10,verticalAlign:'middle',...s}}>{c}</td>;
               return(
                 <tr key={i} style={{background:rowBg}}>
-                  {td(<span style={{fontSize:8,fontWeight:600,color:estCfg.color,whiteSpace:'nowrap'}}>{estCfg.label}</span>,{width:90})}
+                  {td(<div style={{display:'flex',flexDirection:'column',gap:1}}><span style={{fontSize:8,fontWeight:600,color:estCfg.color,whiteSpace:'nowrap'}}>{estCfg.label}</span>{l.esCombo&&<span style={{fontSize:7,color:l.comboTipo==='inferido'?C.ora:C.vio}}>⊕ {l.comboTipo==='conocido'?'combo':'combo?'}</span>}</div>,{width:90})}
                   {td(codpFC,{fontSize:9,color:C.acc,fontFamily:'DM Mono,monospace',title:`Cód. FC: ${codpFC}`})}
                   {td(l.reconocido?codpBase:'—?',{fontSize:9,color:l.reconocido?C.teal:C.red,fontFamily:'DM Mono,monospace',title:`Cód.Prov Base: ${codpBase}`})}
                   {td(l.reconocido?l.cod:'—?',{fontSize:9,color:C.blue,fontFamily:'DM Mono,monospace'})}
@@ -929,13 +948,26 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
                   {td(l.vm||'—',{textAlign:'right',fontSize:9,color:C.mut})}
                   {/* CANT OC */}
                   {td(<NumIn value={l.cantOC} onChange={v=>updLinea(i,'cantOC',v)} color={est==='NO_ENTREGADO'?C.red:C.txt} width={50} />,{textAlign:'right',padding:'3px 4px'})}
-                  {/* CANT FC — rojo si falta, teal si sobra, — si no vino en FC */}
+                  {/* CANT FC */}
                   {td((()=>{
                     const cf=l.cantFC||0;
                     if(!cf&&!l.esSobrante)return <span style={{color:C.red,fontSize:9,fontWeight:600}}>—</span>;
                     const color=cf<l.cantOC?C.red:cf>l.cantOC?C.teal:C.green;
                     return <span style={{color,fontWeight:600}}>{cf||'—'}</span>;
                   })(),{textAlign:'right'})}
+                  {/* FACTOR combo */}
+                  {td(l.esCombo
+                    ?<span style={{color:C.vio,fontWeight:600,fontSize:10}}>
+                        ×{l.factor}
+                        {l.comboTipo==='inferido'&&<span style={{fontSize:8,color:C.ora,marginLeft:3}}>?</span>}
+                      </span>
+                    :<span style={{color:C.mut,fontSize:9}}>—</span>,
+                    {textAlign:'right'})}
+                  {/* CANT REAL (unidades base) */}
+                  {td(l.esCombo
+                    ?<span style={{color:C.teal,fontWeight:700,fontSize:11}}>{(l.cantReal||l.cantOC).toLocaleString('es-AR')}</span>
+                    :<span style={{color:C.mut,fontSize:9}}>—</span>,
+                    {textAlign:'right'})}
                   {td(<NumIn value={l.precioDoc} onChange={v=>updLinea(i,'precioDoc',v)} color={C.acc} width={77} />,{textAlign:'right',padding:'3px 4px'})}
                   {td(fp(l.costoReal),{textAlign:'right',color:C.mut})}
                   {td(fp(l.mostrador),{textAlign:'right',color:C.blue})}
