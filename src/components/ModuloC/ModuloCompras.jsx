@@ -558,6 +558,79 @@ export default function ModuloCompras(){
   },[db,saveOC]);
 
   // ─── Procesar documento (factura/remito) ──────────────────────────────────
+  const aplicarDocumento=useCallback((docLineas,docMeta={})=>{
+    // Si ya hay OC: cruzar precios y cantidades. NO reemplazar líneas.
+    // Si no hay OC: crear desde documento.
+    if(OCdata.lineas.length){
+      setOCdata(prev=>{
+        // Actualizar meta si vino info del doc
+        const meta={...prev.meta};
+        if(docMeta.proveedor&&!meta.proveedor)meta.proveedor=docMeta.proveedor;
+        if(docMeta.nDocumento)meta.documento=docMeta.nDocumento;
+
+        // Para cada línea del doc, buscar su correspondiente en la OC
+        const lineasActualizadas=prev.lineas.map(l=>{
+          const match=docLineas.find(dl=>{
+            const ci=cruzar(dl.cod,dl.desc||"",meta.proveedor||docMeta.proveedor||"",db.art,prev.lineas).cod;
+            return dl.cod===l.codp||dl.cod===l.cod||(ci&&ci===l.cod);
+          });
+          if(match){
+            // Recalcular matchTipo con el código de la factura vs la OC
+            const {nivel:nivelFC}=cruzar(match.cod,match.desc||"",meta.proveedor||docMeta.proveedor||"",db.art,prev.lineas);
+            // Si el codDoc de la FC es exactamente igual al codp → exacto
+            // Si está contenido en el codp → parcial_codp
+            const codDocFC=String(match.cod||'').trim();
+            const codpOC=String(l.codp||'').trim();
+            let matchTipoFC='none';
+            if(codDocFC===codpOC) matchTipoFC='exacto';
+            else if(codpOC.includes(codDocFC)) matchTipoFC='parcial_codp';
+            else if(l.cod.includes(codDocFC)) matchTipoFC='parcial_cod';
+            else matchTipoFC=nivelFC||'descripcion';
+            return{...l,
+              codDocFC:match.cod,  // código original de la FC
+              cantFC:match.cant||0, // cantidad según FC — campo dedicado
+              precioDoc:match.precio||l.precioDoc||0,
+              cantRemito:match.cant||l.cantRemito||l.cantOC,
+              matchTipo:matchTipoFC,
+              aprobado:matchTipoFC==='exacto'?l.aprobado:false,
+            };
+          }
+          return l;
+        });
+
+        // Artículos en el doc que NO están en la OC → sobrantes
+        const codsOC=new Set(prev.lineas.map(l=>l.cod));
+        const codpOC=new Set(prev.lineas.map(l=>l.codp));
+        const sobrantes=[];
+        for(const dl of docLineas){
+          const ci=cruzar(dl.cod,dl.desc||"",meta.proveedor||docMeta.proveedor||"",db.art,prev.lineas).cod;
+          const ciKey=ci||dl.cod;
+          // Verificar si alguna línea de la OC ya matchea con este código de FC
+          const yaEnOC=codsOC.has(ciKey)||codsOC.has(dl.cod)||codpOC.has(dl.cod)||
+            // También verificar si el código de FC está contenido en algún codp de la OC
+            prev.lineas.some(l=>String(l.codp||'').includes(String(dl.cod||'').trim())||
+              String(l.cod||'').includes(String(dl.cod||'').trim()));
+          if(!yaEnOC){
+            sobrantes.push({...enriquecerLinea(dl.cod,dl.cant,dl.precio,dl.desc,meta.proveedor||docMeta.proveedor||"",db,prev.lineas),esSobrante:true,codDocFC:dl.cod,cantFC:dl.cant||0});
+          }
+        }
+
+        const updated={...prev,meta,lineas:[...lineasActualizadas,...sobrantes]};
+        saveOC(OCact,updated);
+        return updated;
+      });
+    } else {
+      const provDoc=docMeta.proveedor||OCdata.meta.proveedor||"";
+      const lineas=docLineas.map(dl=>enriquecerLinea(dl.cod,dl.cant,dl.precio,dl.desc,provDoc,db,[]));
+      const prov=docMeta.proveedor||lineas.find(l=>l.prov)?.prov||'';
+      const id='oc_'+Date.now();
+      const data={meta:{proveedor:prov,fecha:new Date().toISOString().slice(0,10),documento:docMeta.nDocumento||'',origen:'Documento',estado:'generada',historial:[{estado:'generada',ts:now(),label:nowLabel(),usuario:'Operario',desdePrev:0}]},lineas};
+      setOCdata(data);setOCact(id);saveOC(id,data);
+    }
+    setEtC('validacion');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[OCdata.lineas,OCact,db,saveOC]);
+
   const procesarDoc=useCallback(async(file)=>{
     const ext=file.name.toLowerCase().split('.').pop();
     let docLineas=[];
@@ -636,79 +709,6 @@ export default function ModuloCompras(){
       setProcesando(false);
     }
   },[db,saveOC,OCact,OCdata,aplicarDocumento]);// eslint-disable-line
-
-  const aplicarDocumento=useCallback((docLineas,docMeta={})=>{
-    // Si ya hay OC: cruzar precios y cantidades. NO reemplazar líneas.
-    // Si no hay OC: crear desde documento.
-    if(OCdata.lineas.length){
-      setOCdata(prev=>{
-        // Actualizar meta si vino info del doc
-        const meta={...prev.meta};
-        if(docMeta.proveedor&&!meta.proveedor)meta.proveedor=docMeta.proveedor;
-        if(docMeta.nDocumento)meta.documento=docMeta.nDocumento;
-
-        // Para cada línea del doc, buscar su correspondiente en la OC
-        const lineasActualizadas=prev.lineas.map(l=>{
-          const match=docLineas.find(dl=>{
-            const ci=cruzar(dl.cod,dl.desc||"",meta.proveedor||docMeta.proveedor||"",db.art,prev.lineas).cod;
-            return dl.cod===l.codp||dl.cod===l.cod||(ci&&ci===l.cod);
-          });
-          if(match){
-            // Recalcular matchTipo con el código de la factura vs la OC
-            const {nivel:nivelFC}=cruzar(match.cod,match.desc||"",meta.proveedor||docMeta.proveedor||"",db.art,prev.lineas);
-            // Si el codDoc de la FC es exactamente igual al codp → exacto
-            // Si está contenido en el codp → parcial_codp
-            const codDocFC=String(match.cod||'').trim();
-            const codpOC=String(l.codp||'').trim();
-            let matchTipoFC='none';
-            if(codDocFC===codpOC) matchTipoFC='exacto';
-            else if(codpOC.includes(codDocFC)) matchTipoFC='parcial_codp';
-            else if(l.cod.includes(codDocFC)) matchTipoFC='parcial_cod';
-            else matchTipoFC=nivelFC||'descripcion';
-            return{...l,
-              codDocFC:match.cod,  // código original de la FC
-              cantFC:match.cant||0, // cantidad según FC — campo dedicado
-              precioDoc:match.precio||l.precioDoc||0,
-              cantRemito:match.cant||l.cantRemito||l.cantOC,
-              matchTipo:matchTipoFC,
-              aprobado:matchTipoFC==='exacto'?l.aprobado:false,
-            };
-          }
-          return l;
-        });
-
-        // Artículos en el doc que NO están en la OC → sobrantes
-        const codsOC=new Set(prev.lineas.map(l=>l.cod));
-        const codpOC=new Set(prev.lineas.map(l=>l.codp));
-        const sobrantes=[];
-        for(const dl of docLineas){
-          const ci=cruzar(dl.cod,dl.desc||"",meta.proveedor||docMeta.proveedor||"",db.art,prev.lineas).cod;
-          const ciKey=ci||dl.cod;
-          // Verificar si alguna línea de la OC ya matchea con este código de FC
-          const yaEnOC=codsOC.has(ciKey)||codsOC.has(dl.cod)||codpOC.has(dl.cod)||
-            // También verificar si el código de FC está contenido en algún codp de la OC
-            prev.lineas.some(l=>String(l.codp||'').includes(String(dl.cod||'').trim())||
-              String(l.cod||'').includes(String(dl.cod||'').trim()));
-          if(!yaEnOC){
-            sobrantes.push({...enriquecerLinea(dl.cod,dl.cant,dl.precio,dl.desc,meta.proveedor||docMeta.proveedor||"",db,prev.lineas),esSobrante:true,codDocFC:dl.cod,cantFC:dl.cant||0});
-          }
-        }
-
-        const updated={...prev,meta,lineas:[...lineasActualizadas,...sobrantes]};
-        saveOC(OCact,updated);
-        return updated;
-      });
-    } else {
-      const provDoc=docMeta.proveedor||OCdata.meta.proveedor||"";
-      const lineas=docLineas.map(dl=>enriquecerLinea(dl.cod,dl.cant,dl.precio,dl.desc,provDoc,db,[]));
-      const prov=docMeta.proveedor||lineas.find(l=>l.prov)?.prov||'';
-      const id='oc_'+Date.now();
-      const data={meta:{proveedor:prov,fecha:new Date().toISOString().slice(0,10),documento:docMeta.nDocumento||'',origen:'Documento',estado:'generada',historial:[{estado:'generada',ts:now(),label:nowLabel(),usuario:'Operario',desdePrev:0}]},lineas};
-      setOCdata(data);setOCact(id);saveOC(id,data);
-    }
-    setEtC('validacion');
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[OCdata.lineas,OCact,db,saveOC]);
 
   // ─── Modal ────────────────────────────────────────────────────────────────
   const asignarArt=useCallback((idx,cod,matchType,esMismo)=>{
