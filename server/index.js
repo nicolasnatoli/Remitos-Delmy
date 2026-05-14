@@ -168,7 +168,7 @@ Respondé SOLO con JSON válido, sin markdown, sin explicaciones:
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 8000,
         messages: [{
           role: 'user',
@@ -202,3 +202,4 @@ app.listen(PORT, () => {
   // Redis se conecta después de que el servidor ya está escuchando
   connectRedis();
 });
+// rebuild trigger May 14
