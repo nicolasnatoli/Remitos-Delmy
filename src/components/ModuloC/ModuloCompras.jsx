@@ -562,42 +562,57 @@ export default function ModuloCompras(){
     const ext=file.name.toLowerCase().split('.').pop();
     let docLineas=[];
     let docMeta={};
-
-    if(ext==='xlsx'||ext==='xls'){
-      const ab=await file.arrayBuffer();
-      const wb=XLSX.read(ab,{type:'array'});
-      const ws=wb.Sheets[wb.SheetNames[0]];
-      const raw=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
-      let hRow=0;
-      for(let i=0;i<Math.min(raw.length,15);i++){if(raw[i].some(c=>/c[oó]d|descrip/i.test(String(c||'')))){hRow=i;break;}}
-      const hdrs=raw[hRow].map(h=>String(h||'').toLowerCase().trim());
-      const iCod=Math.max(0,hdrs.findIndex(h=>/c[oó]d/.test(h)));
-      const iDesc=Math.max(1,hdrs.findIndex(h=>h.includes('descrip')));
-      const iCant=Math.max(2,hdrs.findIndex(h=>h.includes('cant')));
-      const iPrecio=hdrs.findIndex(h=>/prec|cost/.test(h));
-      for(let i=hRow+1;i<raw.length;i++){
-        const r=raw[i];const cod=String(r[iCod]||'').trim();if(!cod||cod.length<2)continue;
-        docLineas.push({cod,desc:String(r[iDesc]||'').trim(),cant:parseFloat(String(r[iCant]||'0').replace(',','.'))||0,precio:parseFloat(String(r[iPrecio>=0?iPrecio:3]||'0').replace(',','.'))||0});
-      }
-    } else {
-      // IA
-      try{
+    setProcesando(true);
+    try{
+      if(ext==='xlsx'||ext==='xls'){
+        const ab=await file.arrayBuffer();
+        const wb=XLSX.read(ab,{type:'array'});
+        const ws=wb.Sheets[wb.SheetNames[0]];
+        const raw=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+        let hRow=0;
+        for(let i=0;i<Math.min(raw.length,15);i++){if(raw[i].some(c=>/c[oó]d|descrip/i.test(String(c||'')))){hRow=i;break;}}
+        const hdrs=raw[hRow].map(h=>String(h||'').toLowerCase().trim());
+        const iCod=Math.max(0,hdrs.findIndex(h=>/c[oó]d/.test(h)));
+        const iDesc=Math.max(1,hdrs.findIndex(h=>h.includes('descrip')));
+        const iCant=Math.max(2,hdrs.findIndex(h=>h.includes('cant')));
+        const iPrecio=hdrs.findIndex(h=>/prec|cost/.test(h));
+        for(let i=hRow+1;i<raw.length;i++){
+          const r=raw[i];const cod=String(r[iCod]||'').trim();if(!cod||cod.length<2)continue;
+          docLineas.push({cod,desc:String(r[iDesc]||'').trim(),cant:parseFloat(String(r[iCant]||'0').replace(',','.'))||0,precio:parseFloat(String(r[iPrecio>=0?iPrecio:3]||'0').replace(',','.'))||0});
+        }
+      } else {
+        // IA — imagen o PDF
         const isPdf=file.type==='application/pdf'||file.name.toLowerCase().endsWith('.pdf');
         const reader=new FileReader();
-        const b64=await new Promise(res=>{reader.onload=e=>res(e.target.result.split(',')[1]);reader.readAsDataURL(file);});
+        const b64=await new Promise((res,rej)=>{reader.onload=e=>res(e.target.result.split(',')[1]);reader.onerror=()=>rej(new Error('No se pudo leer el archivo'));reader.readAsDataURL(file);});
         const mtype=isPdf?'application/pdf':file.type||'image/jpeg';
         const res=await fetch('/api/ia/extract',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base64:b64,mediaType:mtype})});
-        if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e.error||'Error: '+res.status);}
+        if(!res.ok){
+          const errBody=await res.json().catch(()=>({}));
+          throw new Error(errBody.error||`Error servidor: ${res.status} ${res.statusText}`);
+        }
         const result=await res.json();
-        const parsed=JSON.parse((result.text||'').replace(/```json|```/g,'').trim());
+        if(!result.text)throw new Error('La IA no devolvió texto. Verificá ANTHROPIC_API_KEY en Railway.');
+        let parsed;
+        try{
+          parsed=JSON.parse(result.text.replace(/```json|```/g,'').trim());
+        }catch(pe){
+          throw new Error('Respuesta IA no es JSON válido. Primeros 300 chars: '+result.text.slice(0,300));
+        }
+        if(!parsed.lineas||!Array.isArray(parsed.lineas))
+          throw new Error('Falta campo "lineas" en respuesta IA. Keys recibidas: '+Object.keys(parsed).join(', '));
         docMeta={proveedor:parsed.proveedor||'',nDocumento:parsed.nDocumento||'',fecha:parsed.fecha||''};
-        docLineas=(parsed.lineas||[]).map(l=>({cod:l.cod,desc:l.desc||'',cant:Number(l.cant)||0,precio:Number(l.precioUnit)||0}));
-      }catch(e){alert('Error IA: '+e.message);return;}
+        docLineas=parsed.lineas.map(l=>({cod:String(l.cod||''),desc:l.desc||'',cant:Number(l.cant)||0,precio:Number(l.precioUnit)||0}));
+      }
+      if(!docLineas.length){alert('⚠ El documento no tiene líneas reconocibles');return;}
+      aplicarDocumento(docLineas,docMeta);
+    }catch(e){
+      console.error('[procesarDoc]',e);
+      alert('❌ Error al procesar el archivo:\n\n'+e.message);
+    }finally{
+      setProcesando(false);
     }
-
-    if(!docLineas.length){alert('Sin líneas en el documento');return;}
-    aplicarDocumento(docLineas,docMeta);
-  },[db,saveOC,OCact,OCdata]);// eslint-disable-line
+  },[db,saveOC,OCact,OCdata,aplicarDocumento]);// eslint-disable-line
 
   const aplicarDocumento=useCallback((docLineas,docMeta={})=>{
     // Si ya hay OC: cruzar precios y cantidades. NO reemplazar líneas.
@@ -776,6 +791,7 @@ export default function ModuloCompras(){
   const nOtroProv=OCdata.lineas.filter(l=>l.otroProveedor).length;
   const nParciales=OCdata.lineas.filter(l=>l.matchTipo==='parcial_codp'||l.matchTipo==='parcial_cod'||l.matchTipo==='descripcion').length;
 
+  const [procesando, setProcesando] = useState(false);
   const fileRef=useRef();
 
   return(
@@ -832,6 +848,7 @@ export default function ModuloCompras(){
             <EtCarga OCdata={OCdata} setOCdata={setOCdata}
               importarDesdeStock={importarDesdeStock}
               fileRef={fileRef} procesarDoc={procesarDoc}
+              procesando={procesando}
               onNext={()=>setEtC('validacion')}
               saveOC={saveOC} OCact={OCact} />
           )}
@@ -839,6 +856,7 @@ export default function ModuloCompras(){
             <EtValidacion OCdata={OCdata} setOCdata={setOCdata}
               db={db} dbReady={dbReady}
               fileRef={fileRef} procesarDoc={procesarDoc}
+              procesando={procesando}
               saveOC={saveOC} OCact={OCact}
               abrirModal={abrirModal}
               onBack={()=>setEtC('carga')}
@@ -901,7 +919,7 @@ function Steps({etC,setEtC}){
 }
 
 // ─── E1 CARGA ─────────────────────────────────────────────────────────────────
-function EtCarga({OCdata,setOCdata,importarDesdeStock,fileRef,procesarDoc,onNext,saveOC,OCact}){
+function EtCarga({OCdata,setOCdata,importarDesdeStock,fileRef,procesarDoc,procesando,onNext,saveOC,OCact}){
   const upd=(f,v)=>{const meta={...OCdata.meta,[f]:v};const d={...OCdata,meta};setOCdata(d);saveOC(OCact,d);};
   const hasOC=OCdata.lineas.length>0;
   return(
@@ -915,12 +933,12 @@ function EtCarga({OCdata,setOCdata,importarDesdeStock,fileRef,procesarDoc,onNext
         <div>
           <div style={{fontSize:9,color:C.mut,marginBottom:6}}>OPCIÓN 2 — PLANILLA EXCEL</div>
           <Alrt cls="info">Exportada desde Stock+ o del proveedor</Alrt>
-          <button onClick={()=>fileRef.current.click()} style={{...Btn(),width:'100%'}}>📋 Cargar .xlsx</button>
+          <button disabled={procesando} onClick={()=>fileRef.current.click()} style={{...Btn(),width:'100%',opacity:procesando?.5:1}}>{procesando?'⏳ Procesando...':'📋 Cargar .xlsx'}</button>
         </div>
         <div>
           <div style={{fontSize:9,color:C.mut,marginBottom:6}}>OPCIÓN 3 — FACTURA / REMITO</div>
           <Alrt cls="info">PDF, imagen o Excel — lectura con IA</Alrt>
-          <button onClick={()=>fileRef.current.click()} style={{...Btn(),width:'100%'}}>📄 Subir documento</button>
+          <button disabled={procesando} onClick={()=>fileRef.current.click()} style={{...Btn(),width:'100%',opacity:procesando?.5:1}}>{procesando?'⏳ Procesando IA...':'📄 Subir documento'}</button>
         </div>
       </div>
       {hasOC&&<Alrt cls="ok">✓ OC activa: {OCdata.lineas.length} artículos · {OCdata.meta.proveedor||'(sin prov)'} · {OCdata.meta.origen||'manual'} · <span style={{fontSize:9}}>Subir factura en Validación para cruzar precios sin reemplazar</span></Alrt>}
@@ -938,7 +956,7 @@ function EtCarga({OCdata,setOCdata,importarDesdeStock,fileRef,procesarDoc,onNext
 }
 
 // ─── E2 VALIDACIÓN ────────────────────────────────────────────────────────────
-function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OCact,abrirModal,onBack,onNext}){
+function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesando,saveOC,OCact,abrirModal,onBack,onNext}){
   if(!OCdata.lineas.length)return<div><Alrt cls="warn">Sin líneas. Volvé a Carga.</Alrt><button onClick={onBack} style={Btn()}>← Volver</button></div>;
 
   const rec=OCdata.lineas.filter(l=>l.reconocido&&l.matchTipo==='exacto').length;
@@ -976,8 +994,15 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,saveOC,OC
 
       <div style={{display:'flex',gap:7,marginBottom:8,alignItems:'center',flexWrap:'wrap'}}>
         <span style={{fontSize:9,color:C.mut}}>Subir factura/remito para cruzar precios (no borra la OC):</span>
-        <button onClick={()=>fileRef.current.click()} style={Btn(C.mut)}>📄 Subir factura</button>
-        <button onClick={()=>{const d={...OCdata,lineas:OCdata.lineas.map(l=>({...l,precioDoc:0}))};setOCdata(d);saveOC(OCact,d);}} style={Btn(C.mut)}>Limpiar precios</button>
+        <button
+          disabled={procesando}
+          onClick={()=>fileRef.current.click()}
+          style={{...Btn(procesando?C.mut:C.acc,'rgba(240,192,64,.1)'),opacity:procesando?.5:1,cursor:procesando?'not-allowed':'pointer'}}
+        >
+          {procesando?'⏳ Procesando IA...':'📄 Subir factura'}
+        </button>
+        {!procesando&&<button onClick={()=>{const d={...OCdata,lineas:OCdata.lineas.map(l=>({...l,precioDoc:0}))};setOCdata(d);saveOC(OCact,d);}} style={Btn(C.mut)}>Limpiar precios</button>}
+        {procesando&&<span style={{fontSize:9,color:C.acc,fontStyle:'italic'}}>La IA está leyendo el documento, esperá unos segundos…</span>}
       </div>
 
       {/* Banner proveedor sticky — siempre visible al scrollear */}
