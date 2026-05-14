@@ -1,5 +1,11 @@
-// server/index.js — línea ~166
-// Cambiar esto:
-model: 'claude-sonnet-4-5',
-// Por esto:
-model: 'claude-sonnet-4-5-20251001',
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import './index.css';
+import App from './App';
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
