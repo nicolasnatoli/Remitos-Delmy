@@ -785,16 +785,20 @@ export default function ModuloCompras(){
 
   const exportarNuevos=()=>{
     const nList=lsGet(SK.nuevos,[]);
-    // También incluir artículos de otro proveedor de la OC
-    // Incluir: artículos con match parcial aprobados + artículos de otro proveedor asignados
     const parciales=OCdata.lineas.filter(l=>l.aprobado&&(l.matchTipo==='parcial_codp'||l.matchTipo==='parcial_cod'||l.matchTipo==='descripcion'));
     const otrosProv=OCdata.lineas.filter(l=>l.otroProveedor);
     const noEntregados=OCdata.lineas.filter(l=>estadoLinea(l)==='NO_ENTREGADO');
-    const rows=[['Código Interno','Cód.Prov FC','Cód.Prov Base','Descripción','Familia','Categ.','Costo Real','PV Mín.','Mostrador','Proveedor','Motivo']];
-    nList.forEach(n=>rows.push([n.cod,n.codp,n.desc,n.fam,n.cat,n.marca||'',n.costoReal,n.pvMin,n.mostrador,n.prov,n.fechaAlta]));
-    parciales.forEach(l=>{rows.push([l.cod,l.codDocFC||l.codp,l.codp,l.desc,l.fam,l.cat||'',l.costoReal,l.pvMin,l.mostrador,l.prov,`Corregir código (${l.matchTipo}): FC=${l.codDocFC||l.codp} Base codp=${l.codp}`]);});
-    otrosProv.forEach(l=>{if(!rows.find(r=>r[0]===l.cod))rows.push([l.cod,l.codDocFC||l.codp,l.codp,l.desc,l.fam,l.cat||'',l.costoReal,l.pvMin,l.mostrador,OCdata.meta.proveedor,'Nueva línea proveedor']);});
-    noEntregados.forEach(l=>{rows.push([l.cod,l.codDocFC||l.codp,l.codp,l.desc,l.fam,l.cat||'',l.costoReal,l.pvMin,l.mostrador,l.prov,'NO ENTREGADO — pendiente de entrega']);});
+    // Combos nuevos: detectados por descripción (inferido) que NO existen en db.combos
+    const combosNuevos=OCdata.lineas.filter(l=>
+      l.esCombo && l.comboTipo==='inferido' &&
+      !db.combos?.[l.codp] && !db.combos?.[l.cod]
+    );
+    const rows=[['Tipo','Código Interno','Cód.Prov FC','Cód.Prov Base','Descripción FC','Factor','Cant.Combo','Cant.Base','Precio Combo','Costo Unit.Base','Proveedor','Motivo']];
+    nList.forEach(n=>rows.push(['NUEVO_ART',n.cod,n.codp,n.codp,n.desc,1,'','',n.costoReal,n.costoReal,n.prov,'Artículo nuevo']));
+    parciales.forEach(l=>{rows.push(['CORR_COD',l.cod,l.codDocFC||l.codp,l.codp,l.desc,l.factor||1,l.cantFC||'',l.cantReal||'',l.precioDoc||'',l.costoReal,l.prov,`Corregir código: FC=${l.codDocFC||l.codp} → Base=${l.codp}`]);});
+    otrosProv.forEach(l=>{if(!rows.find(r=>r[1]===l.cod))rows.push(['NUEVO_PROV',l.cod,l.codDocFC||l.codp,l.codp,l.desc,l.factor||1,l.cantFC||'',l.cantReal||'',l.precioDoc||'',l.costoReal,OCdata.meta.proveedor,'Nueva línea proveedor']);});
+    noEntregados.forEach(l=>{rows.push(['NO_ENTREGADO',l.cod,l.codDocFC||l.codp,l.codp,l.desc,l.factor||1,l.cantFC||'',l.cantReal||'',l.precioDoc||'',l.costoReal,l.prov,'No entregado — pendiente']);});
+    combosNuevos.forEach(l=>{rows.push(['COMBO_NUEVO',l.cod,l.codDocFC||l.codp,l.codp,l.descFC||l.desc,l.factor||1,l.cantFC||'',l.cantReal||'',l.precioDoc||'',l.costoReal,l.prov,`Combo nuevo inferido ×${l.factor} — crear en base`]);});
     if(rows.length===1){alert('Sin artículos nuevos para exportar');return;}
     const wb=XLSX.utils.book_new();const ws=XLSX.utils.aoa_to_sheet(rows);XLSX.utils.book_append_sheet(wb,ws,'Nuevos');
     XLSX.writeFile(wb,`articulos_nuevos_${new Date().toISOString().slice(0,10)}.xlsx`);
@@ -813,6 +817,7 @@ export default function ModuloCompras(){
   const nNuevos=lsGet(SK.nuevos,[]).length;
   const nOtroProv=OCdata.lineas.filter(l=>l.otroProveedor).length;
   const nParciales=OCdata.lineas.filter(l=>l.matchTipo==='parcial_codp'||l.matchTipo==='parcial_cod'||l.matchTipo==='descripcion').length;
+  const nCombosNuevos=OCdata.lineas.filter(l=>l.esCombo&&l.comboTipo==='inferido'&&!db.combos?.[l.codp]&&!db.combos?.[l.cod]).length;
 
   const [procesando, setProcesando] = useState(false);
   const fileRef=useRef();
@@ -830,7 +835,7 @@ export default function ModuloCompras(){
           <button onClick={reloadDB}            style={Btn(C.mut)}>↺ DB</button>
           <button onClick={importarDesdeStock}   style={Btn(C.acc,'rgba(240,192,64,.08)')}>← Stock+</button>
           <button onClick={exportarOC}           style={Btn(C.teal,'rgba(45,212,191,.08)')}>↓ Excel OC</button>
-          {(nNuevos>0||nOtroProv>0||nParciales>0)&&<button onClick={exportarNuevos} style={Btn(C.ora,'rgba(251,146,60,.08)')}>↓ Masivo ({nNuevos+nOtroProv+nParciales})</button>}
+          {(nNuevos>0||nOtroProv>0||nParciales>0||nCombosNuevos>0)&&<button onClick={exportarNuevos} style={Btn(C.ora,'rgba(251,146,60,.08)')}>↓ Masivo ({nNuevos+nOtroProv+nParciales+nCombosNuevos})</button>}
         </div>
       </div>
 
@@ -1046,11 +1051,11 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
           <thead>
             <tr>
               {[
-                ['ESTADO',C.mut,90],['CÓD.PROV BASE',C.teal,90],['CÓD.BASE',C.blue,85],['DESCRIPCIÓN',C.txt,200],['FAM.',C.mut,55],
-                ['CEN',C.teal,48],['SOL',C.blue,48],['VAR',C.green,48],['STK',C.txt,48],
-                ['V.SEM',C.mut,44],['V.QUIN',C.mut,44],['V.MES',C.mut,44],
-                ['CANT.OC',C.txt,55],['CANT.FC',C.acc,55],['FACTOR',C.vio,52],['CANT REAL',C.teal,62],['PRECIO FC',C.acc,80],['COSTO REAL',C.mut,75],['MOSTRADOR',C.blue,70],['PV MÍN.',C.vio,70],['SUBTOTAL',C.acc,80],
-                ['ACCIÓN',C.mut,90]
+                ['ESTADO',C.mut,88],['CÓD.PROV BASE',C.teal,82],['CÓD.BASE',C.blue,78],['DESCRIPCIÓN / FC',C.txt,230],
+                ['CEN',C.teal,36],['SOL',C.blue,36],['VAR',C.green,36],['STK',C.txt,36],
+                ['V.S',C.mut,32],['V.Q',C.mut,32],['V.M',C.mut,32],
+                ['CANT.OC',C.txt,52],['CANT.FC',C.acc,62],['FACTOR',C.vio,46],['CANT REAL',C.teal,56],['PRECIO FC',C.acc,78],['COSTO REAL',C.mut,72],['MOSTRADOR',C.blue,66],['PV MÍN.',C.vio,66],['SUBTOTAL',C.acc,76],
+                ['ACCIÓN',C.mut,88]
               ].map(([h,c,w],i)=>(
                 <th key={i} style={{fontSize:8,color:c,padding:'4px 5px',borderBottom:`1px solid ${C.b1}`,whiteSpace:'nowrap',textTransform:'uppercase',letterSpacing:'.05em',textAlign:i>5?'right':'left',background:C.p2,width:w,minWidth:w}}>{h}</th>
               ))}
@@ -1098,21 +1103,55 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
               } else {
                 accion=<span style={{fontSize:9,color:C.green}}>✓ Exacto</span>;
               }
-              const td=(c,s)=><td style={{padding:'4px 5px',borderBottom:`1px solid ${C.b2}`,fontSize:10,verticalAlign:'middle',...s}}>{c}</td>;
+              const td=(c,s)=><td style={{padding:'3px 4px',borderBottom:`1px solid ${C.b2}`,fontSize:10,verticalAlign:'top',...s}}>{c}</td>;
+              const cfBase = (l.cantFC||0) * factor;
+              const hayFC  = l.cantFC > 0 || l.precioDoc > 0;
               return(
                 <tr key={i} style={{background:rowBg}}>
-                  {td(<div style={{display:'flex',flexDirection:'column',gap:1}}><span style={{fontSize:8,fontWeight:600,color:estCfg.color,whiteSpace:'nowrap'}}>{estCfg.label}</span>{l.esCombo&&<span style={{fontSize:7,color:l.comboTipo==='inferido'?C.ora:C.vio}}>⊕ {l.comboTipo==='conocido'?'combo':'combo?'}</span>}</div>,{width:90})}
-                  {td(l.reconocido?codpBase:'—?',{fontSize:9,color:l.reconocido?C.teal:C.red,fontFamily:'DM Mono,monospace',title:`Cód.Prov Base: ${codpBase}`})}
-                  {td(l.reconocido?l.cod:'—?',{fontSize:9,color:C.blue,fontFamily:'DM Mono,monospace'})}
-                  {td(<div style={{display:'flex',flexDirection:'column',gap:1,maxWidth:200}}>
-                    <span style={{fontWeight:700,fontSize:10,color:C.txt,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}} title={l.desc}>{l.desc||'—'}</span>
-                    {l.descFC&&l.descFC!==l.desc&&<span style={{fontSize:9,color:C.mut,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}} title={`FC: ${l.descFC}`}>FC: {l.descFC}</span>}
-                    {(l.codDocFC||l.codp)&&<span style={{fontSize:9,fontFamily:'DM Mono,monospace',color:'#4b5275',whiteSpace:'nowrap'}}>
-                      {l.codDocFC&&l.codDocFC!==l.codp&&<span>CÓD FC: <span style={{color:C.acc}}>{l.codDocFC}</span>&nbsp;&nbsp;</span>}
-                      CÓD BASE: <span style={{color:C.teal}}>{l.codp||'—'}</span>
-                    </span>}
-                  </div>)}
-                  {td(l.fam||'—',{fontSize:9,color:C.mut})}
+                  {/* ESTADO */}
+                  {td(<div style={{display:'flex',flexDirection:'column',gap:1,paddingTop:2}}>
+                    <span style={{fontSize:8,fontWeight:600,color:estCfg.color,whiteSpace:'nowrap'}}>{estCfg.label}</span>
+                    {l.esCombo&&<span style={{fontSize:7,color:l.comboTipo==='inferido'?C.ora:C.vio}}>⊕ {l.comboTipo==='conocido'?'combo':'combo?'}</span>}
+                  </div>,{width:88,verticalAlign:'top'})}
+                  {/* CÓD.PROV BASE + código FC debajo si difiere */}
+                  {td(<div style={{display:'flex',flexDirection:'column',gap:1}}>
+                    <span style={{fontSize:9,color:l.reconocido?C.teal:C.red,fontFamily:'DM Mono,monospace'}}>{l.reconocido?codpBase:'—?'}</span>
+                    {l.codDocFC&&l.codDocFC!==codpBase&&hayFC&&<span style={{fontSize:8,color:C.acc,fontFamily:'DM Mono,monospace'}} title="Código en FC">↑{l.codDocFC}</span>}
+                  </div>,{verticalAlign:'top'})}
+                  {/* CÓD.BASE */}
+                  {td(l.reconocido?<span style={{fontSize:9,color:C.blue,fontFamily:'DM Mono,monospace'}}>{l.cod}</span>:<span style={{fontSize:9,color:C.red}}>—?</span>,{verticalAlign:'top'})}
+                  {/* DESCRIPCIÓN: BASE (principal) + FC abajo + combo detalle + componentes */}
+                  {td((()=>{
+                    const comboData = db.combos?.[l.codp] || db.combos?.[l.cod];
+                    const componentes = comboData?.componentes || [];
+                    const esComboInferido = l.esCombo && l.comboTipo === 'inferido';
+                    const esComboNuevo   = l.esCombo && !comboData;
+                    return <div style={{display:'flex',flexDirection:'column',gap:2,maxWidth:230}}>
+                      {/* Línea BASE — artículo unitario */}
+                      <span style={{fontWeight:700,fontSize:10,color:C.txt,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}} title={l.desc}>{l.desc||'—'}</span>
+                      {/* Línea FC + combo info */}
+                      {hayFC&&<div style={{display:'flex',flexDirection:'column',gap:1,paddingLeft:6,borderLeft:`2px solid ${l.esCombo?C.vio+'66':C.acc+'44'}`}}>
+                        <span style={{fontSize:8,color:C.acc,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}} title={l.descFC||l.desc}>
+                          FC: {l.descFC||l.desc||'—'}
+                        </span>
+                        {l.esCombo&&<span style={{fontSize:8,color:C.vio,whiteSpace:'nowrap'}}>
+                          ⊕ {l.cantFC||'?'}×{factor} = {cfBase.toLocaleString('es-AR')} u.base
+                          {esComboInferido&&<span style={{color:C.ora}}> (?inferido)</span>}
+                          {esComboNuevo&&<span style={{color:C.red,fontWeight:600}}> ✗ NUEVO</span>}
+                        </span>}
+                        {/* Componentes del combo en la base */}
+                        {componentes.length>0&&componentes.map((comp,ci)=>(
+                          <span key={ci} style={{fontSize:7,color:'#8b7cf8',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>
+                            └ {comp.cod} · {comp.desc||''} ×{comp.cant}
+                          </span>
+                        ))}
+                        {/* Combo inferido sin componentes conocidos → necesita crearse */}
+                        {l.esCombo&&componentes.length===0&&<span style={{fontSize:7,color:C.ora,whiteSpace:'nowrap'}}>
+                          └ {esComboNuevo?'⚠ Combo no existe en base — exportar':'└ sin detalle'}
+                        </span>}
+                      </div>}
+                    </div>;
+                  })(),{verticalAlign:'top'})}
                   {td(l.stkDMCN||'—',{textAlign:'right',color:l.stkDMCN>0?C.teal:C.mut,fontSize:9})}
                   {td(l.stkDM01||'—',{textAlign:'right',color:l.stkDM01>0?C.blue:C.mut,fontSize:9})}
                   {td(l.stkDM03||'—',{textAlign:'right',color:l.stkDM03>0?C.green:C.mut,fontSize:9})}
@@ -1161,7 +1200,7 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
             })}
             {/* Fila de totales */}
             <tr style={{background:'rgba(240,192,64,.04)'}}>
-              <td colSpan={6} style={{padding:'5px 5px',fontSize:9,color:C.mut,textAlign:'right',borderTop:`1px solid ${C.b1}`}}>TOTALES →</td>
+              <td colSpan={5} style={{padding:'5px 5px',fontSize:9,color:C.mut,textAlign:'right',borderTop:`1px solid ${C.b1}`}}>TOTALES →</td>
               <td colSpan={7} style={{padding:'5px 5px',borderTop:`1px solid ${C.b1}`}}></td>
               <td style={{padding:'5px 5px',textAlign:'right',borderTop:`1px solid ${C.b1}`,fontSize:10,fontWeight:600}}>{fn(OCdata.lineas.reduce((s,l)=>s+l.cantOC,0))}</td>
               <td style={{padding:'5px 5px',textAlign:'right',borderTop:`1px solid ${C.b1}`,fontSize:10,fontWeight:600,color:C.acc}}>{fn(OCdata.lineas.reduce((s,l)=>s+(l.cantFC||0)*(l.factor||1),0))}</td>
