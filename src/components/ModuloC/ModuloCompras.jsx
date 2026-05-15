@@ -424,10 +424,14 @@ function enriquecerLinea(codDoc,cant,precioDoc,descDoc,prov,db,ocLineas){
   const codI=matchResult.cod||codDoc;
   const nivel=matchResult.nivel;
   const a=db.art[codI]||{desc:descDoc||'',codp:codDoc,prov:'',fam:'',cat:'',costoReal:0,pvMin:0,mostrador:0};
-  // esCombo: solo cuando el artículo de la FC es un empaque MAYOR que el unitario de la base
-  // Si el codp del artículo en la base coincide exactamente con el codDoc → NO es combo, es el mismo artículo
-  const codpBase = a.codp || codDoc;
-  const mismoArticulo = codpBase.toLowerCase() === codDoc.toLowerCase();
+  // esCombo: solo cuando el artículo de la FC es empaque MAYOR que el unitario de la base
+  // Si el codp del artículo en la base coincide con el codDoc → es el mismo artículo, NO combo
+  const codpBase = a.codp || '';
+  const mismoArticulo = codpBase && (
+    codpBase.toLowerCase() === codDoc.toLowerCase() ||
+    // también considerar mismo si codDoc contiene el codpBase (ej: '6002B/50' vs '6002B/50')
+    codDoc.toLowerCase().startsWith(codpBase.toLowerCase())
+  );
   const factorDesc = !mismoArticulo ? (comboTabla?.componentes?.[0]?.cant || detectarFactorCombo(descDoc)?.factor || 1) : 1;
   const factor = factorDesc;
   const cantReal = cant * factor;
@@ -438,7 +442,9 @@ function enriquecerLinea(codDoc,cant,precioDoc,descDoc,prov,db,ocLineas){
   const plan=planC?expandPlan(planC):{};
   const p=plan[codI]||{ac:0,d1:0,d3:0,dc:0};
   return{
-    cod:codI, codp:codDoc,
+    cod:codI, codp:a.codp||codDoc,
+    codDocFC:codDoc,           // código TAL COMO vino en la FC
+    descFC:descDoc||'',        // descripción TAL COMO vino en la FC
     desc:a.desc||descDoc||'', prov:a.prov||'', fam:a.fam||'', cat:a.cat||'',
     costoReal:a.costoReal||0, pvMin:a.pvMin||0, mostrador:a.mostrador||0,
     cantOC:cant||0, dc:p.dc||0, d1:p.d1||0, d3:p.d3||0,
@@ -450,7 +456,7 @@ function enriquecerLinea(codDoc,cant,precioDoc,descDoc,prov,db,ocLineas){
     esCombo:esComboDetectado,
     comboTipo:comboTabla?'conocido':esComboDetectado?'inferido':'no',
     factor,
-    cantReal, // unidades base reales
+    cantReal,
     aprobado:false, rechazado:false, esSobrante:false,
   };
 }
@@ -564,61 +570,55 @@ export default function ModuloCompras(){
 
   // ─── Procesar documento (factura/remito) ──────────────────────────────────
   const aplicarDocumento=useCallback((docLineas,docMeta={})=>{
-    // Si ya hay OC: cruzar precios y cantidades. NO reemplazar líneas.
-    // Si no hay OC: crear desde documento.
     if(OCdata.lineas.length){
       setOCdata(prev=>{
-        // Actualizar meta si vino info del doc
         const meta={...prev.meta};
         if(docMeta.proveedor&&!meta.proveedor)meta.proveedor=docMeta.proveedor;
         if(docMeta.nDocumento)meta.documento=docMeta.nDocumento;
+        const provDoc=meta.proveedor||docMeta.proveedor||'';
 
-        // Para cada línea del doc, buscar su correspondiente en la OC
+        // Cruce 1:1 — cada línea FC asignada a UNA sola línea OC
+        const usadasFC=new Set();
+        const nivOrder={'exacto':4,'parcial_codp':3,'parcial_cod':2,'parcial_sufijo':2,'parcial_prefijo':1,'descripcion':1};
+
         const lineasActualizadas=prev.lineas.map(l=>{
-          const match=docLineas.find(dl=>{
-            const ci=cruzar(dl.cod,dl.desc||"",meta.proveedor||docMeta.proveedor||"",db.art,prev.lineas).cod;
-            return dl.cod===l.codp||dl.cod===l.cod||(ci&&ci===l.cod);
-          });
-          if(match){
-            // Recalcular matchTipo con el código de la factura vs la OC
-            const {nivel:nivelFC}=cruzar(match.cod,match.desc||"",meta.proveedor||docMeta.proveedor||"",db.art,prev.lineas);
-            // Si el codDoc de la FC es exactamente igual al codp → exacto
-            // Si está contenido en el codp → parcial_codp
-            const codDocFC=String(match.cod||'').trim();
+          let bestMatch=null,bestIdx=-1,bestNivel='none';
+          docLineas.forEach((dl,idx)=>{
+            if(usadasFC.has(idx))return;
+            const codFC=String(dl.cod||'').trim();
             const codpOC=String(l.codp||'').trim();
-            let matchTipoFC='none';
-            if(codDocFC===codpOC) matchTipoFC='exacto';
-            else if(codpOC.includes(codDocFC)) matchTipoFC='parcial_codp';
-            else if(l.cod.includes(codDocFC)) matchTipoFC='parcial_cod';
-            else matchTipoFC=nivelFC||'descripcion';
+            let nivel='none';
+            if(codFC===codpOC) nivel='exacto';
+            else if(codpOC&&codpOC.includes(codFC)&&codFC.length>=4) nivel='parcial_codp';
+            else if(l.cod&&l.cod.includes(codFC)&&codFC.length>=4) nivel='parcial_cod';
+            else{
+              const r=cruzar(dl.cod,dl.desc||'',provDoc,db.art,prev.lineas);
+              if(r.cod===l.cod&&r.nivel) nivel=r.nivel;
+            }
+            if((nivOrder[nivel]||0)>(nivOrder[bestNivel]||0)){bestMatch=dl;bestIdx=idx;bestNivel=nivel;}
+          });
+          if(bestMatch&&bestNivel!=='none'){
+            usadasFC.add(bestIdx);
             return{...l,
-              codDocFC:match.cod,  // código original de la FC
-              cantFC:match.cant||0, // cantidad según FC — campo dedicado
-              precioDoc:match.precio||l.precioDoc||0,
-              cantRemito:match.cant||l.cantRemito||l.cantOC,
-              matchTipo:matchTipoFC,
-              aprobado:matchTipoFC==='exacto'?l.aprobado:false,
+              codDocFC:bestMatch.cod,
+              descFC:bestMatch.desc||'',
+              cantFC:bestMatch.cant||0,
+              precioDoc:bestMatch.precio||l.precioDoc||0,
+              cantRemito:bestMatch.cant||l.cantRemito||l.cantOC,
+              matchTipo:bestNivel,
+              aprobado:bestNivel==='exacto'?l.aprobado:false,
             };
           }
           return l;
         });
 
-        // Artículos en el doc que NO están en la OC → sobrantes
-        const codsOC=new Set(prev.lineas.map(l=>l.cod));
-        const codpOC=new Set(prev.lineas.map(l=>l.codp));
+        // Líneas FC no asignadas → sobrantes
         const sobrantes=[];
-        for(const dl of docLineas){
-          const ci=cruzar(dl.cod,dl.desc||"",meta.proveedor||docMeta.proveedor||"",db.art,prev.lineas).cod;
-          const ciKey=ci||dl.cod;
-          // Verificar si alguna línea de la OC ya matchea con este código de FC
-          const yaEnOC=codsOC.has(ciKey)||codsOC.has(dl.cod)||codpOC.has(dl.cod)||
-            // También verificar si el código de FC está contenido en algún codp de la OC
-            prev.lineas.some(l=>String(l.codp||'').includes(String(dl.cod||'').trim())||
-              String(l.cod||'').includes(String(dl.cod||'').trim()));
-          if(!yaEnOC){
-            sobrantes.push({...enriquecerLinea(dl.cod,dl.cant,dl.precio,dl.desc,meta.proveedor||docMeta.proveedor||"",db,prev.lineas),esSobrante:true,codDocFC:dl.cod,cantFC:dl.cant||0});
-          }
-        }
+        docLineas.forEach((dl,idx)=>{
+          if(usadasFC.has(idx))return;
+          sobrantes.push({...enriquecerLinea(dl.cod,dl.cant,dl.precio,dl.desc,provDoc,db,prev.lineas),
+            esSobrante:true,codDocFC:dl.cod,descFC:dl.desc||'',cantFC:dl.cant||0});
+        });
 
         const updated={...prev,meta,lineas:[...lineasActualizadas,...sobrantes]};
         saveOC(OCact,updated);
