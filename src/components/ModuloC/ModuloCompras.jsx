@@ -248,10 +248,10 @@ function estadoLinea(l) {
   if (cantFCenBase > cantOCenBase) return 'CANT_MAYOR_FC';
   if (cantFCenBase < cantOCenBase) return 'CANT_MENOR_FC';
 
-  // ── Precio: normalizar a unidades BASE antes de comparar ──────────────────
-  // precioDoc es precio por UNIDAD DE COMBO; costoReal es por UNIDAD BASE
+  // Precio FC por unidad BASE = precioDoc ÷ factor
+  // Ej cuchillo: $21.141 ÷ 20 = $1.057/bolsa  (no ÷1000 = $21/cuchara)
   const precioFCenBase = (l.precioDoc || 0) / factor;
-  const precioCR       = l.costoReal || 0;
+  const precioCR = l.costoReal || 0;
   if (precioFCenBase > 0 && precioCR > 0) {
     const diff = Math.abs(precioFCenBase - precioCR) / precioCR;
     if (diff > 0.02) {
@@ -468,24 +468,21 @@ function enriquecerLinea(codDoc,cant,precioDoc,descDoc,prov,db,ocLineas){
   const codI=matchResult.cod||codDoc;
   const nivel=matchResult.nivel;
   const a=db.art[codI]||{desc:descDoc||'',codp:codDoc,prov:'',fam:'',cat:'',costoReal:0,pvMin:0,mostrador:0};
-  // esCombo: solo cuando el artículo de la FC es empaque MAYOR que el unitario de la base
-  // Si el codp del artículo en la base coincide con el codDoc → es el mismo artículo, NO combo
-  const codpBase = a.codp || '';
-  const mismoArticulo = codpBase && (
-    codpBase.toLowerCase() === codDoc.toLowerCase() ||
-    // también considerar mismo si codDoc contiene el codpBase (ej: '6002B/50' vs '6002B/50')
-    codDoc.toLowerCase().startsWith(codpBase.toLowerCase())
-  );
-  // Factor correcto: el del COMBO (bultos por caja), no el total hasta la u mínima
-  // Si la descripción dice "20 Bolsas x 50u" → factor = 20 (el artículo base es la bolsa de 50u)
-  // Si la descripción dice "12 Packs x 10u" → factor = 12 (el artículo base es el pack de 10u)
-  const factorInfo = !mismoArticulo ? detectarFactorCombo(descDoc) : null;
-  const factorDesc = factorInfo
-    ? (comboTabla?.componentes?.[0]?.cant || factorInfo.factor || 1)
-    : 1;
+  // codpBase para mostrar en la UI
+  const codpBase = a.codp || codDoc;
+  // esCombo: detectar SIEMPRE desde la descripción de la FC
+  // El código puede coincidir con el artículo base pero igual venir en combo mayor
+  // Ej: 6002/50 en base = bolsa 50u, pero FC dice "20 Bolsas x 50u" → es combo ×20
+  const factorInfoDesc = detectarFactorCombo(descDoc);
+  const comboTablaFactor = comboTabla?.componentes?.[0]?.cant || null;
+  // Factor del COMBO = bultos por caja (lo que entrega el proveedor como unidad de la FC)
+  // NO es el factor hasta la unidad mínima — es el factor del empaque exterior
+  const factorDesc = comboTablaFactor || factorInfoDesc?.factor || 1;
   const factor = factorDesc;
   const cantReal = cant * factor;
-  const esComboDetectado = factor > 1 && !mismoArticulo;
+  // Es combo si la descripción detecta un empaque mayor (factor > 1)
+  // Aunque el código coincida exactamente — son dos productos físicos distintos
+  const esComboDetectado = factor > 1;
   const s=db.stk[codI]||{DM01:0,DM03:0,DMCN:0};
   const sh=lsGet(SK.share,null);
   const planC=sh?.planC||lsGet(SK.plan,null);
@@ -1241,17 +1238,58 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
                     <div style={{fontWeight:700,fontSize:9,color:C.txt,lineHeight:1.3,wordBreak:'break-word'}}>{l.desc||'—'}</div>
                     {hayFC&&<div style={{fontSize:8,color:C.acc,lineHeight:1.3,marginTop:2,wordBreak:'break-word'}}>
                       FC: {l.descFC||l.desc||'—'}
-                      {esComboNuevo&&<span style={{marginLeft:5,fontSize:7,color:C.vio,background:'rgba(192,132,252,.12)',padding:'0 3px',borderRadius:2,border:`1px solid ${C.vio}33`}}>
+                      {esComboNuevo&&<button
+                        onClick={()=>{
+                          // Agregar combo nuevo al masivo
+                          const nuevos=lsGet(SK.nuevos,[]);
+                          const yaExiste=nuevos.find(n=>n.cod===codComboSugerido);
+                          if(!yaExiste){
+                            nuevos.push({
+                              cod:codComboSugerido,
+                              codp:l.codDocFC||l.codp||'',
+                              desc:l.descFC||l.desc||'',
+                              fam:l.fam||'',cat:l.cat||'',marca:'',
+                              costoReal:precioFCporBase||0,
+                              pvMin:l.pvMin||0,mostrador:l.mostrador||0,
+                              prov:l.prov||OCdata.meta.proveedor||'',
+                              factor:factorReal,
+                              fechaAlta:new Date().toISOString().slice(0,10),
+                              tipo:'COMBO_NUEVO',
+                            });
+                            lsSet(SK.nuevos,nuevos);
+                          }
+                          alert(`✓ Combo ${codComboSugerido} agregado al Masivo`);
+                        }}
+                        style={{marginLeft:5,fontSize:7,color:C.vio,background:'rgba(192,132,252,.12)',padding:'1px 5px',borderRadius:2,border:`1px solid ${C.vio}55`,cursor:'pointer',fontFamily:'DM Mono,monospace'}}>
                         ⊕ generar {codComboSugerido}
-                      </span>}
+                      </button>}
                     </div>}
                     {/* Combos intermedios a generar */}
                     {l.esCombo&&combosIntermedios.length>0&&combosIntermedios.map((ci,idx)=>(
                       <div key={idx} style={{fontSize:7,color:ci.existe?C.vio:C.ora,marginTop:1,display:'flex',alignItems:'center',gap:3}}>
                         <span style={{color:C.mut}}>└</span>
                         <span style={{fontFamily:'DM Mono,monospace'}}>{ci.codSugerido}</span>
-                        <span style={{color:C.mut}}>×{ci.factor}u</span>
-                        {!ci.existe&&<span style={{color:C.ora,background:'rgba(251,146,60,.1)',padding:'0 3px',borderRadius:2}}>crear</span>}
+                        <span style={{color:C.mut}}>{ci.label}</span>
+                        {!ci.existe&&<button
+                          onClick={()=>{
+                            const nuevos=lsGet(SK.nuevos,[]);
+                            if(!nuevos.find(n=>n.cod===ci.codSugerido)){
+                              nuevos.push({
+                                cod:ci.codSugerido,codp:l.codp||'',
+                                desc:`${l.desc} ×${ci.factor}`,
+                                fam:l.fam||'',cat:l.cat||'',marca:'',
+                                costoReal:(l.costoReal||0)*ci.factor,
+                                pvMin:l.pvMin||0,mostrador:l.mostrador||0,
+                                prov:l.prov||OCdata.meta.proveedor||'',
+                                factor:ci.factor,
+                                fechaAlta:new Date().toISOString().slice(0,10),
+                                tipo:'COMBO_NUEVO',
+                              });
+                              lsSet(SK.nuevos,nuevos);
+                            }
+                            alert(`✓ ${ci.codSugerido} agregado al Masivo`);
+                          }}
+                          style={{color:C.ora,background:'rgba(251,146,60,.1)',padding:'0 3px',borderRadius:2,border:`1px solid ${C.ora}44`,cursor:'pointer',fontFamily:'DM Mono,monospace',fontSize:7}}>crear</button>}
                         {ci.existe&&<span style={{color:C.vio}}>✓</span>}
                       </div>
                     ))}
