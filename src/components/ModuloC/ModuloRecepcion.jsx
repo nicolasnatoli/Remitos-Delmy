@@ -923,3 +923,5 @@ ${etiquetas.map(n=>`<div class="etq">
     </div>
   );
 }
+
+//Nico

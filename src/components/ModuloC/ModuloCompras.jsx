@@ -1755,3 +1755,5 @@ function ModalArt({modal,setModal,linea,db,onAsignar,onNuevo,OCprov}){
     </div>
   );
 }
+
+//Nico
