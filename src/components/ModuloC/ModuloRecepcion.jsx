@@ -99,42 +99,84 @@ function cruzar(codDoc, descDoc, prov, art, ocLineas) {
   return {cod:null, nivel:null};
 }
 
+// ─── Búsqueda para modal — ranking inteligente de 6 prioridades ──────────────
 function buscar(descDoc, codDoc, prov, famF, catF, marcaF, q, art) {
   if (!art || typeof art !== 'object' || !Object.keys(art).length) return [];
   const cod = String(codDoc||'').trim();
-  const words = (descDoc||'').toLowerCase().replace(/[^\w\s]/g,' ').split(/\s+/).filter(w=>w.length>2).slice(0,5);
   const qLow = (q||'').toLowerCase().trim();
-  const mismoProveedor = []; const otrosProveedor = [];
+
+  const STOP = new Set(['con','para','por','los','las','una','unos','unas','del','etc','und','paq','pack','packs','caja','cajas','bolsa','bolsas','unidad','unidades','bulto','bultos']);
+  const wordsFC = (descDoc||'').toLowerCase()
+    .replace(/[^\w\s]/g,' ').split(/\s+/)
+    .filter(w => w.length > 2 && !STOP.has(w) && !/^\d+$/.test(w))
+    .slice(0, 8);
+
+  const descLow = (descDoc||'').toLowerCase();
+  const famInferida = (()=>{
+    if(/cuchillo|cuchara|tenedor|plato|vaso|cubierto|descartable/i.test(descLow)) return 'DESCARTABLES';
+    if(/acrilico|pintura|tiza|barniz|esmalte|pincel/i.test(descLow)) return 'REPOSTERIA';
+    if(/globo|guirnalda|cotillon|festejo|fiesta/i.test(descLow)) return 'COTILLON';
+    if(/libro|cuaderno|lapiz|boligrafo|carpeta|papel/i.test(descLow)) return 'LIBRERIA';
+    if(/juguete|muñeca|peluche|juego/i.test(descLow)) return 'JUGUETERIA';
+    return null;
+  })();
+
+  const results = [];
+
   for (const [k, a] of Object.entries(art)) {
     if (!a) continue;
     const esMismo = prov ? provMatch(prov, a.prov||'') : false;
     if (famF && (a.fam||'') !== famF) continue;
     if (catF  && (a.cat||'') !== catF)  continue;
-    const hay = (a.desc||'').toLowerCase();
-    const hayW = hay.replace(/[^\w\s]/g,' ').split(/\s+/);
+    const hayDesc = (a.desc||'').toLowerCase();
+    const hayWords = hayDesc.replace(/[^\w\s]/g,' ').split(/\s+/);
     const cp = String(a.codp||'').trim();
     let score = 0; let type = 'desc';
+
     if (cod) {
-      if (cp === cod) { score += 30; type = 'exacto'; }
-      else if (cp.includes(cod)) { score += 22; type = 'parcial_codp'; }
-      else if (k.includes(cod)) { score += 18; type = 'parcial_cod'; }
+      if (cp === cod)                              { score += 30; type = 'exacto'; }
+      else if (cp.includes(cod))                   { score += 22; type = 'parcial_codp'; }
+      else if (k.includes(cod))                    { score += 18; type = 'parcial_cod'; }
+      else if (cod.length>=4 && cp.endsWith(cod))  { score += 14; type = 'parcial_codp'; }
+      else if (cod.length>=4 && cp.startsWith(cod)){ score += 12; type = 'parcial_codp'; }
     }
-    const wm = words.filter(w => hayW.some(hw=>hw.startsWith(w)||w.startsWith(hw)||hw.includes(w))).length;
-    if (wm >= 2) score += wm * 8;
-    if (qLow && (hay.includes(qLow)||k.includes(qLow)||cp.toLowerCase().includes(qLow))) score += 15;
-    if (score > 0) {
-      const entry = {cod:k, a, score, type, esMismo};
-      if (esMismo) mismoProveedor.push(entry);
-      else otrosProveedor.push(entry);
+
+    if (qLow) {
+      if (hayDesc.includes(qLow))               score += 20;
+      else if (k.includes(qLow))                score += 18;
+      else if (cp.toLowerCase().includes(qLow)) score += 18;
+      else {
+        const qWords = qLow.split(/\s+/).filter(w=>w.length>1);
+        const qMatch = qWords.filter(w=>hayDesc.includes(w)||k.includes(w)||cp.toLowerCase().includes(w)).length;
+        if (qMatch > 0) score += qMatch * 8;
+      }
     }
+
+    const wm = wordsFC.filter(w =>
+      hayWords.some(hw => hw.startsWith(w) || w.startsWith(hw) || hw.includes(w))
+    ).length;
+    if (wm >= 3) score += wm * 8;
+    else if (wm === 2) score += 12;
+    else if (wm === 1) score += 4;
+
+    if (famInferida && (a.fam||'') === famInferida) score += 6;
+    if (esMismo) score += 3;
+    if (!qLow && score === 0 && esMismo) score = 1;
+
+    if (score > 0) results.push({cod:k, a, score, type, esMismo});
   }
-  const sortFn = (a,b) => {
-    const o = {exacto:0,parcial_codp:1,parcial_cod:2,desc:3};
-    if((o[a.type]||3)!==(o[b.type]||3))return(o[a.type]||3)-(o[b.type]||3);
-    return b.score-a.score;
-  };
-  mismoProveedor.sort(sortFn); otrosProveedor.sort(sortFn);
-  return [...mismoProveedor.slice(0,30),...otrosProveedor.slice(0,10)].slice(0,40);
+
+  results.sort((a, b) => {
+    if (a.esMismo !== b.esMismo) return a.esMismo ? -1 : 1;
+    const o = {exacto:0, parcial_codp:1, parcial_cod:2, desc:3};
+    if ((o[a.type]||3) !== (o[b.type]||3)) return (o[a.type]||3)-(o[b.type]||3);
+    return b.score - a.score;
+  });
+
+  const mismos = results.filter(r=>r.esMismo).slice(0,20);
+  const otros  = results.filter(r=>!r.esMismo).slice(0,10);
+  if(otros.length && mismos.length) otros[0]._separador = true;
+  return [...mismos, ...otros];
 }
 
 // ─── Estilos ──────────────────────────────────────────────────────────────────

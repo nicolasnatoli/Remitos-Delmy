@@ -124,13 +124,31 @@ function cruzar(codDoc, descDoc, prov, art, ocLineas) {
   return {cod:null, nivel:null};
 }
 
-// ─── Búsqueda para modal — primero mismo proveedor, luego otros ──────────────
+// ─── Búsqueda para modal — ranking inteligente de 6 prioridades ──────────────
 function buscar(descDoc, codDoc, prov, famF, catF, marcaF, q, art) {
   if (!art || typeof art !== 'object' || !Object.keys(art).length) return [];
   const cod = String(codDoc||'').trim();
-  const words = (descDoc||'').toLowerCase().replace(/[^\w\s]/g,' ').split(/\s+/).filter(w=>w.length>2).slice(0,5);
   const qLow = (q||'').toLowerCase().trim();
-  const mismoProveedor = []; const otrosProveedor = [];
+
+  // Palabras clave de la descripción FC — ignorar palabras genéricas
+  const STOP = new Set(['con','para','por','los','las','una','unos','unas','del','etc','und','paq','pack','packs','caja','cajas','bolsa','bolsas','unidad','unidades','bulto','bultos']);
+  const wordsFC = (descDoc||'').toLowerCase()
+    .replace(/[^\w\s]/g,' ').split(/\s+/)
+    .filter(w => w.length > 2 && !STOP.has(w) && !/^\d+$/.test(w))
+    .slice(0, 8);
+
+  // Inferir familia probable desde la descripción FC
+  const descLow = (descDoc||'').toLowerCase();
+  const famInferida = (()=>{
+    if(/cuchillo|cuchara|tenedor|plato|vaso|cubierto|descartable/i.test(descLow)) return 'DESCARTABLES';
+    if(/acrilico|pintura|tiza|barniz|esmalte|pincel/i.test(descLow)) return 'REPOSTERIA';
+    if(/globo|guirnalda|cotillon|festejo|fiesta/i.test(descLow)) return 'COTILLON';
+    if(/libro|cuaderno|lapiz|boligrafo|carpeta|papel/i.test(descLow)) return 'LIBRERIA';
+    if(/juguete|muñeca|peluche|juego/i.test(descLow)) return 'JUGUETERIA';
+    return null;
+  })();
+
+  const results = [];
 
   for (const [k, a] of Object.entries(art)) {
     if (!a) continue;
@@ -139,40 +157,67 @@ function buscar(descDoc, codDoc, prov, famF, catF, marcaF, q, art) {
     if (catF  && (a.cat||'') !== catF)  continue;
     if (marcaF && (a.marca||'') !== marcaF) continue;
 
-    const hay = (a.desc||'').toLowerCase();
-    const hayWords = hay.replace(/[^\w\s]/g,' ').split(/\s+/);
+    const hayDesc = (a.desc||'').toLowerCase();
+    const hayWords = hayDesc.replace(/[^\w\s]/g,' ').split(/\s+/);
     const cp = String(a.codp||'').trim();
     let score = 0; let type = 'desc';
 
-    // Código
+    // ── Prioridad 1: código exacto (30pts) ────────────────────────────────
     if (cod) {
-      if (cp === cod) { score += 30; type = 'exacto'; }
-      else if (cp.includes(cod)) { score += 22; type = 'parcial_codp'; }
-      else if (k.includes(cod)) { score += 18; type = 'parcial_cod'; }
+      if (cp === cod)                    { score += 30; type = 'exacto'; }
+      else if (cp.includes(cod))         { score += 22; type = 'parcial_codp'; }
+      else if (k.includes(cod))          { score += 18; type = 'parcial_cod'; }
+      else if (cod.length>=4 && cp.endsWith(cod))   { score += 14; type = 'parcial_codp'; }
+      else if (cod.length>=4 && cp.startsWith(cod)) { score += 12; type = 'parcial_codp'; }
     }
-    // Palabras descripción — match flexible
-    const wm = words.filter(w => hayWords.some(hw => hw.startsWith(w)||w.startsWith(hw)||hw.includes(w))).length;
-    if (wm >= 2) score += wm * 8;
-    // Búsqueda manual
-    if (qLow && (hay.includes(qLow) || k.includes(qLow) || cp.toLowerCase().includes(qLow))) score += 15;
 
-    if (score > 0) {
-      const entry = {cod: k, a, score, type, esMismo};
-      if (esMismo) mismoProveedor.push(entry);
-      else otrosProveedor.push(entry);
+    // ── Prioridad 2: búsqueda manual del usuario (15pts base) ─────────────
+    if (qLow) {
+      if (hayDesc.includes(qLow))                  score += 20;
+      else if (k.includes(qLow))                   score += 18;
+      else if (cp.toLowerCase().includes(qLow))    score += 18;
+      else {
+        const qWords = qLow.split(/\s+/).filter(w=>w.length>1);
+        const qMatch = qWords.filter(w=>hayDesc.includes(w)||k.includes(w)||cp.toLowerCase().includes(w)).length;
+        if (qMatch > 0) score += qMatch * 8;
+      }
     }
+
+    // ── Prioridad 3: palabras de descripción FC (8pts por palabra) ─────────
+    const wm = wordsFC.filter(w =>
+      hayWords.some(hw => hw.startsWith(w) || w.startsWith(hw) || hw.includes(w))
+    ).length;
+    if (wm >= 3) { score += wm * 8; if(type==='desc') type='desc'; }
+    else if (wm === 2) score += 12;
+    else if (wm === 1) score += 4;
+
+    // ── Prioridad 4: familia inferida coincide (6pts) ──────────────────────
+    if (famInferida && (a.fam||'') === famInferida) score += 6;
+
+    // ── Prioridad 5: mismo proveedor base (3pts) ───────────────────────────
+    if (esMismo) score += 3;
+
+    // ── Prioridad 6: si sin query, siempre incluir mismo proveedor ─────────
+    if (!qLow && score === 0 && esMismo) score = 1;
+
+    if (score > 0) results.push({cod:k, a, score, type, esMismo});
   }
 
-  const sortFn = (a, b) => {
+  // Ordenar: mismo proveedor primero, luego por score desc
+  results.sort((a, b) => {
+    if (a.esMismo !== b.esMismo) return a.esMismo ? -1 : 1;
     const o = {exacto:0, parcial_codp:1, parcial_cod:2, desc:3};
     if ((o[a.type]||3) !== (o[b.type]||3)) return (o[a.type]||3)-(o[b.type]||3);
     return b.score - a.score;
-  };
-  mismoProveedor.sort(sortFn);
-  otrosProveedor.sort(sortFn);
+  });
 
-  // Primero mismo proveedor, luego otros — máximo 40 total
-  return [...mismoProveedor.slice(0,30), ...otrosProveedor.slice(0,10)].slice(0,40);
+  // Mismo proveedor: máx 20 · Otros: máx 10 — total 30
+  const mismos  = results.filter(r=>r.esMismo).slice(0,20);
+  const otros   = results.filter(r=>!r.esMismo).slice(0,10);
+  // Separador visual: agregar flag para renderizar divisor en el modal
+  if(otros.length && mismos.length) otros[0]._separador = true;
+  return [...mismos, ...otros];
+}
 }
 
 
@@ -1038,17 +1083,36 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
         {procesando&&<span style={{fontSize:9,color:C.acc,fontStyle:'italic'}}>La IA está leyendo el documento, esperá unos segundos…</span>}
       </div>
 
-      {/* Banner proveedor sticky — siempre visible al scrollear */}
-      <div style={{position:'sticky',top:0,zIndex:10,background:C.p2,borderBottom:`1px solid ${C.b1}`,borderTop:`1px solid ${C.b1}`,padding:'5px 10px',display:'flex',gap:16,alignItems:'center',flexWrap:'wrap',marginBottom:4}}>
-        <span style={{fontSize:9,color:C.mut,textTransform:'uppercase',letterSpacing:'.07em'}}>Proveedor</span>
-        <span style={{fontSize:12,fontWeight:700,color:C.acc,fontFamily:'DM Mono,monospace'}}>{OCdata.meta.proveedor||'(sin proveedor)'}</span>
-        {OCdata.meta.documento&&<><span style={{fontSize:9,color:C.mut}}>·</span><span style={{fontSize:9,color:C.mut,textTransform:'uppercase',letterSpacing:'.07em'}}>Doc</span><span style={{fontSize:11,color:C.txt,fontFamily:'DM Mono,monospace'}}>{OCdata.meta.documento}</span></>}
-        {OCdata.meta.fecha&&<><span style={{fontSize:9,color:C.mut}}>·</span><span style={{fontSize:9,color:C.mut,textTransform:'uppercase',letterSpacing:'.07em'}}>Fecha</span><span style={{fontSize:11,color:C.txt}}>{OCdata.meta.fecha}</span></>}
-        <span style={{marginLeft:'auto',display:'flex',gap:8,alignItems:'center'}}>
-          {OCdata.meta.estado&&<span style={{fontSize:9,padding:'2px 8px',borderRadius:3,background:(ESTADOS[OCdata.meta.estado]||{}).bg||'rgba(107,114,128,.1)',color:(ESTADOS[OCdata.meta.estado]||{}).color||C.mut,fontWeight:600}}>{(ESTADOS[OCdata.meta.estado]||{}).label||OCdata.meta.estado}</span>}
-          <span style={{fontSize:9,color:C.mut}}>{OCdata.lineas.length} líneas</span>
-        </span>
-      </div>
+      {/* Banner proveedor sticky */}
+      {(()=>{
+        const totalBase=OCdata.lineas.reduce((s,l)=>{
+          const f=l.factor||1;
+          const cant=l.cantFC>0?(l.cantFC*f):(l.cantOC||0);
+          return s+cant*(l.costoReal||0);
+        },0);
+        const totalFC=OCdata.lineas.reduce((s,l)=>s+(l.cantFC>0?(l.cantFC*(l.precioDoc||0)):0),0);
+        const hayFC=OCdata.lineas.some(l=>l.cantFC>0||l.precioDoc>0);
+        const nOC=OCact?OCact.replace('oc_','OC-'):'—';
+        return(
+        <div style={{position:'sticky',top:0,zIndex:10,background:C.p2,borderBottom:`1px solid ${C.b1}`,borderTop:`1px solid ${C.b1}`,padding:'5px 10px',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap',marginBottom:4}}>
+          <span style={{fontSize:9,fontFamily:'DM Mono,monospace',color:C.mut,background:'rgba(240,192,64,.08)',padding:'1px 6px',borderRadius:3,border:`1px solid ${C.acc}33`}}>{nOC}</span>
+          <span style={{fontSize:12,fontWeight:700,color:C.acc,fontFamily:'DM Mono,monospace'}}>{OCdata.meta.proveedor||'(sin proveedor)'}</span>
+          {OCdata.meta.documento&&<><span style={{fontSize:9,color:C.mut}}>·</span><span style={{fontSize:9,color:C.mut,textTransform:'uppercase',letterSpacing:'.07em'}}>FC</span><span style={{fontSize:10,color:C.txt,fontFamily:'DM Mono,monospace'}}>{OCdata.meta.documento}</span></>}
+          {OCdata.meta.fecha&&<><span style={{fontSize:9,color:C.mut}}>·</span><span style={{fontSize:9,color:C.txt}}>{OCdata.meta.fecha}</span></>}
+          <span style={{marginLeft:'auto',display:'flex',gap:14,alignItems:'center'}}>
+            {totalBase>0&&<span style={{display:'flex',flexDirection:'column',alignItems:'flex-end'}}>
+              <span style={{fontSize:7,color:C.mut,textTransform:'uppercase',letterSpacing:'.05em'}}>Base</span>
+              <span style={{fontSize:10,color:C.mut,fontWeight:700,fontFamily:'DM Mono,monospace'}}>${fn(totalBase)}</span>
+            </span>}
+            {hayFC&&totalFC>0&&<span style={{display:'flex',flexDirection:'column',alignItems:'flex-end'}}>
+              <span style={{fontSize:7,color:C.acc,textTransform:'uppercase',letterSpacing:'.05em'}}>Total FC</span>
+              <span style={{fontSize:10,color:C.acc,fontWeight:700,fontFamily:'DM Mono,monospace'}}>${fn(totalFC)}</span>
+            </span>}
+            {OCdata.meta.estado&&<span style={{fontSize:9,padding:'2px 8px',borderRadius:3,background:(ESTADOS[OCdata.meta.estado]||{}).bg||'rgba(107,114,128,.1)',color:(ESTADOS[OCdata.meta.estado]||{}).color||C.mut,fontWeight:600}}>{(ESTADOS[OCdata.meta.estado]||{}).label||OCdata.meta.estado}</span>}
+            <span style={{fontSize:9,color:C.mut}}>{OCdata.lineas.length} líneas</span>
+          </span>
+        </div>);
+      })()}
 
       {/* Tabla completa */}
       <div style={{overflowX:'auto',background:C.p2,border:`1px solid ${C.b1}`,borderRadius:5}}>
@@ -1106,27 +1170,51 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
               }
               const td=(c,s)=><td style={{padding:'4px 5px',borderBottom:`1px solid ${C.b1}`,fontSize:9,verticalAlign:'middle',...s}}>{c}</td>;
               const hayFC = l.cantFC > 0 || l.precioDoc > 0;
-              // Factor = unidades del artículo BASE por unidad combo (no hasta la unidad mínima)
-              // El artículo base ES la unidad de compra del proveedor
-              const tieneProveedor = !!(db.art[l.cod]?.prov || l.prov);
-              const esComboReal = l.esCombo && !tieneProveedor; // combo = sin proveedor
-              const factorReal = esComboReal ? factor : (l.esCombo ? factor : 1);
-              // Cant total en unidades del artículo base del proveedor
+              // esCombo: la FC vino en un empaque mayor que el artículo base
+              // SIEMPRE generar combo si factor > 1, incluso si el código FC coincide con el codp base
+              // (porque son empaques físicamente distintos aunque el proveedor use el mismo código)
+              const factorReal = l.esCombo ? (factor || 1) : 1;
+              // Cant en unidades del artículo base del proveedor
               const cantEnBase = hayFC ? (l.cantFC||0) * factorReal : (l.cantOC||0);
-              // Precio FC por unidad base del proveedor
-              const precioFCporBase = factorReal > 1 ? (l.precioDoc||0) / factorReal : (l.precioDoc||0);
-              // Desglose de cantidad si es combo
-              const comboData = db.combos?.[l.codp] || db.combos?.[l.cod];
+              // Precio FC por unidad base
+              const precioFCporBase = factorReal > 1 && l.precioDoc > 0
+                ? (l.precioDoc||0) / factorReal
+                : (l.precioDoc||0);
+              // Combo data y estado
+              // Código combo propuesto: codpBase + 'x' + factor  (ej: 6002/50x20)
+              const comboData = db.combos?.[l.codp] || db.combos?.[l.cod]
+                || db.combos?.[l.codp+'x'+factorReal] || db.combos?.[l.cod+'x'+factorReal];
+              const codComboSugerido = l.codp ? `${l.codp}x${factorReal}` : `${l.cod}x${factorReal}`;
               const esComboNuevo = l.esCombo && !comboData;
+              // Combos intermedios: si el artículo base existe en versiones menores
+              // (ej: base=10u, FC=20paq×50u → hay que crear x5 y x1000 también)
+              const combosIntermedios = (()=>{
+                if(!l.esCombo||factorReal<=1)return[];
+                const result=[];
+                // Buscar factores intermedios que dividan el factor total
+                const factores=[2,5,10,12,20,24,50,100];
+                for(const f of factores){
+                  if(f<factorReal&&factorReal%f===0){
+                    const codInt=l.cod+'x'+f;
+                    const codProv=l.codp?l.codp+'x'+f:'';
+                    if(!db.combos?.[codInt]&&!db.combos?.[codProv]){
+                      result.push({factor:f,codSugerido:codProv||codInt,existe:false});
+                    } else {
+                      result.push({factor:f,codSugerido:codProv||codInt,existe:true});
+                    }
+                  }
+                }
+                return result;
+              })();
               const diffPct = l.costoReal > 0 && precioFCporBase > 0
                 ? ((precioFCporBase - l.costoReal) / l.costoReal * 100).toFixed(1)
                 : null;
               const diffColor = diffPct === null ? C.mut
-                : Math.abs(diffPct) <= 2 ? C.green
-                : diffPct > 0 ? C.red : C.green;
+                : Math.abs(parseFloat(diffPct)) <= 2 ? C.green
+                : parseFloat(diffPct) > 0 ? C.red : C.green;
               // Subtotales
-              const stBase = cantEnBase * (l.costoReal||0);
-              const stFC   = hayFC ? (l.cantFC||0) * (l.precioDoc||0) : null;
+              const stBase = (l.cantOC||0) * (l.costoReal||0);
+              const stFC   = hayFC && l.cantFC > 0 ? (l.cantFC||0) * (l.precioDoc||0) : null;
               return(
                 <tr key={i} style={{background:rowBg}}>
                   {/* ESTADO — símbolos compactos */}
@@ -1149,13 +1237,25 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
                   </div>)}
                   {/* CÓD INT */}
                   {td(<span style={{fontFamily:'DM Mono,monospace',fontSize:8,color:C.blue}}>{l.reconocido?l.cod:'—?'}</span>)}
-                  {/* DESCRIPCIÓN — sin cortar, wrap */}
+                  {/* DESCRIPCIÓN — sin cortar + combos intermedios */}
                   {td(<div style={{minWidth:260}}>
                     <div style={{fontWeight:700,fontSize:9,color:C.txt,lineHeight:1.3,wordBreak:'break-word'}}>{l.desc||'—'}</div>
                     {hayFC&&<div style={{fontSize:8,color:C.acc,lineHeight:1.3,marginTop:2,wordBreak:'break-word'}}>
                       FC: {l.descFC||l.desc||'—'}
-                      {esComboNuevo&&<span style={{marginLeft:5,fontSize:7,color:C.vio,background:'rgba(192,132,252,.12)',padding:'0 3px',borderRadius:2,border:`1px solid ${C.vio}33`}}>+ generar combo</span>}
+                      {esComboNuevo&&<span style={{marginLeft:5,fontSize:7,color:C.vio,background:'rgba(192,132,252,.12)',padding:'0 3px',borderRadius:2,border:`1px solid ${C.vio}33`}}>
+                        ⊕ generar {codComboSugerido}
+                      </span>}
                     </div>}
+                    {/* Combos intermedios a generar */}
+                    {l.esCombo&&combosIntermedios.length>0&&combosIntermedios.map((ci,idx)=>(
+                      <div key={idx} style={{fontSize:7,color:ci.existe?C.vio:C.ora,marginTop:1,display:'flex',alignItems:'center',gap:3}}>
+                        <span style={{color:C.mut}}>└</span>
+                        <span style={{fontFamily:'DM Mono,monospace'}}>{ci.codSugerido}</span>
+                        <span style={{color:C.mut}}>×{ci.factor}u</span>
+                        {!ci.existe&&<span style={{color:C.ora,background:'rgba(251,146,60,.1)',padding:'0 3px',borderRadius:2}}>crear</span>}
+                        {ci.existe&&<span style={{color:C.vio}}>✓</span>}
+                      </div>
+                    ))}
                   </div>)}
                   {/* STOCKS */}
                   {td(l.stkDMCN||'—',{textAlign:'right',color:l.stkDMCN>0?C.teal:C.mut,fontSize:8})}
@@ -1165,21 +1265,36 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
                   {td(l.vs||'—',{textAlign:'right',fontSize:8,color:C.mut})}
                   {td(l.vq||'—',{textAlign:'right',fontSize:8,color:C.mut})}
                   {td(l.vm||'—',{textAlign:'right',fontSize:8,color:C.mut})}
-                  {/* CANTIDAD — apilada: u.base · cajas FC · desglose */}
+                  {/* CANTIDAD — cantOC arriba, FC debajo, desglose */}
                   {td(<div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:1}}>
-                    <span style={{fontWeight:700,fontSize:10,color:C.teal}}>{cantEnBase.toLocaleString('es-AR')}<span style={{fontSize:7,color:C.mut,marginLeft:2}}>u</span></span>
-                    {hayFC&&l.esCombo&&<span style={{fontSize:8,color:C.green}}>{l.cantFC}×{factorReal} cajas</span>}
-                    {hayFC&&!l.esCombo&&<span style={{fontSize:7,color:C.mut}}>{l.cantFC||cantEnBase} FC</span>}
-                    {!hayFC&&<span style={{fontSize:7,color:C.mut}}>OC</span>}
+                    {/* OC: siempre visible si existe */}
+                    {(l.cantOC>0)&&<span style={{fontWeight:700,fontSize:10,color:C.txt}}>
+                      {(l.cantOC).toLocaleString('es-AR')}<span style={{fontSize:7,color:C.mut,marginLeft:2}}>u OC</span>
+                    </span>}
+                    {/* FC en módulo del proveedor */}
+                    {hayFC&&l.cantFC>0&&<span style={{fontWeight:700,fontSize:10,color:C.green}}>
+                      {l.cantFC}<span style={{fontSize:7,color:C.mut,marginLeft:2}}>{l.esCombo?`bultos FC`:'u FC'}</span>
+                    </span>}
+                    {/* Desglose × factor = total u.base */}
+                    {hayFC&&l.esCombo&&factorReal>1&&<span style={{fontSize:7,color:C.acc}}>
+                      {l.cantFC}×{factorReal}={cantEnBase.toLocaleString('es-AR')}u
+                    </span>}
                   </div>,{textAlign:'right'})}
-                  {/* COSTO · FC/u — una columna, tres líneas */}
+                  {/* COSTO: plaza/u · precio bulto FC editable · equiv/u con dif% */}
                   {td(<div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:1}}>
-                    <span style={{fontSize:9,color:C.mut,fontWeight:700}}>{fp(l.costoReal)}<span style={{fontSize:7,color:C.mut,opacity:.6}}>/u</span></span>
-                    {hayFC&&<span style={{fontSize:9,color:C.acc,fontWeight:700}}><NumIn value={l.precioDoc} onChange={v=>updLinea(i,'precioDoc',v)} color={C.acc} width={72} /></span>}
-                    {hayFC&&precioFCporBase>0&&<span style={{fontSize:7,color:diffColor}}>
-                      {precioFCporBase===l.costoReal?'= ':diffPct>0?'▲ ':'▼ '}
-                      {fp(precioFCporBase)}/u
-                      {diffPct!==null&&<span style={{marginLeft:2}}>{diffPct>0?'+':''}{diffPct}%</span>}
+                    {/* Línea 1: costo plaza por unidad base */}
+                    <span style={{fontSize:9,color:C.mut,fontWeight:700}}>
+                      {fp(l.costoReal)}<span style={{fontSize:7,color:C.mut,opacity:.6}}>/u</span>
+                    </span>
+                    {/* Línea 2: precio FC por bulto (editable) */}
+                    {hayFC&&<div style={{display:'flex',alignItems:'center',gap:3}}>
+                      <NumIn value={l.precioDoc} onChange={v=>updLinea(i,'precioDoc',v)} color={C.acc} width={72} />
+                      {l.esCombo&&<span style={{fontSize:7,color:C.mut}}>/bulto</span>}
+                    </div>}
+                    {/* Línea 3: equiv. costo/u calculado con ▲/▼ */}
+                    {hayFC&&precioFCporBase>0&&<span style={{fontSize:7,color:diffColor,fontWeight:600}}>
+                      {parseFloat(diffPct)>0?'▲ ':'▼ '}{fp(precioFCporBase)}/u
+                      {diffPct!==null&&<span style={{marginLeft:2,opacity:.8}}>{parseFloat(diffPct)>0?'+':''}{diffPct}%</span>}
                     </span>}
                   </div>,{textAlign:'right',padding:'3px 5px'})}
                   {/* P.VTA */}
