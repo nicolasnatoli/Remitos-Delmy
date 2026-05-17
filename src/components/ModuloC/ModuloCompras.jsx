@@ -852,11 +852,29 @@ export default function ModuloCompras(){
       !db.combos?.[l.codp] && !db.combos?.[l.cod]
     );
     const rows=[['Tipo','Código Interno','Cód.Prov FC','Cód.Prov Base','Descripción FC','Factor','Cant.Combo','Cant.Base','Precio Combo','Costo Unit.Base','Proveedor','Motivo']];
-    nList.forEach(n=>rows.push(['NUEVO_ART',n.cod,n.codp,n.codp,n.desc,1,'','',n.costoReal,n.costoReal,n.prov,'Artículo nuevo']));
+    // Solo artículos nuevos reales — los combos se manejan separado abajo
+    nList.filter(n=>!n.tipo||n.tipo==='NUEVO_ART').forEach(n=>{
+      rows.push(['NUEVO_ART',n.cod,n.codp,n.codp,n.desc,1,'','',n.costoReal,n.costoReal,n.prov,'Artículo nuevo']);
+    });
     parciales.forEach(l=>{rows.push(['CORR_COD',l.cod,l.codDocFC||l.codp,l.codp,l.desc,l.factor||1,l.cantFC||'',l.cantReal||'',l.precioDoc||'',l.costoReal,l.prov,`Corregir código: FC=${l.codDocFC||l.codp} → Base=${l.codp}`]);});
     otrosProv.forEach(l=>{if(!rows.find(r=>r[1]===l.cod))rows.push(['NUEVO_PROV',l.cod,l.codDocFC||l.codp,l.codp,l.desc,l.factor||1,l.cantFC||'',l.cantReal||'',l.precioDoc||'',l.costoReal,OCdata.meta.proveedor,'Nueva línea proveedor']);});
     noEntregados.forEach(l=>{rows.push(['NO_ENTREGADO',l.cod,l.codDocFC||l.codp,l.codp,l.desc,l.factor||1,l.cantFC||'',l.cantReal||'',l.precioDoc||'',l.costoReal,l.prov,'No entregado — pendiente']);});
-    combosNuevos.forEach(l=>{rows.push(['COMBO_NUEVO',l.cod,l.codDocFC||l.codp,l.codp,l.descFC||l.desc,l.factor||1,l.cantFC||'',l.cantReal||'',l.precioDoc||'',l.costoReal,l.prov,`Combo nuevo inferido ×${l.factor} — crear en base`]);});
+    // Combos de SK.nuevos — solo los tipo COMBO_NUEVO/COMBO_INTERMEDIO, sin duplicar con combosNuevos
+    const codsCombosNuevos=new Set(combosNuevos.map(l=>l.codp&&l.factor?`${l.codp}x${l.factor}`:`${l.cod}x${l.factor}`));
+    nList.filter(n=>n.tipo==='COMBO_NUEVO'||n.tipo==='COMBO_INTERMEDIO').forEach(n=>{
+      if(!rows.find(r=>r[1]===n.cod)){
+        rows.push([n.tipo,n.cod,n.codp,n.codp,n.desc,n.factor||1,'','',n.costoReal,n.costoReal,n.prov,`Combo ×${n.factor} — crear en base`]);
+      }
+    });
+    // Combos de OC no capturados via botón — solo si no ya están en nList
+    combosNuevos.forEach(l=>{
+      const codSug=l.codp?`${l.codp}x${l.factor}`:`${l.cod}x${l.factor}`;
+      if(!rows.find(r=>r[1]===codSug)){
+        const factorReal2=l.factor||1;
+        const precioBase=factorReal2>1?(l.precioDoc||0)/factorReal2:(l.precioDoc||0);
+        rows.push(['COMBO_NUEVO',codSug,l.codDocFC||l.codp,l.codp,l.descFC||l.desc,factorReal2,l.cantFC||'',l.cantFC?(l.cantFC*factorReal2):'',l.precioDoc||'',precioBase,l.prov,`Combo nuevo inferido ×${factorReal2} — crear en base`]);
+      }
+    });
     if(rows.length===1){alert('Sin artículos nuevos para exportar');return;}
     const wb=XLSX.utils.book_new();const ws=XLSX.utils.aoa_to_sheet(rows);XLSX.utils.book_append_sheet(wb,ws,'Nuevos');
     XLSX.writeFile(wb,`articulos_nuevos_${new Date().toISOString().slice(0,10)}.xlsx`);
@@ -1239,32 +1257,39 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
                   </div>)}
                   {/* CÓD INT */}
                   {td(<span style={{fontFamily:'DM Mono,monospace',fontSize:8,color:C.blue}}>{l.reconocido?l.cod:'—?'}</span>)}
-                  {/* DESCRIPCIÓN — sin cortar + combos intermedios */}
+                  {/* DESCRIPCIÓN — sin cortar + combos existentes + combos intermedios */}
                   {td(<div style={{minWidth:260}}>
                     <div style={{fontWeight:700,fontSize:9,color:C.txt,lineHeight:1.3,wordBreak:'break-word'}}>{l.desc||'—'}</div>
                     {hayFC&&<div style={{fontSize:8,color:C.acc,lineHeight:1.3,marginTop:2,wordBreak:'break-word'}}>
                       FC: {l.descFC||l.desc||'—'}
                       {esComboNuevo&&<button
                         onClick={()=>{
-                          // Agregar combo nuevo al masivo
+                          const datos={
+                            cod:codComboSugerido,
+                            codp:l.codDocFC||l.codp||'',
+                            desc:l.descFC||l.desc||'',
+                            fam:l.fam||'',cat:l.cat||'',
+                            costoReal:precioFCporBase||0,
+                            pvMin:l.pvMin||0,mostrador:l.mostrador||0,
+                            prov:l.prov||OCdata.meta.proveedor||'',
+                            factor:factorReal,
+                            tipo:'COMBO_NUEVO',
+                          };
+                          const msg=`NUEVO COMBO — confirmar carga:\n\n`+
+                            `Código: ${datos.cod}\n`+
+                            `Cód.Prov FC: ${datos.codp}\n`+
+                            `Descripción: ${datos.desc}\n`+
+                            `Factor: ×${datos.factor} bultos/caja\n`+
+                            `Costo/bulto (FC): ${fp(datos.costoReal)}\n`+
+                            `Familia: ${datos.fam||'—'}\n`+
+                            `Proveedor: ${datos.prov}\n\n`+
+                            `¿Agregar al Masivo para importación?`;
+                          if(!window.confirm(msg))return;
                           const nuevos=lsGet(SK.nuevos,[]);
-                          const yaExiste=nuevos.find(n=>n.cod===codComboSugerido);
-                          if(!yaExiste){
-                            nuevos.push({
-                              cod:codComboSugerido,
-                              codp:l.codDocFC||l.codp||'',
-                              desc:l.descFC||l.desc||'',
-                              fam:l.fam||'',cat:l.cat||'',marca:'',
-                              costoReal:precioFCporBase||0,
-                              pvMin:l.pvMin||0,mostrador:l.mostrador||0,
-                              prov:l.prov||OCdata.meta.proveedor||'',
-                              factor:factorReal,
-                              fechaAlta:new Date().toISOString().slice(0,10),
-                              tipo:'COMBO_NUEVO',
-                            });
+                          if(!nuevos.find(n=>n.cod===datos.cod)){
+                            nuevos.push({...datos,fechaAlta:new Date().toISOString().slice(0,10)});
                             lsSet(SK.nuevos,nuevos);
                           }
-                          alert(`✓ Combo ${codComboSugerido} agregado al Masivo`);
                         }}
                         style={{marginLeft:5,fontSize:7,color:C.vio,background:'rgba(192,132,252,.12)',padding:'1px 5px',borderRadius:2,border:`1px solid ${C.vio}55`,cursor:'pointer',fontFamily:'DM Mono,monospace'}}>
                         ⊕ generar {codComboSugerido}
@@ -1278,27 +1303,54 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
                         <span style={{color:C.mut}}>{ci.label}</span>
                         {!ci.existe&&<button
                           onClick={()=>{
+                            const costoCombo=(l.costoReal||0)*ci.factor;
+                            const msg=`NUEVO COMBO INTERMEDIO — confirmar:\n\n`+
+                              `Código: ${ci.codSugerido}\n`+
+                              `Descripción: ${l.desc} ×${ci.factor}\n`+
+                              `Factor: ×${ci.factor} ${ci.label}\n`+
+                              `Costo estimado: ${fp(costoCombo)}\n`+
+                              `Familia: ${l.fam||'—'}\n`+
+                              `Proveedor: ${l.prov||OCdata.meta.proveedor||'—'}\n\n`+
+                              `¿Agregar al Masivo?`;
+                            if(!window.confirm(msg))return;
                             const nuevos=lsGet(SK.nuevos,[]);
                             if(!nuevos.find(n=>n.cod===ci.codSugerido)){
                               nuevos.push({
                                 cod:ci.codSugerido,codp:l.codp||'',
                                 desc:`${l.desc} ×${ci.factor}`,
                                 fam:l.fam||'',cat:l.cat||'',marca:'',
-                                costoReal:(l.costoReal||0)*ci.factor,
+                                costoReal:costoCombo,
                                 pvMin:l.pvMin||0,mostrador:l.mostrador||0,
                                 prov:l.prov||OCdata.meta.proveedor||'',
                                 factor:ci.factor,
                                 fechaAlta:new Date().toISOString().slice(0,10),
-                                tipo:'COMBO_NUEVO',
+                                tipo:'COMBO_INTERMEDIO',
                               });
                               lsSet(SK.nuevos,nuevos);
                             }
-                            alert(`✓ ${ci.codSugerido} agregado al Masivo`);
                           }}
                           style={{color:C.ora,background:'rgba(251,146,60,.1)',padding:'0 3px',borderRadius:2,border:`1px solid ${C.ora}44`,cursor:'pointer',fontFamily:'DM Mono,monospace',fontSize:7}}>crear</button>}
                         {ci.existe&&<span style={{color:C.vio}}>✓</span>}
                       </div>
                     ))}
+                    {/* Combos existentes en la base que usan este artículo como componente */}
+                    {(()=>{
+                      const combosExistentes=Object.entries(db.combos||{}).filter(([,c])=>
+                        c?.componentes?.some(comp=>comp.cod===l.cod||comp.cod===l.codp)
+                      );
+                      if(!combosExistentes.length)return null;
+                      return <div style={{marginTop:3,borderTop:`1px solid ${C.b2}`,paddingTop:2}}>
+                        <span style={{fontSize:6,color:C.mut,textTransform:'uppercase',letterSpacing:'.05em'}}>Combos en base:</span>
+                        {combosExistentes.map(([ck,cv])=>(
+                          <div key={ck} style={{fontSize:7,color:C.vio,display:'flex',alignItems:'center',gap:3,marginTop:1}}>
+                            <span style={{color:C.mut}}>⊕</span>
+                            <span style={{fontFamily:'DM Mono,monospace',color:C.vio}}>{ck}</span>
+                            <span style={{color:C.mut,overflow:'hidden',textOverflow:'ellipsis',maxWidth:120,whiteSpace:'nowrap'}}>{cv.desc||''}</span>
+                            <span style={{color:C.green}}>✓</span>
+                          </div>
+                        ))}
+                      </div>;
+                    })()}
                   </div>)}
                   {/* STOCKS */}
                   {td(l.stkDMCN||'—',{textAlign:'right',color:l.stkDMCN>0?C.teal:C.mut,fontSize:8})}
@@ -1308,28 +1360,30 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
                   {td(l.vs||'—',{textAlign:'right',fontSize:8,color:C.mut})}
                   {td(l.vq||'—',{textAlign:'right',fontSize:8,color:C.mut})}
                   {td(l.vm||'—',{textAlign:'right',fontSize:8,color:C.mut})}
-                  {/* CANTIDAD — u.base arriba · módulo FC debajo · desglose */}
+                  {/* CANTIDAD */}
                   {td(<div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:1}}>
-                    {/* Fila base: total unidades del artículo base recibidas */}
+                    {/* Cant en u.base del artículo proveedor */}
                     <span style={{fontWeight:700,fontSize:10,color:C.teal}}>
                       {cantEnBase.toLocaleString('es-AR')}
                       <span style={{fontSize:7,color:C.mut,marginLeft:2}}>
-                        {l.esCombo?'u.base':'u'}
+                        {l.esCombo?'bultos':'u'}
                       </span>
                     </span>
-                    {/* Módulo FC: cajas × factor */}
+                    {/* Cajas FC */}
                     {hayFC&&l.cantFC>0&&<span style={{fontWeight:600,fontSize:9,color:C.green}}>
-                      {l.cantFC}<span style={{fontSize:7,color:C.mut,marginLeft:2}}>
-                        {l.esCombo?'cajas FC':'u FC'}
-                      </span>
+                      {l.cantFC}<span style={{fontSize:7,color:C.mut,marginLeft:2}}>cajas FC</span>
                     </span>}
-                    {/* Desglose multiplicado */}
-                    {hayFC&&l.esCombo&&factorReal>1&&factorInfo?.tipo==='doble'&&<span style={{fontSize:7,color:C.acc}}>
-                      {l.cantFC}×{factorInfo.factor}×{factorInfo.factorInterno}={cantEnBase.toLocaleString('es-AR')}u
-                    </span>}
-                    {hayFC&&l.esCombo&&factorReal>1&&factorInfo?.tipo!=='doble'&&<span style={{fontSize:7,color:C.acc}}>
-                      {l.cantFC}×{factorReal}={cantEnBase.toLocaleString('es-AR')}u
-                    </span>}
+                    {/* Desglose: cajas×bultos=total o cajas×factor=total */}
+                    {hayFC&&l.esCombo&&factorReal>1&&(()=>{
+                      if(factorInfo?.tipo==='doble'){
+                        return <span style={{fontSize:7,color:C.acc}}>
+                          {l.cantFC}×{factorInfo.factor}={cantEnBase}bultos ({factorInfo.factorInterno}u/bulto)
+                        </span>;
+                      }
+                      return <span style={{fontSize:7,color:C.acc}}>
+                        {l.cantFC}×{factorReal}={cantEnBase.toLocaleString('es-AR')}bultos
+                      </span>;
+                    })()}
                     {!hayFC&&l.cantOC>0&&<span style={{fontSize:7,color:C.mut}}>OC</span>}
                   </div>,{textAlign:'right'})}
                   {/* COSTO: plaza/u · precio bulto FC editable · equiv/u con dif% */}
