@@ -218,7 +218,6 @@ function buscar(descDoc, codDoc, prov, famF, catF, marcaF, q, art) {
   if(otros.length && mismos.length) otros[0]._separador = true;
   return [...mismos, ...otros];
 }
-}
 
 
 function calcDiff(cr,pd){if(!cr||!pd)return null;return((pd-cr)/cr)*100;}
