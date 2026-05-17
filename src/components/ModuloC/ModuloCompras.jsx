@@ -1195,17 +1195,17 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
               }
               const td=(c,s)=><td style={{padding:'4px 5px',borderBottom:`1px solid ${C.b1}`,fontSize:9,verticalAlign:'middle',...s}}>{c}</td>;
               const hayFC = l.cantFC > 0 || l.precioDoc > 0;
-              // Factor = bultos por caja (lo que entrega el proveedor por unidad de combo)
-              // El artículo base es el bulto/pack individual (tiene proveedor asignado)
-              const factorReal = l.esCombo ? (factor || 1) : 1;
+              // Recalcular factor SIEMPRE desde la descripción FC — no confiar en l.factor guardado
+              // l.factor puede ser incorrecto si la línea se creó antes del fix
+              const factorInfo = l.esCombo ? detectarFactorCombo(l.descFC||l.desc||'') : null;
+              // factorReal = bultos por caja (empaque exterior de la FC)
+              const factorReal = l.esCombo ? (factorInfo?.factor || l.factor || 1) : 1;
               // Cant en unidades del artículo BASE (bultos recibidos)
               const cantEnBase = hayFC ? (l.cantFC||0) * factorReal : (l.cantOC||0);
-              // Precio FC por unidad base (por bulto)
+              // Precio FC por unidad BASE (por bulto)
               const precioFCporBase = factorReal > 1 && l.precioDoc > 0
                 ? (l.precioDoc||0) / factorReal
                 : (l.precioDoc||0);
-              // Info de niveles detectados en la descripción FC
-              const factorInfo = l.esCombo ? detectarFactorCombo(l.descFC||l.desc||'') : null;
               // Combo en la base
               const comboData = db.combos?.[l.codp] || db.combos?.[l.cod]
                 || db.combos?.[l.codp+'x'+factorReal] || db.combos?.[l.cod+'x'+factorReal];
