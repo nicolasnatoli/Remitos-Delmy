@@ -53,19 +53,52 @@ export function detectarFactorCombo(desc) {
   if (!desc) return null;
   const d = desc.toLowerCase();
 
-  // Patrón 1: N bolsas/packs/cajas/unid × Mu  (combo doble)
-  const m1 = d.match(/(\d+)\s*(?:bolsas?|packs?|cajas?|unidades?|bols\.?)\s*[x]\s*(\d+)/i);
-  if (m1) return { factor: parseInt(m1[1]) * parseInt(m1[2]), tipo: 'doble', detalle: `${m1[1]}×${m1[2]}` };
+  // Patrón 1: N bolsas/packs/cajas × Mu  (combo doble — mamushka)
+  // Ej: "20 Bolsas x 50u", "12 Packs x 10u"
+  // → factorexterno = 20 (bultos por caja), factorinterno = 50 (u por bulto)
+  // El artículo base del proveedor es el bulto interno (50u o 10u)
+  // El combo a crear es el externo (20 bultos o 12 packs)
+  const m1 = d.match(/(\d+)\s*(?:bolsas?|packs?|cajas?|bultos?|bols\.?)\s*[x×]\s*(\d+)/i);
+  if (m1) {
+    const ext = parseInt(m1[1]); // cantidad de bultos por caja (factor del COMBO)
+    const int_ = parseInt(m1[2]); // unidades por bulto (factor del artículo base)
+    return {
+      factor: ext,           // factor del combo = bultos por caja
+      factorInterno: int_,   // unidades por bulto (del artículo base)
+      factorTotal: ext * int_,
+      tipo: 'doble',
+      detalle: `${ext}×${int_}`,
+      niveles: [
+        { factor: int_,       label: `×${int_}u (bulto)` },   // artículo base si no existe
+        { factor: ext,        label: `×${ext} bultos` },       // combo nivel 1
+        { factor: ext * int_, label: `×${ext*int_}u (caja)` }, // combo nivel 2 = caja completa
+      ]
+    };
+  }
 
-  // Patrón 2: X N unidades al inicio o final
-  const m2 = d.match(/[x]\s*(\d+)\s*(?:un?\.?|uds?\.?|u\.?)?/i);
-  if (m2) return { factor: parseInt(m2[1]), tipo: 'simple', detalle: 'x'+m2[1] };
+  // Patrón 2: X N unidades simple
+  const m2 = d.match(/[x×]\s*(\d+)\s*(?:un?\.?|uds?\.?|u\.?)?/i);
+  if (m2) {
+    const f = parseInt(m2[1]);
+    return {
+      factor: f, factorInterno: 1, factorTotal: f,
+      tipo: 'simple', detalle: 'x'+f,
+      niveles: [{ factor: f, label: `×${f}u` }]
+    };
+  }
 
   // Patrón 3: "por N" o "de N unidades"
   const m3 = d.match(/(?:por|de)\s+(\d+)\s*(?:unidades?|un?\.?)?/i);
-  if (m3 && parseInt(m3[1]) > 1) return { factor: parseInt(m3[1]), tipo: 'simple', detalle: `×${m3[1]}` };
+  if (m3 && parseInt(m3[1]) > 1) {
+    const f = parseInt(m3[1]);
+    return {
+      factor: f, factorInterno: 1, factorTotal: f,
+      tipo: 'simple', detalle: `×${f}`,
+      niveles: [{ factor: f, label: `×${f}u` }]
+    };
+  }
 
-  return null; // artículo unitario
+  return null;
 }
 
 // ─── Expandir líneas con combos ───────────────────────────────────────────────

@@ -476,7 +476,13 @@ function enriquecerLinea(codDoc,cant,precioDoc,descDoc,prov,db,ocLineas){
     // también considerar mismo si codDoc contiene el codpBase (ej: '6002B/50' vs '6002B/50')
     codDoc.toLowerCase().startsWith(codpBase.toLowerCase())
   );
-  const factorDesc = !mismoArticulo ? (comboTabla?.componentes?.[0]?.cant || detectarFactorCombo(descDoc)?.factor || 1) : 1;
+  // Factor correcto: el del COMBO (bultos por caja), no el total hasta la u mínima
+  // Si la descripción dice "20 Bolsas x 50u" → factor = 20 (el artículo base es la bolsa de 50u)
+  // Si la descripción dice "12 Packs x 10u" → factor = 12 (el artículo base es el pack de 10u)
+  const factorInfo = !mismoArticulo ? detectarFactorCombo(descDoc) : null;
+  const factorDesc = factorInfo
+    ? (comboTabla?.componentes?.[0]?.cant || factorInfo.factor || 1)
+    : 1;
   const factor = factorDesc;
   const cantReal = cant * factor;
   const esComboDetectado = factor > 1 && !mismoArticulo;
@@ -1169,41 +1175,35 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
               }
               const td=(c,s)=><td style={{padding:'4px 5px',borderBottom:`1px solid ${C.b1}`,fontSize:9,verticalAlign:'middle',...s}}>{c}</td>;
               const hayFC = l.cantFC > 0 || l.precioDoc > 0;
-              // esCombo: la FC vino en un empaque mayor que el artículo base
-              // SIEMPRE generar combo si factor > 1, incluso si el código FC coincide con el codp base
-              // (porque son empaques físicamente distintos aunque el proveedor use el mismo código)
+              // Factor = bultos por caja (lo que entrega el proveedor por unidad de combo)
+              // El artículo base es el bulto/pack individual (tiene proveedor asignado)
               const factorReal = l.esCombo ? (factor || 1) : 1;
-              // Cant en unidades del artículo base del proveedor
+              // Cant en unidades del artículo BASE (bultos recibidos)
               const cantEnBase = hayFC ? (l.cantFC||0) * factorReal : (l.cantOC||0);
-              // Precio FC por unidad base
+              // Precio FC por unidad base (por bulto)
               const precioFCporBase = factorReal > 1 && l.precioDoc > 0
                 ? (l.precioDoc||0) / factorReal
                 : (l.precioDoc||0);
-              // Combo data y estado
-              // Código combo propuesto: codpBase + 'x' + factor  (ej: 6002/50x20)
+              // Info de niveles detectados en la descripción FC
+              const factorInfo = l.esCombo ? detectarFactorCombo(l.descFC||l.desc||'') : null;
+              // Combo en la base
               const comboData = db.combos?.[l.codp] || db.combos?.[l.cod]
                 || db.combos?.[l.codp+'x'+factorReal] || db.combos?.[l.cod+'x'+factorReal];
               const codComboSugerido = l.codp ? `${l.codp}x${factorReal}` : `${l.cod}x${factorReal}`;
               const esComboNuevo = l.esCombo && !comboData;
-              // Combos intermedios: si el artículo base existe en versiones menores
-              // (ej: base=10u, FC=20paq×50u → hay que crear x5 y x1000 también)
+              // Combos intermedios: SOLO los detectados en la descripción FC (no divisores matemáticos)
+              // "20 Bolsas x 50u" → recomendar x20 (caja) y x50 si no existe el bulto
+              // "12 Packs x 10u" → recomendar x10 (pack) y x120 (caja)
               const combosIntermedios = (()=>{
-                if(!l.esCombo||factorReal<=1)return[];
-                const result=[];
-                // Buscar factores intermedios que dividan el factor total
-                const factores=[2,5,10,12,20,24,50,100];
-                for(const f of factores){
-                  if(f<factorReal&&factorReal%f===0){
-                    const codInt=l.cod+'x'+f;
-                    const codProv=l.codp?l.codp+'x'+f:'';
-                    if(!db.combos?.[codInt]&&!db.combos?.[codProv]){
-                      result.push({factor:f,codSugerido:codProv||codInt,existe:false});
-                    } else {
-                      result.push({factor:f,codSugerido:codProv||codInt,existe:true});
-                    }
-                  }
-                }
-                return result;
+                if(!l.esCombo || !factorInfo) return [];
+                const niveles = factorInfo.niveles || [];
+                return niveles.map(n => {
+                  if(n.factor === factorReal) return null; // ya es el factor principal
+                  const codProv = l.codp ? `${l.codp}x${n.factor}` : '';
+                  const codInt  = `${l.cod}x${n.factor}`;
+                  const existe  = !!(db.combos?.[codProv] || db.combos?.[codInt]);
+                  return { factor: n.factor, label: n.label, codSugerido: codProv||codInt, existe };
+                }).filter(Boolean);
               })();
               const diffPct = l.costoReal > 0 && precioFCporBase > 0
                 ? ((precioFCporBase - l.costoReal) / l.costoReal * 100).toFixed(1)
@@ -1264,20 +1264,29 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
                   {td(l.vs||'—',{textAlign:'right',fontSize:8,color:C.mut})}
                   {td(l.vq||'—',{textAlign:'right',fontSize:8,color:C.mut})}
                   {td(l.vm||'—',{textAlign:'right',fontSize:8,color:C.mut})}
-                  {/* CANTIDAD — cantOC arriba, FC debajo, desglose */}
+                  {/* CANTIDAD — u.base arriba · módulo FC debajo · desglose */}
                   {td(<div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:1}}>
-                    {/* OC: siempre visible si existe */}
-                    {(l.cantOC>0)&&<span style={{fontWeight:700,fontSize:10,color:C.txt}}>
-                      {(l.cantOC).toLocaleString('es-AR')}<span style={{fontSize:7,color:C.mut,marginLeft:2}}>u OC</span>
+                    {/* Fila base: total unidades del artículo base recibidas */}
+                    <span style={{fontWeight:700,fontSize:10,color:C.teal}}>
+                      {cantEnBase.toLocaleString('es-AR')}
+                      <span style={{fontSize:7,color:C.mut,marginLeft:2}}>
+                        {l.esCombo?'u.base':'u'}
+                      </span>
+                    </span>
+                    {/* Módulo FC: cajas × factor */}
+                    {hayFC&&l.cantFC>0&&<span style={{fontWeight:600,fontSize:9,color:C.green}}>
+                      {l.cantFC}<span style={{fontSize:7,color:C.mut,marginLeft:2}}>
+                        {l.esCombo?'cajas FC':'u FC'}
+                      </span>
                     </span>}
-                    {/* FC en módulo del proveedor */}
-                    {hayFC&&l.cantFC>0&&<span style={{fontWeight:700,fontSize:10,color:C.green}}>
-                      {l.cantFC}<span style={{fontSize:7,color:C.mut,marginLeft:2}}>{l.esCombo?`bultos FC`:'u FC'}</span>
+                    {/* Desglose multiplicado */}
+                    {hayFC&&l.esCombo&&factorReal>1&&factorInfo?.tipo==='doble'&&<span style={{fontSize:7,color:C.acc}}>
+                      {l.cantFC}×{factorInfo.factor}×{factorInfo.factorInterno}={cantEnBase.toLocaleString('es-AR')}u
                     </span>}
-                    {/* Desglose × factor = total u.base */}
-                    {hayFC&&l.esCombo&&factorReal>1&&<span style={{fontSize:7,color:C.acc}}>
+                    {hayFC&&l.esCombo&&factorReal>1&&factorInfo?.tipo!=='doble'&&<span style={{fontSize:7,color:C.acc}}>
                       {l.cantFC}×{factorReal}={cantEnBase.toLocaleString('es-AR')}u
                     </span>}
+                    {!hayFC&&l.cantOC>0&&<span style={{fontSize:7,color:C.mut}}>OC</span>}
                   </div>,{textAlign:'right'})}
                   {/* COSTO: plaza/u · precio bulto FC editable · equiv/u con dif% */}
                   {td(<div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:1}}>
