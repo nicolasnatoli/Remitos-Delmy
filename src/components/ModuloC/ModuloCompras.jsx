@@ -860,7 +860,6 @@ export default function ModuloCompras(){
     otrosProv.forEach(l=>{if(!rows.find(r=>r[1]===l.cod))rows.push(['NUEVO_PROV',l.cod,l.codDocFC||l.codp,l.codp,l.desc,l.factor||1,l.cantFC||'',l.cantReal||'',l.precioDoc||'',l.costoReal,OCdata.meta.proveedor,'Nueva línea proveedor']);});
     noEntregados.forEach(l=>{rows.push(['NO_ENTREGADO',l.cod,l.codDocFC||l.codp,l.codp,l.desc,l.factor||1,l.cantFC||'',l.cantReal||'',l.precioDoc||'',l.costoReal,l.prov,'No entregado — pendiente']);});
     // Combos de SK.nuevos — solo los tipo COMBO_NUEVO/COMBO_INTERMEDIO, sin duplicar con combosNuevos
-    const codsCombosNuevos=new Set(combosNuevos.map(l=>l.codp&&l.factor?`${l.codp}x${l.factor}`:`${l.cod}x${l.factor}`));
     nList.filter(n=>n.tipo==='COMBO_NUEVO'||n.tipo==='COMBO_INTERMEDIO').forEach(n=>{
       if(!rows.find(r=>r[1]===n.cod)){
         rows.push([n.tipo,n.cod,n.codp,n.codp,n.desc,n.factor||1,'','',n.costoReal,n.costoReal,n.prov,`Combo ×${n.factor} — crear en base`]);
