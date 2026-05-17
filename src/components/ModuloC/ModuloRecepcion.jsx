@@ -7,11 +7,20 @@ const fn  = n => Number(n||0).toLocaleString('es-AR');
 const now = () => new Date().toISOString();
 const pad = n => String(n).padStart(2,'0');
 
-// ─── Número RC único ──────────────────────────────────────────────────────────
-function generarRC(proveedor){
+// ─── Número RC/OC único — formato: PREFIX-01-MMDD-HHMM(-SS) ─────────────────
+const AÑO_SISTEMA = 1; // 2026 = año 01 del sistema Delmy
+function generarId(prefijo, sufijo=''){
   const d=new Date();
+  const anio=pad(AÑO_SISTEMA);
+  const dia=pad(d.getMonth()+1)+pad(d.getDate());
+  const hora=pad(d.getHours())+pad(d.getMinutes());
+  const seg=pad(d.getSeconds());
+  const id=`${prefijo}-${anio}-${dia}-${hora}${seg}`;
+  return sufijo ? `${id}-${sufijo}` : id;
+}
+function generarRC(proveedor){
   const sigla=(proveedor||'SP').replace(/[^A-Za-z]/g,'').toUpperCase().slice(0,3);
-  return `RC${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}-${sigla}`;
+  return generarId('RC', sigla);
 }
 
 

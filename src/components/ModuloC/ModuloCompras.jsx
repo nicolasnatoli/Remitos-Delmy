@@ -9,6 +9,14 @@ const fn   = n => Number(n||0).toLocaleString('es-AR');
 const fp   = n => n>0 ? '$'+Number(n).toLocaleString('es-AR',{maximumFractionDigits:0}) : '—';
 const now  = () => new Date().toISOString();
 const nowLabel = () => new Date().toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+const pad  = n => String(n).padStart(2,'0');
+
+// Formato OC: OC-01-MMDD-HHMMSS  (año01=2026, mes+día, hora+min+seg)
+const AÑO_SISTEMA = 1;
+function generarOC(){
+  const d=new Date();
+  return `OC-${pad(AÑO_SISTEMA)}-${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+}
 
 // ─── Expandir formatos compactos ──────────────────────────────────────────────
 const expandStk =c=>{const o={};for(const[k,s]of Object.entries(c||{})){const p=s.split(',');o[k]={DM01:+p[0]||0,DM03:+p[1]||0,DMCN:+p[2]||0};}return o;};
@@ -468,8 +476,6 @@ function enriquecerLinea(codDoc,cant,precioDoc,descDoc,prov,db,ocLineas){
   const codI=matchResult.cod||codDoc;
   const nivel=matchResult.nivel;
   const a=db.art[codI]||{desc:descDoc||'',codp:codDoc,prov:'',fam:'',cat:'',costoReal:0,pvMin:0,mostrador:0};
-  // codpBase para mostrar en la UI
-  const codpBase = a.codp || codDoc;
   // esCombo: detectar SIEMPRE desde la descripción de la FC
   // El código puede coincidir con el artículo base pero igual venir en combo mayor
   // Ej: 6002/50 en base = bolsa 50u, pero FC dice "20 Bolsas x 50u" → es combo ×20
@@ -609,7 +615,7 @@ export default function ModuloCompras(){
         provOriginal:listaItems[cod]?.provOriginal||a.prov||'',
       };
     });
-    const id='oc_'+Date.now();
+    const id=generarOC();
     const data={meta:{proveedor:prov,fecha:new Date().toISOString().slice(0,10),documento:'',origen:'Stock+',estado:'generada',historial:[{estado:'generada',ts:now(),label:nowLabel(),usuario:'Operario',desdePrev:0}]},lineas};
     setOCdata(data);setOCact(id);saveOC(id,data);setEtC('validacion');
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -675,7 +681,7 @@ export default function ModuloCompras(){
       const provDoc=docMeta.proveedor||OCdata.meta.proveedor||"";
       const lineas=docLineas.map(dl=>enriquecerLinea(dl.cod,dl.cant,dl.precio,dl.desc,provDoc,db,[]));
       const prov=docMeta.proveedor||lineas.find(l=>l.prov)?.prov||'';
-      const id='oc_'+Date.now();
+      const id=generarOC();
       const data={meta:{proveedor:prov,fecha:new Date().toISOString().slice(0,10),documento:docMeta.nDocumento||'',origen:'Documento',estado:'generada',historial:[{estado:'generada',ts:now(),label:nowLabel(),usuario:'Operario',desdePrev:0}]},lineas};
       setOCdata(data);setOCact(id);saveOC(id,data);
     }
@@ -818,7 +824,7 @@ export default function ModuloCompras(){
   };
 
   const nuevaOC=()=>{
-    const id='oc_'+Date.now();
+    const id=generarOC();
     const data={meta:{proveedor:'',fecha:new Date().toISOString().slice(0,10),documento:'',estado:'generada',historial:[{estado:'generada',ts:now(),label:nowLabel(),usuario:'Operario',desdePrev:0}]},lineas:[]};
     setOCdata(data);setOCS(prev=>{const n=[...prev,id];lsSet(SK.ocs,n);return n;});
     setOCact(id);lsSet('dm_oc_v3_'+id,data);setEtC('carga');
@@ -1094,7 +1100,7 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
         },0);
         const totalFC=OCdata.lineas.reduce((s,l)=>s+(l.cantFC>0?(l.cantFC*(l.precioDoc||0)):0),0);
         const hayFC=OCdata.lineas.some(l=>l.cantFC>0||l.precioDoc>0);
-        const nOC=OCact?OCact.replace('oc_','OC-'):'—';
+        const nOC=OCact||'—';
         return(
         <div style={{position:'sticky',top:0,zIndex:10,background:C.p2,borderBottom:`1px solid ${C.b1}`,borderTop:`1px solid ${C.b1}`,padding:'5px 10px',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap',marginBottom:4}}>
           <span style={{fontSize:9,fontFamily:'DM Mono,monospace',color:C.mut,background:'rgba(240,192,64,.08)',padding:'1px 6px',borderRadius:3,border:`1px solid ${C.acc}33`}}>{nOC}</span>
