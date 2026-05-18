@@ -413,7 +413,9 @@ function clasificarNoReconocido(codDoc, descDoc, precioUnit, prov, db) {
 
   // ── Caso 2: combo nuevo — buscar artículo base + factor de descripción ───
   const factorInfo = detectarFactorCombo(descDoc);
-  if (factorInfo && factorInfo.factor > 1) {
+  if (factorInfo && (factorInfo.factorExt||factorInfo.factor||0) > 1) {
+    const factorExt = factorInfo.factorExt||factorInfo.factor||1;
+    const factorInt = factorInfo.factorInt||1;
     // Extraer código base: quitar sufijo numérico o /N o :N
     const codBase = codDoc.replace(/[/:\d-]+$/, '').trim();
     const codBaseN = normalize(codBase);
@@ -435,7 +437,7 @@ function clasificarNoReconocido(codDoc, descDoc, precioUnit, prov, db) {
 
     if (artBase || combosBase.length > 0) {
       const baseRef = artBase || combosBase[0]?.[1];
-      const costoSugerido = (baseRef?.costoReal || 0) * factorInfo.factor;
+      const costoSugerido = (baseRef?.costoReal || 0) * factorExt;
       const descNorm = descDoc
         .replace(/\s+x\s*(\d+)\s*u?n?/gi, ' x$1u')
         .replace(/(\d+)\s*(bolsas?|packs?|cajas?)\s*x\s*(\d+)/gi, '$1 paq x $3u')
@@ -445,12 +447,12 @@ function clasificarNoReconocido(codDoc, descDoc, precioUnit, prov, db) {
         codBase: codBaseI || codBase,
         artBase: artBase || null,
         combosBase,
-        factor: factorInfo.factor,
+        factor: factorExt,
         factorTipo: factorInfo.tipo,
-        factorDetalle: factorInfo.detalle || String(factorInfo.factor),
+        factorDetalle: factorInfo.detalle || `${factorExt}×${factorInt}`,
         costoSugerido: costoSugerido > 0 ? costoSugerido : precioUnit,
         costoCoincide: costoSugerido > 0 && Math.abs(costoSugerido - precioUnit) / precioUnit < 0.02,
-        codSugerido: codBase + '/' + factorInfo.factor,
+        codSugerido: codBase + 'x' + factorExt,
         descSugerida: descNorm,
         confianza: artBase ? 0.9 : 0.7,
       };
@@ -481,9 +483,9 @@ function enriquecerLinea(codDoc,cant,precioDoc,descDoc,prov,db,ocLineas){
   // Ej: 6002/50 en base = bolsa 50u, pero FC dice "20 Bolsas x 50u" → es combo ×20
   const factorInfoDesc = detectarFactorCombo(descDoc);
   const comboTablaFactor = comboTabla?.componentes?.[0]?.cant || null;
-  // Factor del COMBO = bultos por caja (lo que entrega el proveedor como unidad de la FC)
-  // NO es el factor hasta la unidad mínima — es el factor del empaque exterior
-  const factorDesc = comboTablaFactor || factorInfoDesc?.factor || 1;
+  // Para guardar el factor correcto en la línea, usar factorExt (bultos/caja)
+  // El render recalcula el factor real según si el artículo base es bulto o 1u
+  const factorDesc = comboTablaFactor || factorInfoDesc?.factorExt || 1;
   const factor = factorDesc;
   const cantReal = cant * factor;
   // Es combo si la descripción detecta un empaque mayor (factor > 1)
@@ -1194,36 +1196,61 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
               }
               const td=(c,s)=><td style={{padding:'4px 5px',borderBottom:`1px solid ${C.b1}`,fontSize:9,verticalAlign:'middle',...s}}>{c}</td>;
               const hayFC = l.cantFC > 0 || l.precioDoc > 0;
-              // Recalcular factor SIEMPRE desde la descripción FC — no confiar en l.factor guardado
-              // l.factor puede ser incorrecto si la línea se creó antes del fix
+              // Factor recalculado desde descripción FC
               const factorInfo = l.esCombo ? detectarFactorCombo(l.descFC||l.desc||'') : null;
-              // factorReal = bultos por caja (empaque exterior de la FC)
-              const factorReal = l.esCombo ? (factorInfo?.factor || l.factor || 1) : 1;
-              // Cant en unidades del artículo BASE (bultos recibidos)
+              // Determinar si el artículo base es el BULTO o la UNIDAD MÍNIMA
+              // Si el artículo base (l.cod) tiene un módulo = factorInt en su nombre/desc → es el bulto
+              // Ej: 6002/50 → el "/50" indica que tiene 50u → es el bulto
+              // Ej: 4001CE → es 1u → es la unidad mínima
+              // Regla práctica: si factorInt == l.unidad o está en el nombre del artículo base → base=bulto
+              const artBaseDesc = (db.art[l.cod]?.desc||l.desc||'').toLowerCase();
+              const fiInt = factorInfo?.factorInt || 1;
+              const fiExt = factorInfo?.factorExt || 1;
+              // base es bulto si la descripción del artículo base menciona "x Mu" donde M=factorInt
+              const baseEsBulto = factorInfo?.tipo==='doble' && fiInt > 1 && (
+                artBaseDesc.includes('x '+fiInt) || artBaseDesc.includes('× '+fiInt) ||
+                artBaseDesc.includes('x'+fiInt+'u') || artBaseDesc.includes(fiInt+'u') ||
+                (l.codp||'').includes('/'+fiInt) || (l.cod||'').includes('/'+fiInt)
+              );
+              // factorReal = unidades del artículo base por unidad de combo (la caja FC)
+              // Si base=bulto: factorReal = fiExt (cajas de bultos)
+              // Si base=1u:   factorReal = fiExt * fiInt (cajas de unidades totales)
+              const factorReal = l.esCombo
+                ? (factorInfo?.tipo==='doble'
+                    ? (baseEsBulto ? fiExt : fiExt * fiInt)
+                    : (factorInfo?.factorExt || l.factor || 1))
+                : 1;
               const cantEnBase = hayFC ? (l.cantFC||0) * factorReal : (l.cantOC||0);
-              // Precio FC por unidad BASE (por bulto)
               const precioFCporBase = factorReal > 1 && l.precioDoc > 0
-                ? (l.precioDoc||0) / factorReal
-                : (l.precioDoc||0);
-              // Combo en la base
-              const comboData = db.combos?.[l.codp] || db.combos?.[l.cod]
-                || db.combos?.[l.codp+'x'+factorReal] || db.combos?.[l.cod+'x'+factorReal];
-              const codComboSugerido = l.codp ? `${l.codp}x${factorReal}` : `${l.cod}x${factorReal}`;
-              const esComboNuevo = l.esCombo && !comboData;
-              // Combos intermedios: SOLO los detectados en la descripción FC (no divisores matemáticos)
-              // "20 Bolsas x 50u" → recomendar x20 (caja) y x50 si no existe el bulto
-              // "12 Packs x 10u" → recomendar x10 (pack) y x120 (caja)
-              const combosIntermedios = (()=>{
-                if(!l.esCombo || !factorInfo) return [];
-                const niveles = factorInfo.niveles || [];
-                return niveles.map(n => {
-                  if(n.factor === factorReal) return null; // ya es el factor principal
-                  const codProv = l.codp ? `${l.codp}x${n.factor}` : '';
-                  const codInt  = `${l.cod}x${n.factor}`;
-                  const existe  = !!(db.combos?.[codProv] || db.combos?.[codInt]);
-                  return { factor: n.factor, label: n.label, codSugerido: codProv||codInt, existe };
-                }).filter(Boolean);
+                ? (l.precioDoc||0) / factorReal : (l.precioDoc||0);
+              // Combos a verificar/crear — en unidades del artículo base
+              const nivelesCombo = (()=>{
+                if(!l.esCombo||!factorInfo) return [];
+                if(factorInfo.tipo==='simple') return factorInfo.nivelesCombo||[];
+                // doble: construir niveles según si base=bulto o base=1u
+                if(baseEsBulto) {
+                  // base=bolsa 50u: solo combo caja = fiExt bolsas
+                  return [{ factorBase: fiExt, label: `×${fiExt} bultos (${fiExt*fiInt}u)`, codSufijo: `x${fiExt}` }];
+                } else {
+                  // base=1u: combo pack=fiInt y combo caja=fiExt*fiInt
+                  return [
+                    { factorBase: fiInt,        label: `×${fiInt}u (pack)`,       codSufijo: `x${fiInt}` },
+                    { factorBase: fiExt*fiInt,   label: `×${fiExt*fiInt}u (caja)`, codSufijo: `x${fiExt*fiInt}` },
+                  ];
+                }
               })();
+              // Combo principal de la caja FC
+              const codComboSugerido = l.codp ? `${l.codp}x${factorReal}` : `${l.cod}x${factorReal}`;
+              const comboData = db.combos?.[l.codp+'x'+factorReal]||db.combos?.[l.cod+'x'+factorReal];
+              const esComboNuevo = l.esCombo && !comboData;
+              // Verificar existencia de cada nivel en db.combos Y db.art
+              const combosIntermedios = nivelesCombo.map(n => {
+                const codProv = l.codp ? `${l.codp}${n.codSufijo}` : '';
+                const codInt  = `${l.cod}${n.codSufijo}`;
+                const existe  = !!(db.combos?.[codProv]||db.combos?.[codInt]
+                  ||db.art?.[codProv]||db.art?.[codInt]);
+                return { factor: n.factorBase, label: n.label, codSugerido: codProv||codInt, existe };
+              });
               const diffPct = l.costoReal > 0 && precioFCporBase > 0
                 ? ((precioFCporBase - l.costoReal) / l.costoReal * 100).toFixed(1)
                 : null;
@@ -1383,7 +1410,7 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
                     {hayFC&&l.esCombo&&factorReal>1&&(()=>{
                       if(factorInfo?.tipo==='doble'){
                         return <span style={{fontSize:7,color:C.acc}}>
-                          {l.cantFC}×{factorInfo.factor}={cantEnBase}bultos ({factorInfo.factorInterno}u/bulto)
+                          {l.cantFC}×{factorReal}={cantEnBase.toLocaleString('es-AR')}u
                         </span>;
                       }
                       return <span style={{fontSize:7,color:C.acc}}>

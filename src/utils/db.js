@@ -53,37 +53,48 @@ export function detectarFactorCombo(desc) {
   if (!desc) return null;
   const d = desc.toLowerCase();
 
-  // Patrón 1: N bolsas/packs/cajas × Mu  (combo doble — mamushka)
-  // Ej: "20 Bolsas x 50u", "12 Packs x 10u"
-  // → factorexterno = 20 (bultos por caja), factorinterno = 50 (u por bulto)
-  // El artículo base del proveedor es el bulto interno (50u o 10u)
-  // El combo a crear es el externo (20 bultos o 12 packs)
+  // Patrón 1: N bolsas/packs/cajas × Mu  (empaque doble)
+  // El factor del combo SIEMPRE se mide en unidades del artículo base (el que tiene codp+proveedor)
+  //
+  // Caso A: artículo base = bulto (ej: 6002/50 = bolsa 50u)
+  //   "20 Bolsas x 50u" → factor=20 (20 bolsas por caja)
+  //   Combo a buscar/crear: codx20 con componentes[0].cant=20
+  //
+  // Caso B: artículo base = unidad mínima (ej: 4001CE = 1u)  
+  //   "12 Packs x 10u" → factorPack=10, factorCaja=120
+  //   Combos a buscar/crear: codx10 (cant=10) y codx120 (cant=120)
+  //
+  // La función devuelve AMBOS casos — el render decide cuál aplica
+  // según si el artículo base coincide con el factorInterno o con 1u
   const m1 = d.match(/(\d+)\s*(?:bolsas?|packs?|cajas?|bultos?|bols\.?)\s*[x×]\s*(\d+)/i);
   if (m1) {
-    const ext = parseInt(m1[1]); // cantidad de bultos por caja (factor del COMBO)
-    const int_ = parseInt(m1[2]); // unidades por bulto (factor del artículo base)
+    const ext = parseInt(m1[1]); // cantidad de bultos por caja
+    const int_ = parseInt(m1[2]); // unidades por bulto
     return {
-      factor: ext,           // factor del combo = bultos por caja
-      factorInterno: int_,   // unidades por bulto (del artículo base)
-      factorTotal: ext * int_,
+      factorExt: ext,          // bultos por caja
+      factorInt: int_,         // u por bulto
+      factorTotal: ext * int_, // u totales por caja
       tipo: 'doble',
       detalle: `${ext}×${int_}`,
-      niveles: [
-        { factor: int_,       label: `×${int_}u (bulto)` },   // artículo base si no existe
-        { factor: ext,        label: `×${ext} bultos` },       // combo nivel 1
-        { factor: ext * int_, label: `×${ext*int_}u (caja)` }, // combo nivel 2 = caja completa
+      // nivelesCombo: todos los combos posibles, en unidades del artículo base
+      // El render filtra según cuál es el artículo base real
+      // Si base=bulto(int_u): solo necesita x ext (los bultos por caja)
+      // Si base=1u: necesita x int_ (el pack) y x ext*int_ (la caja)
+      nivelesCombo: [
+        { factorSiBaseEsBulto: ext,        factorSiBaseEs1u: int_,        label: `×${int_}u (pack)`,  codSufijo: `x${int_}` },
+        { factorSiBaseEsBulto: ext,        factorSiBaseEs1u: ext * int_,  label: `×${ext*int_}u (caja)`, codSufijo: `x${ext*int_}` },
       ]
     };
   }
 
-  // Patrón 2: X N unidades simple
+  // Patrón 2: x N unidades simple
   const m2 = d.match(/[x×]\s*(\d+)\s*(?:un?\.?|uds?\.?|u\.?)?/i);
   if (m2) {
     const f = parseInt(m2[1]);
     return {
-      factor: f, factorInterno: 1, factorTotal: f,
+      factorExt: f, factorInt: 1, factorTotal: f,
       tipo: 'simple', detalle: 'x'+f,
-      niveles: [{ factor: f, label: `×${f}u` }]
+      nivelesCombo: [{ factorSiBaseEsBulto: f, factorSiBaseEs1u: f, label: `×${f}u`, codSufijo: `x${f}` }]
     };
   }
 
@@ -92,9 +103,9 @@ export function detectarFactorCombo(desc) {
   if (m3 && parseInt(m3[1]) > 1) {
     const f = parseInt(m3[1]);
     return {
-      factor: f, factorInterno: 1, factorTotal: f,
+      factorExt: f, factorInt: 1, factorTotal: f,
       tipo: 'simple', detalle: `×${f}`,
-      niveles: [{ factor: f, label: `×${f}u` }]
+      nivelesCombo: [{ factorSiBaseEsBulto: f, factorSiBaseEs1u: f, label: `×${f}u`, codSufijo: `x${f}` }]
     };
   }
 
