@@ -5,137 +5,96 @@ const multer = require('multer')
 const path = require('path')
 const fs = require('fs')
 const XLSX = require('xlsx')
+const { Pool } = require('pg')
 
 const app = express()
 const PORT = process.env.PORT || 3001
 
-// ─── Database Setup (sql.js — pure JS, no native compilation) ────────────────
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, '../data/analytics.db')
-fs.mkdirSync(path.dirname(DB_PATH), { recursive: true })
-
-let db
-let SQL
+// ─── PostgreSQL Pool ──────────────────────────────────────────────────────────
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+})
 
 async function initDB() {
-  const initSqlJs = require('sql.js')
-  SQL = await initSqlJs()
-
-  if (fs.existsSync(DB_PATH)) {
-    const fileBuffer = fs.readFileSync(DB_PATH)
-    db = new SQL.Database(fileBuffer)
-  } else {
-    db = new SQL.Database()
-  }
-
-  db.run(`PRAGMA foreign_keys = ON`)
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS comprobantes (
-      nro_comprobante TEXT PRIMARY KEY,
-      id_transaccion  INTEGER,
-      id_operacion    INTEGER,
-      id_sucursal     INTEGER,
-      sucursal        TEXT,
-      fecha           TEXT,
-      fecha_carga     TEXT,
-      tipo_comprob    TEXT,
-      tipo_cliente    TEXT,
-      razon_social    TEXT,
-      cond_iva        TEXT,
-      cond_venta      TEXT,
-      lista_precios   TEXT,
-      subtotal        REAL,
-      neto_gravado    REAL,
-      iva_105         REAL,
-      iva_21          REAL,
-      total           REAL,
-      moneda          TEXT,
-      usuario         TEXT,
-      upload_id       INTEGER
-    )
-  `)
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS ventas_lineas (
-      id              INTEGER PRIMARY KEY AUTOINCREMENT,
-      nro_comprobante TEXT,
-      id_operacion    INTEGER,
-      id_fila         INTEGER,
-      sucursal        TEXT,
-      fecha           TEXT,
-      tipo_comprob    TEXT,
-      id_articulo     INTEGER,
-      codigo          TEXT,
-      descripcion     TEXT,
-      costo           REAL,
-      cantidad        REAL,
-      precio_unitario REAL,
-      descuento       REAL,
-      subtotal_neto   REAL,
-      alicuota_iva    REAL,
-      subtotal_det    REAL,
-      upload_id       INTEGER
-    )
-  `)
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS uploads_log (
-      id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      filename      TEXT,
-      fecha_desde   TEXT,
-      fecha_hasta   TEXT,
-      sucursales    TEXT,
-      n_encabezados INTEGER,
-      n_detalles    INTEGER,
-      n_insertados  INTEGER,
-      n_actualizados INTEGER,
-      uploaded_at   TEXT DEFAULT (datetime('now','localtime')),
-      status        TEXT
-    )
-  `)
-
-  db.run(`CREATE INDEX IF NOT EXISTS idx_vl_fecha ON ventas_lineas(fecha)`)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_vl_sucursal ON ventas_lineas(sucursal)`)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_vl_codigo ON ventas_lineas(codigo)`)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_vl_comp ON ventas_lineas(nro_comprobante)`)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_comp_fecha ON comprobantes(fecha)`)
-
-  saveDB()
-  console.log(`DB ready: ${DB_PATH}`)
-}
-
-function saveDB() {
-  const data = db.export()
-  fs.writeFileSync(DB_PATH, Buffer.from(data))
-}
-
-// Helper: run query and return rows as array of objects
-function query(sql, params = []) {
+  const client = await pool.connect()
   try {
-    const stmt = db.prepare(sql)
-    stmt.bind(params)
-    const rows = []
-    while (stmt.step()) {
-      rows.push(stmt.getAsObject())
-    }
-    stmt.free()
-    return rows
-  } catch (e) {
-    console.error('Query error:', sql, e.message)
-    throw e
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS comprobantes (
+        nro_comprobante TEXT PRIMARY KEY,
+        id_transaccion  BIGINT,
+        id_operacion    BIGINT,
+        id_sucursal     INTEGER,
+        sucursal        TEXT,
+        fecha           DATE,
+        fecha_carga     TEXT,
+        tipo_comprob    TEXT,
+        tipo_cliente    TEXT,
+        razon_social    TEXT,
+        cond_iva        TEXT,
+        cond_venta      TEXT,
+        lista_precios   TEXT,
+        subtotal        NUMERIC,
+        neto_gravado    NUMERIC,
+        iva_105         NUMERIC,
+        iva_21          NUMERIC,
+        total           NUMERIC,
+        moneda          TEXT,
+        usuario         TEXT,
+        upload_id       INTEGER
+      )
+    `)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ventas_lineas (
+        id              BIGSERIAL PRIMARY KEY,
+        nro_comprobante TEXT,
+        id_operacion    BIGINT,
+        id_fila         BIGINT,
+        sucursal        TEXT,
+        fecha           DATE,
+        tipo_comprob    TEXT,
+        id_articulo     INTEGER,
+        codigo          TEXT,
+        descripcion     TEXT,
+        costo           NUMERIC,
+        cantidad        NUMERIC,
+        precio_unitario NUMERIC,
+        descuento       NUMERIC,
+        subtotal_neto   NUMERIC,
+        alicuota_iva    NUMERIC,
+        subtotal_det    NUMERIC,
+        upload_id       INTEGER
+      )
+    `)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS uploads_log (
+        id             SERIAL PRIMARY KEY,
+        filename       TEXT,
+        fecha_desde    DATE,
+        fecha_hasta    DATE,
+        sucursales     TEXT,
+        n_encabezados  INTEGER DEFAULT 0,
+        n_detalles     INTEGER DEFAULT 0,
+        n_insertados   INTEGER DEFAULT 0,
+        n_actualizados INTEGER DEFAULT 0,
+        uploaded_at    TIMESTAMP DEFAULT NOW(),
+        status         TEXT
+      )
+    `)
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_vl_fecha     ON ventas_lineas(fecha)`)
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_vl_sucursal  ON ventas_lineas(sucursal)`)
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_vl_codigo    ON ventas_lineas(codigo)`)
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_vl_comp      ON ventas_lineas(nro_comprobante)`)
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_vl_tipo      ON ventas_lineas(tipo_comprob)`)
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_comp_fecha   ON comprobantes(fecha)`)
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_comp_tipo    ON comprobantes(tipo_comprob)`)
+    console.log('DB ready')
+  } finally {
+    client.release()
   }
 }
 
-function queryOne(sql, params = []) {
-  const rows = query(sql, params)
-  return rows[0] || null
-}
-
-function run(sql, params = []) {
-  db.run(sql, params)
-}
-
-// ─── Parser de planillas ──────────────────────────────────────────────────────
+// ─── Parser ───────────────────────────────────────────────────────────────────
 function parsePlanillaVentas(buffer) {
   const wb = XLSX.read(buffer, { type: 'buffer', cellDates: false })
   const ws = wb.Sheets[wb.SheetNames[0]]
@@ -161,7 +120,13 @@ function parsePlanillaVentas(buffer) {
     const get = (col) => { const v = idx[col] !== undefined ? row[idx[col]] : null; return (v === null || v === undefined || v === '-') ? null : v }
     const getNum = (col) => { const v = get(col); if (v === null) return 0; const n = parseFloat(String(v).replace(',', '.')); return isNaN(n) ? 0 : n }
     const getStr = (col) => { const v = get(col); return v === null ? null : String(v).trim() }
-    const parseDate = (v) => { if (!v) return null; const s = String(v).trim(); const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})/); if (m) return `${m[3]}-${m[2]}-${m[1]}`; return s.substring(0, 10) }
+    const parseDate = (v) => {
+      if (!v) return null
+      const s = String(v).trim()
+      const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})/)
+      if (m) return `${m[3]}-${m[2]}-${m[1]}`
+      return s.substring(0, 10)
+    }
 
     if (tipo === 'Encabezado') {
       encabezados.push({
@@ -205,8 +170,9 @@ if (process.env.NODE_ENV === 'production') {
   app.use(express.static(path.join(__dirname, '../dist')))
 }
 
-// ─── API: Upload ──────────────────────────────────────────────────────────────
-app.post('/api/upload', upload.single('file'), (req, res) => {
+// ─── Upload ───────────────────────────────────────────────────────────────────
+app.post('/api/upload', upload.single('file'), async (req, res) => {
+  const client = await pool.connect()
   try {
     if (!req.file) return res.status(400).json({ error: 'No se recibió archivo' })
 
@@ -218,186 +184,209 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
     const fechaDesde = fechas[0] || null
     const fechaHasta = fechas[fechas.length - 1] || null
 
-    run(`INSERT INTO uploads_log (filename, fecha_desde, fecha_hasta, sucursales, n_encabezados, n_detalles, n_insertados, n_actualizados, status) VALUES (?,?,?,?,?,?,0,0,'procesando')`,
-      [req.file.originalname, fechaDesde, fechaHasta, sucursales.join(', '), encabezados.length, detalles.length])
+    const logRes = await client.query(
+      `INSERT INTO uploads_log (filename, fecha_desde, fecha_hasta, sucursales, n_encabezados, n_detalles, status) VALUES ($1,$2,$3,$4,$5,$6,'procesando') RETURNING id`,
+      [req.file.originalname, fechaDesde, fechaHasta, sucursales.join(', '), encabezados.length, detalles.length]
+    )
+    const uploadId = logRes.rows[0].id
 
-    const uploadId = queryOne('SELECT last_insert_rowid() as id').id
+    await client.query('BEGIN')
 
     let insertados = 0, actualizados = 0
 
-    const existingSet = new Set(
-      query(`SELECT nro_comprobante FROM comprobantes WHERE nro_comprobante IN (${encabezados.map(() => '?').join(',')})`,
-        encabezados.map(e => e.nro_comprobante)).map(r => r.nro_comprobante)
-    )
-
+    // Upsert comprobantes in batches
     for (const enc of encabezados) {
-      if (existingSet.has(enc.nro_comprobante)) {
-        actualizados++
-        run(`UPDATE comprobantes SET subtotal=?,neto_gravado=?,iva_105=?,iva_21=?,total=?,upload_id=? WHERE nro_comprobante=?`,
-          [enc.subtotal, enc.neto_gravado, enc.iva_105, enc.iva_21, enc.total, uploadId, enc.nro_comprobante])
-      } else {
-        insertados++
-        run(`INSERT INTO comprobantes (nro_comprobante,id_transaccion,id_operacion,id_sucursal,sucursal,fecha,fecha_carga,tipo_comprob,tipo_cliente,razon_social,cond_iva,cond_venta,lista_precios,subtotal,neto_gravado,iva_105,iva_21,total,moneda,usuario,upload_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-          [enc.nro_comprobante,enc.id_transaccion,enc.id_operacion,enc.id_sucursal,enc.sucursal,enc.fecha,enc.fecha_carga,enc.tipo_comprob,enc.tipo_cliente,enc.razon_social,enc.cond_iva,enc.cond_venta,enc.lista_precios,enc.subtotal,enc.neto_gravado,enc.iva_105,enc.iva_21,enc.total,enc.moneda,enc.usuario,uploadId])
-      }
+      const r = await client.query(
+        `INSERT INTO comprobantes (nro_comprobante,id_transaccion,id_operacion,id_sucursal,sucursal,fecha,fecha_carga,tipo_comprob,tipo_cliente,razon_social,cond_iva,cond_venta,lista_precios,subtotal,neto_gravado,iva_105,iva_21,total,moneda,usuario,upload_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+         ON CONFLICT (nro_comprobante) DO UPDATE SET subtotal=EXCLUDED.subtotal,neto_gravado=EXCLUDED.neto_gravado,iva_105=EXCLUDED.iva_105,iva_21=EXCLUDED.iva_21,total=EXCLUDED.total,upload_id=EXCLUDED.upload_id
+         RETURNING (xmax = 0) AS inserted`,
+        [enc.nro_comprobante,enc.id_transaccion,enc.id_operacion,enc.id_sucursal,enc.sucursal,enc.fecha,enc.fecha_carga,enc.tipo_comprob,enc.tipo_cliente,enc.razon_social,enc.cond_iva,enc.cond_venta,enc.lista_precios,enc.subtotal,enc.neto_gravado,enc.iva_105,enc.iva_21,enc.total,enc.moneda,enc.usuario,uploadId]
+      )
+      if (r.rows[0].inserted) insertados++; else actualizados++
     }
 
-    // Group detalles by comprobante
-    const byComp = {}
-    for (const d of detalles) {
-      if (!byComp[d.nro_comprobante]) byComp[d.nro_comprobante] = []
-      byComp[d.nro_comprobante].push(d)
-    }
-    for (const [nro, lineas] of Object.entries(byComp)) {
-      run(`DELETE FROM ventas_lineas WHERE nro_comprobante=?`, [nro])
-      for (const l of lineas) {
-        run(`INSERT INTO ventas_lineas (nro_comprobante,id_operacion,id_fila,sucursal,fecha,tipo_comprob,id_articulo,codigo,descripcion,costo,cantidad,precio_unitario,descuento,subtotal_neto,alicuota_iva,subtotal_det,upload_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-          [l.nro_comprobante,l.id_operacion,l.id_fila,l.sucursal,l.fecha,l.tipo_comprob,l.id_articulo,l.codigo,l.descripcion,l.costo,l.cantidad,l.precio_unitario,l.descuento,l.subtotal_neto,l.alicuota_iva,l.subtotal_det,uploadId])
-      }
+    // Delete+reinsert detalles by comprobante
+    const compNros = [...new Set(detalles.map(d => d.nro_comprobante))]
+    if (compNros.length > 0) {
+      await client.query(`DELETE FROM ventas_lineas WHERE nro_comprobante = ANY($1)`, [compNros])
     }
 
-    run(`UPDATE uploads_log SET n_insertados=?,n_actualizados=?,status='ok' WHERE id=?`, [insertados, actualizados, uploadId])
-    saveDB()
+    // Batch insert detalles (chunks of 500)
+    const chunkSize = 500
+    for (let i = 0; i < detalles.length; i += chunkSize) {
+      const chunk = detalles.slice(i, i + chunkSize)
+      const values = []
+      const params = []
+      let p = 1
+      for (const l of chunk) {
+        values.push(`($${p},$${p+1},$${p+2},$${p+3},$${p+4},$${p+5},$${p+6},$${p+7},$${p+8},$${p+9},$${p+10},$${p+11},$${p+12},$${p+13},$${p+14},$${p+15},$${p+16})`)
+        params.push(l.nro_comprobante,l.id_operacion,l.id_fila,l.sucursal,l.fecha,l.tipo_comprob,l.id_articulo,l.codigo,l.descripcion,l.costo,l.cantidad,l.precio_unitario,l.descuento,l.subtotal_neto,l.alicuota_iva,l.subtotal_det,uploadId)
+        p += 17
+      }
+      await client.query(
+        `INSERT INTO ventas_lineas (nro_comprobante,id_operacion,id_fila,sucursal,fecha,tipo_comprob,id_articulo,codigo,descripcion,costo,cantidad,precio_unitario,descuento,subtotal_neto,alicuota_iva,subtotal_det,upload_id) VALUES ${values.join(',')}`,
+        params
+      )
+    }
+
+    await client.query('COMMIT')
+    await client.query(`UPDATE uploads_log SET n_insertados=$1,n_actualizados=$2,status='ok' WHERE id=$3`, [insertados, actualizados, uploadId])
 
     res.json({ ok: true, uploadId, encabezados: encabezados.length, detalles: detalles.length, insertados, actualizados, fechaDesde, fechaHasta, sucursales })
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {})
     console.error('Upload error:', err)
     res.status(500).json({ error: err.message })
+  } finally {
+    client.release()
   }
 })
 
-// ─── Helper para filtros WHERE ────────────────────────────────────────────────
-function buildWhere(base, filters, tablePrefix = '') {
-  const parts = [base]
-  const params = []
-  const p = filters || {}
-  const col = tablePrefix ? tablePrefix + '.' : ''
-  if (p.desde) { parts.push(`${col}fecha >= ?`); params.push(p.desde) }
-  if (p.hasta) { parts.push(`${col}fecha <= ?`); params.push(p.hasta) }
-  if (p.sucursal && p.sucursal !== 'todas') { parts.push(`${col}sucursal = ?`); params.push(p.sucursal) }
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function buildWhere(base, q, col = '') {
+  const parts = [base], params = []
+  let n = params.length + 1
+  const c = col ? col + '.' : ''
+  if (q?.desde) { parts.push(`${c}fecha >= $${n++}`); params.push(q.desde) }
+  if (q?.hasta) { parts.push(`${c}fecha <= $${n++}`); params.push(q.hasta) }
+  if (q?.sucursal && q.sucursal !== 'todas') { parts.push(`${c}sucursal = $${n++}`); params.push(q.sucursal) }
   return { where: parts.join(' AND '), params }
 }
 
-// ─── API: KPIs ────────────────────────────────────────────────────────────────
-app.get('/api/kpis', (req, res) => {
+// ─── KPIs ─────────────────────────────────────────────────────────────────────
+app.get('/api/kpis', async (req, res) => {
   try {
-    const f = req.query
-    const { where: wc, params: pc } = buildWhere(`tipo_comprob IN ('FCB','FCA','RE')`, f)
-    const { where: wn, params: pn } = buildWhere(`tipo_comprob IN ('NC','NCB')`, f)
-    const { where: wl, params: pl } = buildWhere(`tipo_comprob IN ('FCB','FCA','RE')`, f)
+    const { where: wc, params: pc } = buildWhere(`tipo_comprob IN ('FCB','FCA','RE')`, req.query)
+    const { where: wn, params: pn } = buildWhere(`tipo_comprob IN ('NC','NCB')`, req.query)
+    const { where: wl, params: pl } = buildWhere(`tipo_comprob IN ('FCB','FCA','RE')`, req.query)
 
-    const t = queryOne(`SELECT COUNT(*) as n_comp, SUM(total) as facturacion, SUM(neto_gravado) as neto, SUM(iva_21) as iva21, SUM(iva_105) as iva105, AVG(total) as ticket, COUNT(DISTINCT fecha) as dias FROM comprobantes WHERE ${wc}`, pc)
-    const nc = queryOne(`SELECT COUNT(*) as n_nc, SUM(total) as total_nc FROM comprobantes WHERE ${wn}`, pn)
-    const l = queryOne(`SELECT COUNT(*) as n_lin, SUM(cantidad) as unidades, COUNT(DISTINCT codigo) as arts, SUM(costo*cantidad) as costo, SUM(subtotal_neto) as venta_neta FROM ventas_lineas WHERE ${wl}`, pl)
+    const [t, nc, l] = await Promise.all([
+      pool.query(`SELECT COUNT(*) as n_comp, SUM(total) as facturacion, SUM(neto_gravado) as neto, SUM(iva_21) as iva21, SUM(iva_105) as iva105, AVG(total) as ticket, COUNT(DISTINCT fecha) as dias FROM comprobantes WHERE ${wc}`, pc),
+      pool.query(`SELECT COUNT(*) as n_nc, SUM(total) as total_nc FROM comprobantes WHERE ${wn}`, pn),
+      pool.query(`SELECT COUNT(*) as n_lin, SUM(cantidad) as unidades, COUNT(DISTINCT codigo) as arts, SUM(costo*cantidad) as costo, SUM(subtotal_neto) as venta_neta FROM ventas_lineas WHERE ${wl}`, pl)
+    ])
 
-    const facturacion = (t?.facturacion || 0) - (nc?.total_nc || 0)
-    const venta_neta = l?.venta_neta || 0
-    const costo = l?.costo || 0
+    const tv = t.rows[0], nv = nc.rows[0], lv = l.rows[0]
+    const facturacion = (+tv.facturacion || 0) - (+nv.total_nc || 0)
+    const venta_neta = +lv.venta_neta || 0
+    const costo = +lv.costo || 0
     const margen = venta_neta > 0 ? Math.round(((venta_neta - costo) / venta_neta) * 1000) / 10 : 0
 
     res.json({
-      n_comprobantes: t?.n_comp || 0, facturacion_bruta: t?.facturacion || 0,
-      facturacion_neta: facturacion, neto_gravado: t?.neto || 0,
-      iva_total: (t?.iva21 || 0) + (t?.iva105 || 0), ticket_promedio: t?.ticket || 0,
-      dias_con_venta: t?.dias || 0, n_nc: nc?.n_nc || 0, total_nc: nc?.total_nc || 0,
-      n_lineas: l?.n_lin || 0, unidades_vendidas: l?.unidades || 0,
-      articulos_distintos: l?.arts || 0, costo_total: costo, venta_neta,
-      margen_bruto_pct: margen,
-      lineas_por_comprobante: t?.n_comp > 0 ? Math.round((l?.n_lin / t?.n_comp) * 10) / 10 : 0
+      n_comprobantes: +tv.n_comp || 0, facturacion_bruta: +tv.facturacion || 0,
+      facturacion_neta: facturacion, neto_gravado: +tv.neto || 0,
+      iva_total: (+tv.iva21 || 0) + (+tv.iva105 || 0), ticket_promedio: +tv.ticket || 0,
+      dias_con_venta: +tv.dias || 0, n_nc: +nv.n_nc || 0, total_nc: +nv.total_nc || 0,
+      n_lineas: +lv.n_lin || 0, unidades_vendidas: +lv.unidades || 0,
+      articulos_distintos: +lv.arts || 0, costo_total: costo, venta_neta, margen_bruto_pct: margen,
+      lineas_por_comprobante: tv.n_comp > 0 ? Math.round((lv.n_lin / tv.n_comp) * 10) / 10 : 0
     })
   } catch (err) { res.status(500).json({ error: err.message }) }
 })
 
-app.get('/api/ventas/por-dia', (req, res) => {
+app.get('/api/ventas/por-dia', async (req, res) => {
   try {
     const { where, params } = buildWhere(`tipo_comprob IN ('FCB','FCA','RE')`, req.query)
-    res.json(query(`SELECT fecha, COUNT(*) as n_ventas, SUM(total) as total, AVG(total) as ticket_promedio FROM comprobantes WHERE ${where} GROUP BY fecha ORDER BY fecha`, params))
+    const r = await pool.query(`SELECT fecha::text, COUNT(*) as n_ventas, SUM(total) as total, AVG(total) as ticket_promedio FROM comprobantes WHERE ${where} GROUP BY fecha ORDER BY fecha`, params)
+    res.json(r.rows)
   } catch (err) { res.status(500).json({ error: err.message }) }
 })
 
-app.get('/api/ventas/por-sucursal', (req, res) => {
+app.get('/api/ventas/por-sucursal', async (req, res) => {
   try {
     const { where, params } = buildWhere(`tipo_comprob IN ('FCB','FCA','RE')`, { desde: req.query.desde, hasta: req.query.hasta })
-    res.json(query(`SELECT sucursal, COUNT(*) as n_ventas, SUM(total) as total, AVG(total) as ticket_promedio FROM comprobantes WHERE ${where} GROUP BY sucursal ORDER BY total DESC`, params))
+    const r = await pool.query(`SELECT sucursal, COUNT(*) as n_ventas, SUM(total) as total, AVG(total) as ticket_promedio FROM comprobantes WHERE ${where} GROUP BY sucursal ORDER BY total DESC`, params)
+    res.json(r.rows)
   } catch (err) { res.status(500).json({ error: err.message }) }
 })
 
-app.get('/api/ventas/por-mes', (req, res) => {
+app.get('/api/ventas/por-mes', async (req, res) => {
   try {
     const { where, params } = buildWhere(`tipo_comprob IN ('FCB','FCA','RE')`, { sucursal: req.query.sucursal })
-    res.json(query(`SELECT substr(fecha,1,7) as mes, sucursal, COUNT(*) as n_ventas, SUM(total) as total, AVG(total) as ticket_promedio FROM comprobantes WHERE ${where} GROUP BY mes, sucursal ORDER BY mes, sucursal`, params))
+    const r = await pool.query(`SELECT TO_CHAR(fecha,'YYYY-MM') as mes, sucursal, COUNT(*) as n_ventas, SUM(total) as total, AVG(total) as ticket_promedio FROM comprobantes WHERE ${where} GROUP BY mes, sucursal ORDER BY mes, sucursal`, params)
+    res.json(r.rows)
   } catch (err) { res.status(500).json({ error: err.message }) }
 })
 
-app.get('/api/articulos/ranking', (req, res) => {
+app.get('/api/articulos/ranking', async (req, res) => {
   try {
     const { orderBy = 'facturacion', limit = 100 } = req.query
     const { where, params } = buildWhere(`tipo_comprob IN ('FCB','FCA','RE')`, req.query)
     const orderMap = { facturacion: 'facturacion DESC', unidades: 'unidades DESC', transacciones: 'n_transacciones DESC', margen: 'margen_pct DESC' }
     const order = orderMap[orderBy] || 'facturacion DESC'
-    res.json(query(`SELECT codigo, descripcion, COUNT(*) as n_transacciones, SUM(cantidad) as unidades, AVG(precio_unitario) as precio_promedio, AVG(costo) as costo_promedio, SUM(subtotal_neto) as facturacion, SUM(costo*cantidad) as costo_total, ROUND((SUM(subtotal_neto)-SUM(costo*cantidad))/MAX(SUM(subtotal_neto),0.001)*100,1) as margen_pct, COUNT(DISTINCT sucursal) as n_sucursales FROM ventas_lineas WHERE ${where} GROUP BY codigo ORDER BY ${order} LIMIT ?`, [...params, parseInt(limit)]))
+    const r = await pool.query(
+      `SELECT codigo, descripcion, COUNT(*) as n_transacciones, SUM(cantidad) as unidades, AVG(precio_unitario) as precio_promedio, AVG(costo) as costo_promedio, SUM(subtotal_neto) as facturacion, SUM(costo*cantidad) as costo_total, ROUND((SUM(subtotal_neto)-SUM(costo*cantidad))/NULLIF(SUM(subtotal_neto),0)*100,1) as margen_pct, COUNT(DISTINCT sucursal) as n_sucursales FROM ventas_lineas WHERE ${where} GROUP BY codigo, descripcion ORDER BY ${order} LIMIT $${params.length + 1}`,
+      [...params, parseInt(limit)]
+    )
+    res.json(r.rows)
   } catch (err) { res.status(500).json({ error: err.message }) }
 })
 
-app.get('/api/articulos/:codigo', (req, res) => {
+app.get('/api/articulos/:codigo', async (req, res) => {
   try {
-    const { where, params } = buildWhere(`codigo=? AND tipo_comprob IN ('FCB','FCA','RE')`, req.query)
+    const base = `codigo=$1 AND tipo_comprob IN ('FCB','FCA','RE')`
+    const { where, params } = buildWhere(base, req.query)
     const allParams = [req.params.codigo, ...params]
-    const resumen = queryOne(`SELECT codigo, descripcion, SUM(cantidad) as unidades_total, SUM(subtotal_neto) as facturacion_total, SUM(costo*cantidad) as costo_total, AVG(precio_unitario) as precio_promedio, AVG(costo) as costo_promedio, MIN(fecha) as primera_venta, MAX(fecha) as ultima_venta, COUNT(DISTINCT sucursal) as n_sucursales FROM ventas_lineas WHERE ${where}`, allParams)
-    const porSucursal = query(`SELECT sucursal, SUM(cantidad) as unidades, SUM(subtotal_neto) as facturacion FROM ventas_lineas WHERE ${where} GROUP BY sucursal ORDER BY unidades DESC`, allParams)
-    const porMes = query(`SELECT substr(fecha,1,7) as mes, SUM(cantidad) as unidades, SUM(subtotal_neto) as facturacion FROM ventas_lineas WHERE ${where} GROUP BY mes ORDER BY mes`, allParams)
-    res.json({ resumen, porSucursal, porMes })
+    const [resumen, porSucursal, porMes] = await Promise.all([
+      pool.query(`SELECT codigo, descripcion, SUM(cantidad) as unidades_total, SUM(subtotal_neto) as facturacion_total, SUM(costo*cantidad) as costo_total, AVG(precio_unitario) as precio_promedio, AVG(costo) as costo_promedio, MIN(fecha::text) as primera_venta, MAX(fecha::text) as ultima_venta, COUNT(DISTINCT sucursal) as n_sucursales FROM ventas_lineas WHERE ${where} GROUP BY codigo, descripcion`, allParams),
+      pool.query(`SELECT sucursal, SUM(cantidad) as unidades, SUM(subtotal_neto) as facturacion FROM ventas_lineas WHERE ${where} GROUP BY sucursal ORDER BY unidades DESC`, allParams),
+      pool.query(`SELECT TO_CHAR(fecha,'YYYY-MM') as mes, SUM(cantidad) as unidades, SUM(subtotal_neto) as facturacion FROM ventas_lineas WHERE ${where} GROUP BY mes ORDER BY mes`, allParams)
+    ])
+    res.json({ resumen: resumen.rows[0] || null, porSucursal: porSucursal.rows, porMes: porMes.rows })
   } catch (err) { res.status(500).json({ error: err.message }) }
 })
 
-app.get('/api/finanzas/resumen', (req, res) => {
+app.get('/api/finanzas/resumen', async (req, res) => {
   try {
     const { where: wl, params: pl } = buildWhere(`tipo_comprob IN ('FCB','FCA','RE')`, req.query)
     const { where: wc, params: pc } = buildWhere(`tipo_comprob IN ('FCB','FCA','RE')`, req.query)
-    const ivaPorAlicuota = query(`SELECT alicuota_iva, SUM(subtotal_neto) as base, SUM(subtotal_neto*alicuota_iva/100) as iva FROM ventas_lineas WHERE ${wl} GROUP BY alicuota_iva`, pl)
-    const porTipoComp = query(`SELECT tipo_comprob, COUNT(*) as n, SUM(total) as total FROM comprobantes WHERE ${wc} GROUP BY tipo_comprob`, pc)
-    const margenPorMes = query(`SELECT substr(fecha,1,7) as mes, SUM(subtotal_neto) as venta_neta, SUM(costo*cantidad) as costo, ROUND((SUM(subtotal_neto)-SUM(costo*cantidad))/MAX(SUM(subtotal_neto),0.001)*100,1) as margen_pct FROM ventas_lineas WHERE ${wl} GROUP BY mes ORDER BY mes`, pl)
-    const distribucionIVA = query(`SELECT alicuota_iva, COUNT(*) as n_lineas, SUM(cantidad) as unidades FROM ventas_lineas WHERE ${wl} GROUP BY alicuota_iva ORDER BY alicuota_iva`, pl)
-    res.json({ ivaPorAlicuota, porTipoComp, margenPorMes, distribucionIVA })
+    const [iva, tipos, margen, dist] = await Promise.all([
+      pool.query(`SELECT alicuota_iva, SUM(subtotal_neto) as base, SUM(subtotal_neto*alicuota_iva/100) as iva FROM ventas_lineas WHERE ${wl} GROUP BY alicuota_iva`, pl),
+      pool.query(`SELECT tipo_comprob, COUNT(*) as n, SUM(total) as total FROM comprobantes WHERE ${wc} GROUP BY tipo_comprob`, pc),
+      pool.query(`SELECT TO_CHAR(fecha,'YYYY-MM') as mes, SUM(subtotal_neto) as venta_neta, SUM(costo*cantidad) as costo, ROUND((SUM(subtotal_neto)-SUM(costo*cantidad))/NULLIF(SUM(subtotal_neto),0)*100,1) as margen_pct FROM ventas_lineas WHERE ${wl} GROUP BY mes ORDER BY mes`, pl),
+      pool.query(`SELECT alicuota_iva, COUNT(*) as n_lineas, SUM(cantidad) as unidades FROM ventas_lineas WHERE ${wl} GROUP BY alicuota_iva ORDER BY alicuota_iva`, pl)
+    ])
+    res.json({ ivaPorAlicuota: iva.rows, porTipoComp: tipos.rows, margenPorMes: margen.rows, distribucionIVA: dist.rows })
   } catch (err) { res.status(500).json({ error: err.message }) }
 })
 
-app.get('/api/uploads', (req, res) => {
-  try { res.json(query('SELECT * FROM uploads_log ORDER BY id DESC LIMIT 50')) }
+app.get('/api/uploads', async (req, res) => {
+  try { res.json((await pool.query('SELECT * FROM uploads_log ORDER BY id DESC LIMIT 50')).rows) }
   catch (err) { res.status(500).json({ error: err.message }) }
 })
 
-app.delete('/api/uploads/:id', (req, res) => {
+app.delete('/api/uploads/:id', async (req, res) => {
+  const client = await pool.connect()
   try {
-    run('DELETE FROM ventas_lineas WHERE upload_id=?', [req.params.id])
-    run('DELETE FROM comprobantes WHERE upload_id=?', [req.params.id])
-    run('DELETE FROM uploads_log WHERE id=?', [req.params.id])
-    saveDB()
+    await client.query('BEGIN')
+    await client.query('DELETE FROM ventas_lineas WHERE upload_id=$1', [req.params.id])
+    await client.query('DELETE FROM comprobantes WHERE upload_id=$1', [req.params.id])
+    await client.query('DELETE FROM uploads_log WHERE id=$1', [req.params.id])
+    await client.query('COMMIT')
     res.json({ ok: true })
+  } catch (err) {
+    await client.query('ROLLBACK')
+    res.status(500).json({ error: err.message })
+  } finally { client.release() }
+})
+
+app.get('/api/sucursales', async (req, res) => {
+  try { res.json((await pool.query('SELECT DISTINCT sucursal FROM comprobantes WHERE sucursal IS NOT NULL ORDER BY sucursal')).rows.map(r => r.sucursal)) }
+  catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+app.get('/api/fechas-rango', async (req, res) => {
+  try {
+    const r = await pool.query('SELECT MIN(fecha::text) as desde, MAX(fecha::text) as hasta FROM comprobantes')
+    res.json(r.rows[0] || { desde: null, hasta: null })
   } catch (err) { res.status(500).json({ error: err.message }) }
-})
-
-app.get('/api/sucursales', (req, res) => {
-  try { res.json(query('SELECT DISTINCT sucursal FROM comprobantes WHERE sucursal IS NOT NULL ORDER BY sucursal').map(r => r.sucursal)) }
-  catch (err) { res.status(500).json({ error: err.message }) }
-})
-
-app.get('/api/fechas-rango', (req, res) => {
-  try { res.json(queryOne('SELECT MIN(fecha) as desde, MAX(fecha) as hasta FROM comprobantes') || { desde: null, hasta: null }) }
-  catch (err) { res.status(500).json({ error: err.message }) }
 })
 
 if (process.env.NODE_ENV === 'production') {
   app.get('*', (req, res) => res.sendFile(path.join(__dirname, '../dist/index.html')))
 }
 
-// ─── Start ────────────────────────────────────────────────────────────────────
 initDB().then(() => {
-  app.listen(PORT, () => {
-    console.log(`Delmy Analytics server running on port ${PORT}`)
-    console.log(`DB: ${DB_PATH}`)
-  })
-}).catch(err => {
-  console.error('Failed to init DB:', err)
-  process.exit(1)
-})
+  app.listen(PORT, () => console.log(`Delmy Analytics running on port ${PORT}`))
+}).catch(err => { console.error('DB init failed:', err); process.exit(1) })
