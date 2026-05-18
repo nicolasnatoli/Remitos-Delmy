@@ -538,9 +538,11 @@ export default function ModuloCompras(){
       const wb = XLSX.read(buf);
       const ws = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:''});
-      // Encontrar fila de encabezados
-      const hdrIdx = rows.findIndex(r => String(r[0]).includes('Tipo') || String(r[1]).includes('Código combo'));
-      const data = hdrIdx >= 0 ? rows.slice(hdrIdx+1) : rows.slice(1);
+      // Fila 0 = título, Fila 1 = encabezados, Fila 2+ = datos
+      const hdrIdx = rows.findIndex(r =>
+        String(r[0]).trim()==='Tipo' || String(r[1]).trim().includes('Código combo')
+      );
+      const data = hdrIdx >= 0 ? rows.slice(hdrIdx+1) : rows.slice(2);
       const combos = {};
       let current = null;
       for (const r of data) {
@@ -559,16 +561,18 @@ export default function ModuloCompras(){
         }
       }
       const total = Object.keys(combos).length;
-      if(total === 0){ alert('No se encontraron combos en el archivo.'); return; }
+      if(total === 0){ alert('No se encontraron combos en el archivo.\n\nVerificá que sea el archivo "exportacion_de_combos_y_componentes.xlsx" de Stock+.'); e.target.value=''; return; }
       await saveCombos(combos);
-      // Recargar DB para que combos queden en db.combos
-      loadDB().then(fresh=>{ setDb(fresh); setDbReady(true); });
-      alert(`✓ ${total} combos importados correctamente.`);
+      const fresh = await loadDB();
+      setDb(fresh);
+      setDbReady(true);
+      alert(`✓ ${total} combos importados correctamente.\n\nEjemplos:\n${Object.keys(combos).slice(0,5).join(', ')}...`);
     } catch(err) {
+      console.error('[importarCombos]', err);
       alert('Error al leer el archivo: '+err.message);
     }
     e.target.value='';
-  },[]);
+  },[setDb, setDbReady]);
 
   // Cargar DB al montar y cuando se necesite
   const reloadDB=useCallback(()=>{
@@ -1197,7 +1201,7 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
                 ['CANT.',C.txt,80],['COSTO · FC/u',C.acc,102],['P.VTA',C.blue,58],['SUBTOTAL',C.acc,92],
                 ['ACCIÓN',C.mut,80]
               ].map(([h,c,w],i)=>(
-                <th key={i} style={{fontSize:8,color:c,padding:'4px 5px',borderBottom:`1px solid ${C.b1}`,whiteSpace:'nowrap',textTransform:'uppercase',letterSpacing:'.05em',textAlign:i>5?'right':'left',background:C.p2,width:w,minWidth:w}}>{h}</th>
+                <th key={i} title={h==='ACCIÓN'?'✓ Aprobar  ✗ Rechazar  ↺ Resolver  ⚡DESC Distribuir':undefined} style={{fontSize:8,color:c,padding:'4px 5px',borderBottom:`1px solid ${C.b1}`,whiteSpace:'nowrap',textTransform:'uppercase',letterSpacing:'.05em',textAlign:i>5?'right':'left',background:C.p2,width:w,minWidth:w}}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -1273,8 +1277,8 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
                 if(factorInfo.tipo==='simple') return factorInfo.nivelesCombo||[];
                 // doble: construir niveles según si base=bulto o base=1u
                 if(baseEsBulto) {
-                  // base=bolsa 50u: solo combo caja = fiExt bolsas
-                  return [{ factorBase: fiExt, label: `×${fiExt} bultos (${fiExt*fiInt}u)`, codSufijo: `x${fiExt}` }];
+                  // base=bolsa: solo combo caja = fiExt bolsas (no agregar x50 ni x1000 — son el artículo base y el total)
+                  return [{ factorBase: fiExt, label: `×${fiExt} bolsas`, codSufijo: `x${fiExt}` }];
                 } else {
                   // base=1u: combo pack=fiInt y combo caja=fiExt*fiInt
                   return [
@@ -1307,9 +1311,10 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
               const comboEnArt = !!(db.art?.[codComboSugerido]);
               const esComboNuevo = l.esCombo && !comboData && !comboEnArt;
               // Verificar existencia de cada nivel de combo
-              // Si existe pero con código distinto al esperado → marcar para corrección
+              // Excluir el combo principal (factorReal) — ya aparece en R2
+              // Solo mostrar niveles intermedios (ej: x10 pack cuando el combo principal es x120 caja)
               const codEsperado = (codBase, cant) => `${codBase}x${cant}`;
-              const combosIntermedios = nivelesCombo.map(n => {
+              const combosIntermedios = nivelesCombo.filter(n => n.factorBase !== factorReal).map(n => {
                 const found = buscarComboEnDB(l.cod, n.factorBase);
                 const codEsp = codEsperado(l.cod, n.factorBase);
                 const codReal = found?.cod || null;
@@ -1458,8 +1463,14 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
                       </div>
                     )}
                     {/* Combos existentes en la base que usan este artículo como componente */}
+                    {/* Excluir el combo principal (ya aparece en R2) y los que ya están en intermedios */}
                     {(()=>{
-                      const combosExistentes=Object.entries(db.combos||{}).filter(([,c])=>
+                      const codsYaMostrados = new Set([
+                        codComboSugerido,
+                        ...combosIntermedios.map(ci=>ci.codSugerido),
+                      ]);
+                      const combosExistentes=Object.entries(db.combos||{}).filter(([cod,c])=>
+                        !codsYaMostrados.has(cod) &&
                         c?.componentes?.some(comp=>comp.cod===l.cod||comp.cod===l.codp)
                       );
                       if(!combosExistentes.length)return null;
@@ -1486,22 +1497,24 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
                   {td(l.vm||'—',{textAlign:'right',fontSize:8,color:C.mut})}
                   {/* CANTIDAD */}
                   {td(<div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:1}}>
-                    {/* Línea 1: cantidad tal cual la FC (cajas o unidades) */}
-                    {hayFC&&l.cantFC>0
-                      ? <span style={{fontWeight:700,fontSize:10,color:C.green}}>
-                          {l.cantFC}
-                          <span style={{fontSize:7,color:C.mut,marginLeft:2}}>
-                            {l.esCombo?'cajas FC':'u FC'}
-                          </span>
-                        </span>
-                      : <span style={{fontWeight:700,fontSize:10,color:C.txt}}>
-                          {l.cantOC||'—'}
-                          <span style={{fontSize:7,color:C.mut,marginLeft:2}}>u OC</span>
-                        </span>
-                    }
-                    {/* Línea 2: cuenta → total unidades del artículo base */}
+                    {/* Sin FC: mostrar cantOC en unidades del artículo base */}
+                    {!hayFC&&<span style={{fontWeight:700,fontSize:10,color:C.txt}}>
+                      {l.cantOC||'—'}
+                      <span style={{fontSize:7,color:C.mut,marginLeft:2}}>u OC</span>
+                    </span>}
+                    {/* Con FC: cant cajas tal cual la FC */}
+                    {hayFC&&l.cantFC>0&&<span style={{fontWeight:700,fontSize:10,color:C.green}}>
+                      {l.cantFC}
+                      <span style={{fontSize:7,color:C.mut,marginLeft:2}}>
+                        {l.esCombo&&factorReal>1?'cajas FC':'u FC'}
+                      </span>
+                    </span>}
+                    {/* Desglose: cajas × factor = total u.base */}
                     {hayFC&&l.esCombo&&factorReal>1&&<span style={{fontSize:7,color:C.acc}}>
-                      {l.cantFC}×{factorReal}={cantEnBase.toLocaleString('es-AR')}u
+                      {factorInfo?.tipo==='doble'
+                        ? `${l.cantFC}×${fiExt}=${cantEnBase.toLocaleString('es-AR')}u`
+                        : `${l.cantFC}×${factorReal}=${cantEnBase.toLocaleString('es-AR')}u`
+                      }
                     </span>}
                   </div>,{textAlign:'right'})}
                   {/* COSTO: plaza/u · precio bulto FC editable · equiv/u con dif% */}
