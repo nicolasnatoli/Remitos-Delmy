@@ -1,7 +1,7 @@
 // ===== MÓDULO COMPRAS V6 =====
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
-import { SK, lsGet, lsSet, lsGetRaw, loadArt, getListaCompra, detectarFactorCombo } from '../../utils/db';
+import { SK, lsGet, lsSet, lsGetRaw, loadArt, getListaCompra, detectarFactorCombo, saveCombos } from '../../utils/db';
 
 async function apiFetch(path){const r=await fetch(path,{headers:{'Content-Type':'application/json'}});if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}
 
@@ -528,6 +528,48 @@ export default function ModuloCompras(){
 
   // codpIdx removed — cruzar() no longer uses index
 
+  // ─── Importar combos desde Excel exportado de Stock+ ─────────────────────
+  const combosFileRef = useRef();
+  const importarCombos = useCallback(()=>{ combosFileRef.current?.click(); },[]);
+  const procesarCombosXlsx = useCallback(async(e)=>{
+    const file = e.target.files?.[0]; if(!file) return;
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf);
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:''});
+      // Encontrar fila de encabezados
+      const hdrIdx = rows.findIndex(r => String(r[0]).includes('Tipo') || String(r[1]).includes('Código combo'));
+      const data = hdrIdx >= 0 ? rows.slice(hdrIdx+1) : rows.slice(1);
+      const combos = {};
+      let current = null;
+      for (const r of data) {
+        const tipo = String(r[0]||'').trim();
+        const codCombo = String(r[1]||'').trim();
+        const descCombo = String(r[2]||'').trim();
+        const codArt = String(r[5]||'').trim();
+        const descArt = String(r[6]||'').trim();
+        const cantRaw = String(r[7]||'0').replace(',','.');
+        const cant = parseFloat(cantRaw)||0;
+        if(tipo==='Combo' && codCombo && codCombo!=='-') {
+          current = codCombo;
+          combos[codCombo] = { desc: descCombo, componentes: [] };
+        } else if((tipo==='Artículo'||tipo==='Articulo') && current && codArt && codArt!=='-') {
+          combos[current].componentes.push({ cod:codArt, desc:descArt, cant:Math.round(cant)||1 });
+        }
+      }
+      const total = Object.keys(combos).length;
+      if(total === 0){ alert('No se encontraron combos en el archivo.'); return; }
+      await saveCombos(combos);
+      // Recargar DB para que combos queden en db.combos
+      loadDB().then(fresh=>{ setDb(fresh); setDbReady(true); });
+      alert(`✓ ${total} combos importados correctamente.`);
+    } catch(err) {
+      alert('Error al leer el archivo: '+err.message);
+    }
+    e.target.value='';
+  },[]);
+
   // Cargar DB al montar y cuando se necesite
   const reloadDB=useCallback(()=>{
     setDbReady(false);
@@ -910,6 +952,8 @@ export default function ModuloCompras(){
         </span>
         <div style={{marginLeft:'auto',display:'flex',gap:6,flexWrap:'wrap'}}>
           <button onClick={reloadDB}            style={Btn(C.mut)}>↺ DB</button>
+          <button onClick={importarCombos}       style={Btn(C.vio,'rgba(192,132,252,.08)')}>↺ Combos</button>
+          <input ref={combosFileRef} type="file" accept=".xlsx,.xls" style={{display:'none'}} onChange={procesarCombosXlsx}/>
           <button onClick={importarDesdeStock}   style={Btn(C.acc,'rgba(240,192,64,.08)')}>← Stock+</button>
           <button onClick={exportarOC}           style={Btn(C.teal,'rgba(45,212,191,.08)')}>↓ Excel OC</button>
           {(nNuevos>0||nOtroProv>0||nParciales>0||nCombosNuevos>0)&&<button onClick={exportarNuevos} style={Btn(C.ora,'rgba(251,146,60,.08)')}>↓ Masivo ({nNuevos+nOtroProv+nParciales+nCombosNuevos})</button>}
@@ -1239,17 +1283,49 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
                   ];
                 }
               })();
-              // Combo principal de la caja FC
-              const codComboSugerido = l.codp ? `${l.codp}x${factorReal}` : `${l.cod}x${factorReal}`;
-              const comboData = db.combos?.[l.codp+'x'+factorReal]||db.combos?.[l.cod+'x'+factorReal];
-              const esComboNuevo = l.esCombo && !comboData;
-              // Verificar existencia de cada nivel en db.combos Y db.art
+              // Buscar combo por componente+cantidad — independiente del código
+              // Ej: sistema genera '4001CEx120' pero en DB existe '4001CEPACK12' con 4001CE×120
+              const buscarComboEnDB = (codBase, cant) => {
+                if(!db.combos||!codBase||!cant) return null;
+                // 1. Código exacto (mayúsculas/minúsculas)
+                const c1=db.combos[codBase+'x'+cant]||db.combos[codBase+'X'+cant];
+                if(c1) return {cod:codBase+'x'+cant,combo:c1};
+                // 2. Buscar por componente+cantidad en todos los combos
+                const entry=Object.entries(db.combos).find(([,c])=>
+                  c?.componentes?.some(comp=>
+                    comp.cod===codBase && Math.round(comp.cant)===Math.round(cant)
+                  )
+                );
+                if(entry) return {cod:entry[0],combo:entry[1]};
+                return null;
+              };
+              // Combo principal (la caja tal cual viene en la FC)
+              const comboFound = l.esCombo ? buscarComboEnDB(l.cod, factorReal) : null;
+              const comboData = comboFound?.combo || null;
+              const codComboSugerido = comboFound?.cod || `${l.cod}x${factorReal}`;
+              // esComboNuevo: no existe en db.combos ni en db.art
+              const comboEnArt = !!(db.art?.[codComboSugerido]);
+              const esComboNuevo = l.esCombo && !comboData && !comboEnArt;
+              // Combo principal con código incorrecto
+              const codPrincipalEsperado = `${l.cod}x${factorReal}`;
+              const comboCodigoCorrecto = !comboData ? false
+                : codComboSugerido.toLowerCase() === codPrincipalEsperado.toLowerCase();
+              const comboCodigoIncorrecto = comboData && !comboCodigoCorrecto;
+              // Verificar existencia de cada nivel de combo
+              // Si existe pero con código distinto al esperado → marcar para corrección
+              const codEsperado = (codBase, cant) => `${codBase}x${cant}`;
               const combosIntermedios = nivelesCombo.map(n => {
-                const codProv = l.codp ? `${l.codp}${n.codSufijo}` : '';
-                const codInt  = `${l.cod}${n.codSufijo}`;
-                const existe  = !!(db.combos?.[codProv]||db.combos?.[codInt]
-                  ||db.art?.[codProv]||db.art?.[codInt]);
-                return { factor: n.factorBase, label: n.label, codSugerido: codProv||codInt, existe };
+                const found = buscarComboEnDB(l.cod, n.factorBase);
+                const codEsp = codEsperado(l.cod, n.factorBase);
+                const codReal = found?.cod || null;
+                const codMal = codReal && codReal.toLowerCase()!==codEsp.toLowerCase();
+                return {
+                  factor: n.factorBase, label: n.label,
+                  codSugerido: codReal || codEsp,
+                  codEsperado: codEsp,
+                  existe: !!found,
+                  codIncorrecto: codMal,
+                };
               });
               const diffPct = l.costoReal > 0 && precioFCporBase > 0
                 ? ((precioFCporBase - l.costoReal) / l.costoReal * 100).toFixed(1)
@@ -1328,44 +1404,64 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
                         ⊕ generar {codComboSugerido}
                       </button>}
                     </div>}
-                    {/* Combos intermedios a generar */}
-                    {l.esCombo&&combosIntermedios.length>0&&combosIntermedios.map((ci,idx)=>(
-                      <div key={idx} style={{fontSize:7,color:ci.existe?C.vio:C.ora,marginTop:1,display:'flex',alignItems:'center',gap:3}}>
-                        <span style={{color:C.mut}}>└</span>
-                        <span style={{fontFamily:'DM Mono,monospace'}}>{ci.codSugerido}</span>
-                        <span style={{color:C.mut}}>{ci.label}</span>
-                        {!ci.existe&&<button
-                          onClick={()=>{
-                            const costoCombo=(l.costoReal||0)*ci.factor;
-                            const msg=`NUEVO COMBO INTERMEDIO — confirmar:\n\n`+
-                              `Código: ${ci.codSugerido}\n`+
-                              `Descripción: ${l.desc} ×${ci.factor}\n`+
-                              `Factor: ×${ci.factor} ${ci.label}\n`+
-                              `Costo estimado: ${fp(costoCombo)}\n`+
-                              `Familia: ${l.fam||'—'}\n`+
-                              `Proveedor: ${l.prov||OCdata.meta.proveedor||'—'}\n\n`+
-                              `¿Agregar al Masivo?`;
-                            if(!window.confirm(msg))return;
-                            const nuevos=lsGet(SK.nuevos,[]);
-                            if(!nuevos.find(n=>n.cod===ci.codSugerido)){
-                              nuevos.push({
-                                cod:ci.codSugerido,codp:l.codp||'',
-                                desc:`${l.desc} ×${ci.factor}`,
-                                fam:l.fam||'',cat:l.cat||'',marca:'',
-                                costoReal:costoCombo,
-                                pvMin:l.pvMin||0,mostrador:l.mostrador||0,
-                                prov:l.prov||OCdata.meta.proveedor||'',
-                                factor:ci.factor,
-                                fechaAlta:new Date().toISOString().slice(0,10),
-                                tipo:'COMBO_INTERMEDIO',
-                              });
-                              lsSet(SK.nuevos,nuevos);
-                            }
-                          }}
-                          style={{color:C.ora,background:'rgba(251,146,60,.1)',padding:'0 3px',borderRadius:2,border:`1px solid ${C.ora}44`,cursor:'pointer',fontFamily:'DM Mono,monospace',fontSize:7}}>crear</button>}
-                        {ci.existe&&<span style={{color:C.vio}}>✓</span>}
+                    {/* Combos intermedios — no existen o tienen código incorrecto */}
+                    {l.esCombo&&combosIntermedios.filter(ci=>!ci.existe||ci.codIncorrecto).length>0&&(
+                      <div style={{marginTop:2}}>
+                        {combosIntermedios.map((ci,idx)=>(!ci.existe||ci.codIncorrecto)&&(
+                          <div key={idx} style={{fontSize:7,marginTop:1,display:'flex',alignItems:'center',gap:3}}>
+                            <span style={{color:C.mut}}>└</span>
+                            <span style={{fontFamily:'DM Mono,monospace',color:ci.codIncorrecto?C.blue:C.acc}}>
+                              {ci.codSugerido}
+                            </span>
+                            <span style={{color:C.mut}}>{ci.label}</span>
+                            {ci.codIncorrecto&&<button
+                              onClick={()=>{
+                                const msg=`CORREGIR CÓDIGO COMBO:\n\n`+
+                                  `Código actual: ${ci.codSugerido}\n`+
+                                  `Código correcto: ${ci.codEsperado}\n`+
+                                  `Factor: ×${ci.factor}u\n\n`+
+                                  `¿Agregar corrección al Masivo?`;
+                                if(!window.confirm(msg))return;
+                                const nuevos=lsGet(SK.nuevos,[]);
+                                if(!nuevos.find(n=>n.cod===ci.codEsperado)){
+                                  nuevos.push({
+                                    cod:ci.codEsperado,codActual:ci.codSugerido,
+                                    codp:l.codp||'',desc:`${l.desc} ×${ci.factor}`,
+                                    fam:l.fam||'',cat:l.cat||'',marca:'',
+                                    costoReal:(l.costoReal||0)*ci.factor,
+                                    pvMin:l.pvMin||0,mostrador:l.mostrador||0,
+                                    prov:l.prov||OCdata.meta.proveedor||'',
+                                    factor:ci.factor,fechaAlta:new Date().toISOString().slice(0,10),
+                                    tipo:'CORR_COD_COMBO',
+                                  });
+                                  lsSet(SK.nuevos,nuevos);
+                                }
+                              }}
+                              style={{color:C.blue,background:'rgba(96,165,250,.1)',padding:'0 3px',borderRadius:2,border:`1px solid ${C.blue}44`,cursor:'pointer',fontFamily:'DM Mono,monospace',fontSize:7}}>
+                              → {ci.codEsperado}</button>}
+                            {!ci.existe&&<button
+                              onClick={()=>{
+                                const costoCombo=(l.costoReal||0)*ci.factor;
+                                const msg=`NUEVO COMBO:\n\nCódigo: ${ci.codSugerido}\nFactor: ×${ci.factor}u\nCosto: ${fp(costoCombo)}\n\n¿Agregar al Masivo?`;
+                                if(!window.confirm(msg))return;
+                                const nuevos=lsGet(SK.nuevos,[]);
+                                if(!nuevos.find(n=>n.cod===ci.codSugerido)){
+                                  nuevos.push({
+                                    cod:ci.codSugerido,codp:l.codp||'',
+                                    desc:`${l.desc} ×${ci.factor}`,
+                                    fam:l.fam||'',cat:l.cat||'',marca:'',
+                                    costoReal:costoCombo,pvMin:l.pvMin||0,mostrador:l.mostrador||0,
+                                    prov:l.prov||OCdata.meta.proveedor||'',factor:ci.factor,
+                                    fechaAlta:new Date().toISOString().slice(0,10),tipo:'COMBO_INTERMEDIO',
+                                  });
+                                  lsSet(SK.nuevos,nuevos);
+                                }
+                              }}
+                              style={{color:C.ora,background:'rgba(251,146,60,.1)',padding:'0 3px',borderRadius:2,border:`1px solid ${C.ora}44`,cursor:'pointer',fontFamily:'DM Mono,monospace',fontSize:7}}>crear</button>}
+                          </div>
+                        ))}
                       </div>
-                    ))}
+                    )}
                     {/* Combos existentes en la base que usan este artículo como componente */}
                     {(()=>{
                       const combosExistentes=Object.entries(db.combos||{}).filter(([,c])=>
@@ -1395,29 +1491,23 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
                   {td(l.vm||'—',{textAlign:'right',fontSize:8,color:C.mut})}
                   {/* CANTIDAD */}
                   {td(<div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:1}}>
-                    {/* Cant en u.base del artículo proveedor */}
-                    <span style={{fontWeight:700,fontSize:10,color:C.teal}}>
-                      {cantEnBase.toLocaleString('es-AR')}
-                      <span style={{fontSize:7,color:C.mut,marginLeft:2}}>
-                        {l.esCombo?'bultos':'u'}
-                      </span>
-                    </span>
-                    {/* Cajas FC */}
-                    {hayFC&&l.cantFC>0&&<span style={{fontWeight:600,fontSize:9,color:C.green}}>
-                      {l.cantFC}<span style={{fontSize:7,color:C.mut,marginLeft:2}}>cajas FC</span>
+                    {/* Línea 1: cantidad tal cual la FC (cajas o unidades) */}
+                    {hayFC&&l.cantFC>0
+                      ? <span style={{fontWeight:700,fontSize:10,color:C.green}}>
+                          {l.cantFC}
+                          <span style={{fontSize:7,color:C.mut,marginLeft:2}}>
+                            {l.esCombo?'cajas FC':'u FC'}
+                          </span>
+                        </span>
+                      : <span style={{fontWeight:700,fontSize:10,color:C.txt}}>
+                          {l.cantOC||'—'}
+                          <span style={{fontSize:7,color:C.mut,marginLeft:2}}>u OC</span>
+                        </span>
+                    }
+                    {/* Línea 2: cuenta → total unidades del artículo base */}
+                    {hayFC&&l.esCombo&&factorReal>1&&<span style={{fontSize:7,color:C.acc}}>
+                      {l.cantFC}×{factorReal}={cantEnBase.toLocaleString('es-AR')}u
                     </span>}
-                    {/* Desglose: cajas×bultos=total o cajas×factor=total */}
-                    {hayFC&&l.esCombo&&factorReal>1&&(()=>{
-                      if(factorInfo?.tipo==='doble'){
-                        return <span style={{fontSize:7,color:C.acc}}>
-                          {l.cantFC}×{factorReal}={cantEnBase.toLocaleString('es-AR')}u
-                        </span>;
-                      }
-                      return <span style={{fontSize:7,color:C.acc}}>
-                        {l.cantFC}×{factorReal}={cantEnBase.toLocaleString('es-AR')}bultos
-                      </span>;
-                    })()}
-                    {!hayFC&&l.cantOC>0&&<span style={{fontSize:7,color:C.mut}}>OC</span>}
                   </div>,{textAlign:'right'})}
                   {/* COSTO: plaza/u · precio bulto FC editable · equiv/u con dif% */}
                   {td(<div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:1}}>
