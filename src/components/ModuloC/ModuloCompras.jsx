@@ -1160,7 +1160,6 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
               const diff=calcDiff(l.costoReal,l.precioDoc);
               const totStk=(l.stkDMCN||0)+(l.stkDM01||0)+(l.stkDM03||0);
               const sc=stkColor(totStk,l.vm||0,l.vq||0,l.vs||0);
-              const factor = l.factor || 1;
               const est=estadoLinea(l);
               const esParcial=est==='PARCIAL_CODP'||est==='PARCIAL_DESC';
               const estCfg=ESTADO_CONFIG[est]||ESTADO_CONFIG.SIN_RECONOCER;
