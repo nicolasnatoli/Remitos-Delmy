@@ -1,5 +1,45 @@
 // ===== LÓGICA DE NEGOCIO — REMITOS =====
 
+// ─── Expansión de combos a unidades base ──────────────────────────────────────
+// Todo se mide en unidades del artículo base (el que tiene codp y proveedor)
+// Los combos son solo formas de agrupar — siempre se expanden antes de comparar
+// Ej: 4001CEPACK12 · cant=2 → 4001CE · cant=240 (2 × 120u)
+// Ej: 4001CEX10   · cant=5 → 4001CE · cant=50  (5 × 10u)
+export function expandirLineas(lineas, combos) {
+  if (!combos || !lineas) return lineas || [];
+  const resultado = [];
+  for (const l of lineas) {
+    const combo = combos[l.cod];
+    if (combo?.componentes?.length > 0) {
+      // Es un combo — expandir a sus componentes en unidades base
+      for (const comp of combo.componentes) {
+        resultado.push({
+          ...l,
+          cod: comp.cod,
+          cant: Number(l.cant) * comp.cant,
+          codCombo: l.cod,      // referencia al combo original
+          descCombo: combo.desc,
+        });
+      }
+    } else {
+      // Ya es unidad base — pasar tal cual
+      resultado.push(l);
+    }
+  }
+  return resultado;
+}
+
+// ─── Consolidar líneas del mismo artículo ────────────────────────────────────
+// Suma cantidades de líneas con el mismo cod (puede haber duplicados tras expandir)
+export function consolidarLineas(lineas) {
+  const map = {};
+  for (const l of lineas) {
+    if (!map[l.cod]) map[l.cod] = { ...l, cant: 0 };
+    map[l.cod].cant += Number(l.cant);
+  }
+  return Object.values(map);
+}
+
 export const CATEGORIAS_PEDIDO = [
   'PEDIDO A DEPOSITO COTILLON',
   'PEDIDO A DEPOSITO REPOSTERIA',
@@ -63,14 +103,17 @@ export function calcularEstadoPedido(pedido, todasLasEntregas) {
   const crEntrega = entregas.find(e => e.obs && e.obs.includes('CR'));
   if (crEntrega) return 'con_faltantes';
 
-  // 4. Comparar artículos
+  // 4. Comparar artículos — expandir combos a unidades base antes de comparar
+  const combos = typeof window !== 'undefined'
+    ? JSON.parse(localStorage.getItem('dm_combos_v1') || '{}')
+    : {};
   const pedidoMap = {};
-  for (const l of pedido.lineas) {
+  for (const l of expandirLineas(pedido.lineas, combos)) {
     pedidoMap[l.cod] = (pedidoMap[l.cod] || 0) + Number(l.cant);
   }
   const entregadoMap = {};
   for (const e of entregas) {
-    for (const l of e.lineas) {
+    for (const l of expandirLineas(e.lineas, combos)) {
       entregadoMap[l.cod] = (entregadoMap[l.cod] || 0) + Number(l.cant);
     }
   }
@@ -91,6 +134,15 @@ export function getEstadoConfig(estado) {
     completo:      { label: 'Completo',        color: 'verde',   badge: 'badge-verde' },
   };
   return map[estado] || { label: estado, color: 'gray', badge: 'badge-gray' };
+}
+
+// Estado de línea individual en la comparación pedido vs entrega
+export function getEstadoLinea(linea) {
+  if (linea.noSolicitado) return { label: 'No solicitado', color: '#fb923c', icon: '⚡' };
+  if (linea.pendiente > 0 && linea.entregada === 0) return { label: 'Sin entregar', color: '#f87171', icon: '—' };
+  if (linea.pendiente > 0) return { label: `Faltan ${linea.pendiente}u`, color: '#f87171', icon: '⚠' };
+  if (linea.sobrante > 0) return { label: `Sobran ${linea.sobrante}u`, color: '#f0c040', icon: '⚡' };
+  return { label: 'Completo', color: '#4ade80', icon: '✓' };
 }
 
 export const ORDEN_ESTADO = ['abierto','sin_confirmar','parcial','con_faltantes','completo'];

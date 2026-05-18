@@ -1306,11 +1306,6 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
               // esComboNuevo: no existe en db.combos ni en db.art
               const comboEnArt = !!(db.art?.[codComboSugerido]);
               const esComboNuevo = l.esCombo && !comboData && !comboEnArt;
-              // Combo principal con código incorrecto
-              const codPrincipalEsperado = `${l.cod}x${factorReal}`;
-              const comboCodigoCorrecto = !comboData ? false
-                : codComboSugerido.toLowerCase() === codPrincipalEsperado.toLowerCase();
-              const comboCodigoIncorrecto = comboData && !comboCodigoCorrecto;
               // Verificar existencia de cada nivel de combo
               // Si existe pero con código distinto al esperado → marcar para corrección
               const codEsperado = (codBase, cant) => `${codBase}x${cant}`;

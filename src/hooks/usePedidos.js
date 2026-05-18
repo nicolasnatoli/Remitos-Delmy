@@ -4,6 +4,7 @@ import {
   esPedido, esEntrega, esError,
   calcularEstadoPedido, ultimosCinco,
   hoy, ayer, ORDEN_ESTADO,
+  expandirLineas,
 } from '../utils/remitos';
 
 function linkearEntregas(pedido, entregas) {
@@ -84,13 +85,19 @@ export function usePedidos(remitos) {
   const pendientesConsolidados = useMemo(() => {
     const mapa = {};
     const hoyStr = hoy();
+    // Cargar combos para expansión
+    const combos = (() => { try { return JSON.parse(localStorage.getItem('dm_combos_v1')||'{}'); } catch { return {}; } })();
     for (const pedido of pedidosConEstado) {
       if (pedido.estadoCalculado !== 'parcial' && pedido.estadoCalculado !== 'abierto') continue;
+      // Expandir entregas a unidades base
       const entregadoMap = {};
       for (const e of pedido.entregasAsociadas) {
-        for (const l of e.lineas) entregadoMap[l.cod] = (entregadoMap[l.cod]||0) + Number(l.cant||0);
+        for (const l of expandirLineas(e.lineas, combos)) {
+          entregadoMap[l.cod] = (entregadoMap[l.cod]||0) + Number(l.cant||0);
+        }
       }
-      for (const linea of pedido.lineas) {
+      // Expandir pedido a unidades base
+      for (const linea of expandirLineas(pedido.lineas, combos)) {
         const pendiente = Math.max(0, Number(linea.cant||0) - (entregadoMap[linea.cod]||0));
         if (!pendiente) continue;
         if (!mapa[linea.cod]) mapa[linea.cod] = { cod: linea.cod, desc: linea.desc, cant: 0, pedidos: [] };
@@ -105,21 +112,46 @@ export function usePedidos(remitos) {
 }
 
 export function getComparacion(pedido, entregasAsociadas) {
+  const combos = (() => { try { return JSON.parse(localStorage.getItem('dm_combos_v1')||'{}'); } catch { return {}; } })();
   const pedidoMap = {};
-  for (const l of pedido.lineas) {
+  for (const l of expandirLineas(pedido.lineas, combos)) {
     if (!pedidoMap[l.cod]) pedidoMap[l.cod] = { cod: l.cod, desc: l.desc, pedida: 0 };
     pedidoMap[l.cod].pedida += Number(l.cant||0);
   }
   const entregadoMap = {};
+  const entregadoDesc = {};
   for (const e of entregasAsociadas) {
-    for (const l of e.lineas) entregadoMap[l.cod] = (entregadoMap[l.cod]||0) + Number(l.cant||0);
+    for (const l of expandirLineas(e.lineas, combos)) {
+      entregadoMap[l.cod] = (entregadoMap[l.cod]||0) + Number(l.cant||0);
+      if (!entregadoDesc[l.cod]) entregadoDesc[l.cod] = l.desc;
+    }
   }
-  return Object.values(pedidoMap).map(item => ({
+
+  // Artículos pedidos — con su estado
+  const resultado = Object.values(pedidoMap).map(item => ({
     ...item,
     entregada: entregadoMap[item.cod]||0,
     pendiente: Math.max(0, item.pedida - (entregadoMap[item.cod]||0)),
     sobrante:  Math.max(0, (entregadoMap[item.cod]||0) - item.pedida),
+    noSolicitado: false,
   }));
+
+  // Artículos entregados que NO estaban en el pedido → error de entrega
+  for (const [cod, cant] of Object.entries(entregadoMap)) {
+    if (!pedidoMap[cod]) {
+      resultado.push({
+        cod,
+        desc: entregadoDesc[cod] || cod,
+        pedida: 0,
+        entregada: cant,
+        pendiente: 0,
+        sobrante: cant,
+        noSolicitado: true, // entregado sin haber sido pedido
+      });
+    }
+  }
+
+  return resultado;
 }
 
 export function groupByFecha(pedidos) {
