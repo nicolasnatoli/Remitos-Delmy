@@ -33,13 +33,13 @@ export default function TabCombos({ combos, onLoad, loaded, stats, fileRef }) {
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: C.txt, marginBottom: 3 }}>Base de combos y componentes</div>
           {loaded
-            ? <div style={{ fontSize: 10, color: C.green }}>✓ {Object.keys(combos).length} combos cargados — {Object.values(combos).filter(c=>c.componentes?.length>1).length} con múltiples componentes{stats ? ` · ${stats.archivo}` : ''}</div>
-            : <div style={{ fontSize: 10, color: C.mut }}>Sin datos — cargá el archivo combos_delmy.json para descomponer remitos con combos</div>
+            ? <div style={{ fontSize: 10, color: C.green }}>✓ {Object.keys(combos).length} combos cargados{stats ? ` — ${stats.archivo||'desde Compras'}` : ' — desde Compras'}</div>
+            : <div style={{ fontSize: 10, color: C.mut }}>Sin datos — cargá desde Compras con el botón ↺ Combos, o subí el Excel de Stock+</div>
           }
         </div>
-        <input ref={fileRef} type="file" accept=".json" style={{ display: 'none' }} onChange={e => { if(e.target.files[0]) onLoad(e.target.files[0]); e.target.value=''; }} />
+        <input ref={fileRef} type="file" accept=".xlsx,.xls,.json" style={{ display: 'none' }} onChange={e => { if(e.target.files[0]) onLoad(e.target.files[0]); e.target.value=''; }} />
         <button onClick={() => fileRef.current?.click()} style={{ padding: '7px 14px', background: 'rgba(240,192,64,.08)', border: `1px solid ${C.acc}`, color: C.acc, borderRadius: 5, cursor: 'pointer', fontSize: 11, fontFamily: 'DM Mono,monospace' }}>
-          ↑ Cargar combos.json
+          ↑ Cargar combos (.xlsx / .json)
         </button>
       </div>
 
@@ -48,7 +48,7 @@ export default function TabCombos({ combos, onLoad, loaded, stats, fileRef }) {
           <div style={{ fontSize: 40, marginBottom: 12, opacity: 0.2 }}>⊕</div>
           <div style={{ fontSize: 14, marginBottom: 8, color: C.txt }}>Sin base de combos</div>
           <div style={{ fontSize: 11, maxWidth: 400, margin: '0 auto', lineHeight: 1.6 }}>
-            Cargá el archivo <span style={{ color: C.acc }}>combos_delmy.json</span> generado desde el exportador de Delmy.
+            Cargá el archivo <span style={{ color: C.acc }}>exportacion_de_combos_y_componentes.xlsx</span> de Stock+, o hacé ↺ Combos en el módulo Compras.
             Los combos permiten descomponer artículos compuestos en sus componentes unitarios para cruzar con stock.
           </div>
         </div>

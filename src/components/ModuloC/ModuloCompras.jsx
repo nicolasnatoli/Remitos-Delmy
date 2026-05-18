@@ -1268,7 +1268,6 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
                     ? (baseEsBulto ? fiExt : fiExt * fiInt)
                     : (factorInfo?.factorExt || l.factor || 1))
                 : 1;
-              const cantEnBase = hayFC ? (l.cantFC||0) * factorReal : (l.cantOC||0);
               const precioFCporBase = factorReal > 1 && l.precioDoc > 0
                 ? (l.precioDoc||0) / factorReal : (l.precioDoc||0);
               // Combos a verificar/crear — en unidades del artículo base

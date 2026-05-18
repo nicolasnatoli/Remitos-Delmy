@@ -31,25 +31,56 @@ export default function ModuloB() {
   useEffect(() => {
     loadCombos().then(c => {
       if (c && Object.keys(c).length > 0) {
-        setCombos(c); setCombosLoaded(true);
+        setCombos(c);
+        setCombosLoaded(true);
+        setCombosStats({ total: Object.keys(c).length, multiComp: Object.values(c).filter(x=>x.componentes?.length>1).length });
       }
     });
   }, []);
 
   const handleCombosFile = useCallback(async (file) => {
-    if (!file || !file.name.includes('.json')) {
-      alert('Subí el archivo combos_delmy.json generado por el sistema');
-      return;
-    }
+    if (!file) return;
     try {
-      const text = await file.text();
-      const data = JSON.parse(text);
+      let data = {};
+      if (file.name.endsWith('.json')) {
+        // JSON directo
+        const text = await file.text();
+        data = JSON.parse(text);
+      } else if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
+        // Excel exportado de Stock+ — mismo formato que Compras
+        const XLSX = await import('xlsx');
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf);
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:''});
+        const hdrIdx = rows.findIndex(r => String(r[0]).trim()==='Tipo' || String(r[1]).trim().includes('Código combo'));
+        const dataRows = hdrIdx >= 0 ? rows.slice(hdrIdx+1) : rows.slice(2);
+        let current = null;
+        for (const r of dataRows) {
+          const tipo = String(r[0]||'').trim();
+          const codCombo = String(r[1]||'').trim();
+          const descCombo = String(r[2]||'').trim();
+          const codArt = String(r[5]||'').trim();
+          const descArt = String(r[6]||'').trim();
+          const cant = parseFloat(String(r[7]||'0').replace(',','.'))||0;
+          if(tipo==='Combo' && codCombo && codCombo!=='-') {
+            current = codCombo;
+            data[codCombo] = { desc: descCombo, componentes: [] };
+          } else if((tipo==='Artículo'||tipo==='Articulo') && current && codArt && codArt!=='-') {
+            data[current].componentes.push({ cod:codArt, desc:descArt, cant:Math.round(cant)||1 });
+          }
+        }
+      } else {
+        alert('Subí el archivo .xlsx de combos exportado de Stock+, o el combos_delmy.json');
+        return;
+      }
+      const total = Object.keys(data).length;
+      if (total === 0) { alert('No se encontraron combos en el archivo.'); return; }
       await saveCombos(data);
       setCombos(data);
       setCombosLoaded(true);
-      const total = Object.keys(data).length;
-      const multiComp = Object.values(data).filter(c => c.componentes?.length > 1).length;
-      setCombosStats({ total, multiComp, archivo: file.name });
+      setCombosStats({ total, multiComp: Object.values(data).filter(c=>c.componentes?.length>1).length, archivo: file.name });
+      alert(`✓ ${total} combos importados correctamente.`);
     } catch(e) { alert('Error al procesar el archivo: ' + e.message); }
   }, []);
 
