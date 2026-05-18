@@ -1,0 +1,57 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@400;600;700;800&display=swap');
+
+:root {
+  --bg:      #0c0e14;
+  --panel:   #111420;
+  --panel2:  #161925;
+  --border:  #1e2133;
+  --border2: #242840;
+  --acc:     #f0c040;
+  --green:   #4ade80;
+  --red:     #f87171;
+  --blue:    #60a5fa;
+  --amber:   #f0c040;
+  --teal:    #2dd4bf;
+  --orange:  #fb923c;
+  --violet:  #c084fc;
+  --mut:     #6b7280;
+  --txt:     #e8eaf0;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--txt);
+  font-family: 'DM Mono', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+
+button {
+  cursor: pointer;
+  font-family: 'DM Mono', monospace;
+  font-size: 12px;
+  border: none;
+  background: none;
+  color: var(--txt);
+}
+
+input, select {
+  font-family: 'DM Mono', monospace;
+  font-size: 12px;
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  color: var(--txt);
+  border-radius: 4px;
+  padding: 6px 10px;
+  outline: none;
+}
+input:focus, select:focus { border-color: var(--acc); }
+
+a { color: var(--acc); text-decoration: none; }
