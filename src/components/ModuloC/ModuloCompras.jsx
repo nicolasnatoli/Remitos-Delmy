@@ -297,19 +297,19 @@ function estadoLinea(l) {
 }
 
 const ESTADO_CONFIG = {
-  EXACTO_COMPLETO:    { color:'#4ade80', bg:'rgba(74,222,128,.08)',  label:'✓ Exacto',         badge:'ok'  },
-  EXACTO_PRECIO_SUBE: { color:'#f87171', bg:'rgba(248,113,113,.06)', label:'↑ Precio sube',    badge:'err' },
-  EXACTO_PRECIO_BAJA: { color:'#4ade80', bg:'rgba(74,222,128,.04)',  label:'↓ Precio baja',    badge:'ok'  },
-  CANT_MAYOR_FC:      { color:'#2dd4bf', bg:'rgba(45,212,191,.06)',  label:'⚡ Cant. extra',    badge:'teal'},
-  CANT_MENOR_FC:      { color:'#f87171', bg:'rgba(248,113,113,.06)', label:'⚠ Cant. menor',    badge:'err' },
-  PARCIAL_CODP:       { color:'#f0c040', bg:'rgba(240,192,64,.06)',  label:'⚡ Cód parcial',   badge:'warn'},
-  PARCIAL_DESC:       { color:'#f0c040', bg:'rgba(240,192,64,.06)',  label:'⚡ Por desc.',      badge:'warn'},
-  PARCIAL_SUFIJO:    { color:'#f0c040', bg:'rgba(240,192,64,.06)',  label:'⚡ Sufijo cód.',    badge:'warn'},
-  PARCIAL_PREFIJO:   { color:'#f0c040', bg:'rgba(240,192,64,.06)',  label:'⚡ Prefijo cód.',   badge:'warn'},
-  NO_ENTREGADO:       { color:'#f87171', bg:'rgba(248,113,113,.08)', label:'✗ No entregado',   badge:'err' },
-  SOBRANTE_CONOCIDO:  { color:'#fb923c', bg:'rgba(251,146,60,.06)',  label:'⚡ Sobrante',       badge:'ora' },
-  SOBRANTE_NUEVO:     { color:'#fb923c', bg:'rgba(251,146,60,.08)',  label:'⚡ Nuevo',          badge:'ora' },
-  SIN_RECONOCER:      { color:'#f87171', bg:'rgba(248,113,113,.08)', label:'? Sin reconocer',  badge:'err' },
+  EXACTO_COMPLETO:    { color:'#4ade80', bg:'rgba(74,222,128,.08)',  label:'✓ Exacto',           badge:'ok'  },
+  EXACTO_PRECIO_SUBE: { color:'#f87171', bg:'rgba(248,113,113,.06)', label:'▲ Precio sube',      badge:'err' },
+  EXACTO_PRECIO_BAJA: { color:'#4ade80', bg:'rgba(74,222,128,.04)',  label:'▼ Precio baja',      badge:'ok'  },
+  CANT_MAYOR_FC:      { color:'#2dd4bf', bg:'rgba(45,212,191,.06)',  label:'⚡ Cant. extra',      badge:'teal'},
+  CANT_MENOR_FC:      { color:'#f87171', bg:'rgba(248,113,113,.06)', label:'⚠ Cant. menor',      badge:'err' },
+  PARCIAL_CODP:       { color:'#f0c040', bg:'rgba(240,192,64,.06)',  label:'~ Cód. similar',     badge:'warn'},
+  PARCIAL_DESC:       { color:'#f0c040', bg:'rgba(240,192,64,.06)',  label:'~ Por descripción',  badge:'warn'},
+  PARCIAL_SUFIJO:     { color:'#f0c040', bg:'rgba(240,192,64,.06)',  label:'~ Sufijo cód.',      badge:'warn'},
+  PARCIAL_PREFIJO:    { color:'#f0c040', bg:'rgba(240,192,64,.06)',  label:'~ Prefijo cód.',     badge:'warn'},
+  NO_ENTREGADO:       { color:'#6b7280', bg:'rgba(107,114,128,.06)', label:'— Sin FC aún',       badge:'mut' },
+  SOBRANTE_CONOCIDO:  { color:'#fb923c', bg:'rgba(251,146,60,.06)',  label:'⚡ Sobrante',         badge:'ora' },
+  SOBRANTE_NUEVO:     { color:'#fb923c', bg:'rgba(251,146,60,.08)',  label:'+ Nuevo',             badge:'ora' },
+  SIN_RECONOCER:      { color:'#f87171', bg:'rgba(248,113,113,.08)', label:'? No detectado',     badge:'err' },
 };
 
 // ─── Colores de stock ─────────────────────────────────────────────────────────

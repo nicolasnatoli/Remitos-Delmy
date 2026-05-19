@@ -54,52 +54,36 @@ export function detectarFactorCombo(desc) {
   const d = desc.toLowerCase();
 
   // Patrón 1: N bolsas/packs/cajas × Mu  (empaque doble)
-  // El factor del combo SIEMPRE se mide en unidades del artículo base (el que tiene codp+proveedor)
-  //
-  // Caso A: artículo base = bulto (ej: 6002/50 = bolsa 50u)
-  //   "20 Bolsas x 50u" → factor=20 (20 bolsas por caja)
-  //   Combo a buscar/crear: codx20 con componentes[0].cant=20
-  //
-  // Caso B: artículo base = unidad mínima (ej: 4001CE = 1u)  
-  //   "12 Packs x 10u" → factorPack=10, factorCaja=120
-  //   Combos a buscar/crear: codx10 (cant=10) y codx120 (cant=120)
-  //
-  // La función devuelve AMBOS casos — el render decide cuál aplica
-  // según si el artículo base coincide con el factorInterno o con 1u
+  // Requiere palabra de tipo de bulto explícita — no se confunde con tamaños de envase
   const m1 = d.match(/(\d+)\s*(?:bolsas?|packs?|cajas?|bultos?|bols\.?)\s*[x×]\s*(\d+)/i);
   if (m1) {
-    const ext = parseInt(m1[1]); // cantidad de bultos por caja
-    const int_ = parseInt(m1[2]); // unidades por bulto
+    const ext = parseInt(m1[1]);
+    const int_ = parseInt(m1[2]);
     return {
-      factorExt: ext,          // bultos por caja
-      factorInt: int_,         // u por bulto
-      factorTotal: ext * int_, // u totales por caja
-      tipo: 'doble',
-      detalle: `${ext}×${int_}`,
-      // nivelesCombo: todos los combos posibles, en unidades del artículo base
-      // El render filtra según cuál es el artículo base real
-      // Si base=bulto(int_u): solo necesita x ext (los bultos por caja)
-      // Si base=1u: necesita x int_ (el pack) y x ext*int_ (la caja)
+      factorExt: ext, factorInt: int_, factorTotal: ext * int_,
+      tipo: 'doble', detalle: `${ext}×${int_}`,
       nivelesCombo: [
-        { factorSiBaseEsBulto: ext,        factorSiBaseEs1u: int_,        label: `×${int_}u (pack)`,  codSufijo: `x${int_}` },
-        { factorSiBaseEsBulto: ext,        factorSiBaseEs1u: ext * int_,  label: `×${ext*int_}u (caja)`, codSufijo: `x${ext*int_}` },
+        { factorSiBaseEsBulto: ext, factorSiBaseEs1u: int_,        label: `×${int_}u (pack)`,     codSufijo: `x${int_}` },
+        { factorSiBaseEsBulto: ext, factorSiBaseEs1u: ext * int_,  label: `×${ext*int_}u (caja)`, codSufijo: `x${ext*int_}` },
       ]
     };
   }
 
-  // Patrón 2: x N unidades simple
-  const m2 = d.match(/[x×]\s*(\d+)\s*(?:un?\.?|uds?\.?|u\.?)?/i);
+  // Patrón 2: "x N unidades" o "× N u" — pero NO si va seguido de cc/ml/gr/kg/cc (tamaño de envase)
+  // Ej válido:   "CUCHILLO x 50u"  →  factor 50
+  // Ej inválido: "200CC", "375cc", "50cc", "x 200cc", "x 1.5kg" → ignorar
+  const m2 = d.match(/[x×]\s*(\d+)\s*(un?\.?|uds?\.?)\b/i);
   if (m2) {
     const f = parseInt(m2[1]);
-    return {
+    if (f > 1) return {
       factorExt: f, factorInt: 1, factorTotal: f,
       tipo: 'simple', detalle: 'x'+f,
       nivelesCombo: [{ factorSiBaseEsBulto: f, factorSiBaseEs1u: f, label: `×${f}u`, codSufijo: `x${f}` }]
     };
   }
 
-  // Patrón 3: "por N" o "de N unidades"
-  const m3 = d.match(/(?:por|de)\s+(\d+)\s*(?:unidades?|un?\.?)?/i);
+  // Patrón 3: "por N unidades" o "de N unidades" — explícito
+  const m3 = d.match(/(?:por|de)\s+(\d+)\s*(?:unidades?|un?\.?)\b/i);
   if (m3 && parseInt(m3[1]) > 1) {
     const f = parseInt(m3[1]);
     return {
@@ -108,6 +92,21 @@ export function detectarFactorCombo(desc) {
       nivelesCombo: [{ factorSiBaseEsBulto: f, factorSiBaseEs1u: f, label: `×${f}u`, codSufijo: `x${f}` }]
     };
   }
+
+  // Patrón 4: "X N" al final de la descripción (ej: "CUCHILLO CRISTAL X 50")
+  // Solo si N > 1 y no hay cc/ml/gr después
+  const m4 = d.match(/\bx\s*(\d+)\s*$/i);
+  if (m4 && parseInt(m4[1]) > 1) {
+    const f = parseInt(m4[1]);
+    return {
+      factorExt: f, factorInt: 1, factorTotal: f,
+      tipo: 'simple', detalle: `×${f}`,
+      nivelesCombo: [{ factorSiBaseEsBulto: f, factorSiBaseEs1u: f, label: `×${f}u`, codSufijo: `x${f}` }]
+    };
+  }
+
+  return null;
+}
 
   return null;
 }
