@@ -108,9 +108,6 @@ export function detectarFactorCombo(desc) {
   return null;
 }
 
-  return null;
-}
-
 // ─── Expandir líneas con combos ───────────────────────────────────────────────
 // PRIORIDAD 1: combo conocido en dm_combos_v1 (factor exacto)
 // PRIORIDAD 2: factor inferido de la descripción (requiere confirmación)
