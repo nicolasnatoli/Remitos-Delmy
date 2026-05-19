@@ -1238,10 +1238,16 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
               const totStk=(l.stkDMCN||0)+(l.stkDM01||0)+(l.stkDM03||0);
               const sc=stkColor(totStk,l.vm||0,l.vq||0,l.vs||0);
               const est=estadoLinea(l);
-              const esParcial=est==='PARCIAL_CODP'||est==='PARCIAL_DESC';
+              const esParcial=est==='PARCIAL_CODP'||est==='PARCIAL_DESC'||est==='PARCIAL_SUFIJO'||est==='PARCIAL_PREFIJO';
               const estCfg=ESTADO_CONFIG[est]||ESTADO_CONFIG.SIN_RECONOCER;
               const rowBg=estCfg.bg;
               const codpBase=l.reconocido&&db.art[l.cod]?(db.art[l.cod].codp||l.codp||'—'):l.codp||'—';
+              // Determinar tipo de situación para mostrar al usuario
+              const tipoSit = !l.reconocido ? 'no_detectado'
+                : l.esCombo && esComboNuevo ? 'combo_nuevo'
+                : l.esCombo && !esComboNuevo ? 'combo_existe'
+                : esParcial ? 'match_parcial'
+                : 'exacto';
               let accion=null;
               if(l.esSobrante&&!l.reconocido){
                 accion=<button onClick={()=>abrirModal(i)} style={{...Btn(C.acc,'rgba(240,192,64,.12)'),fontSize:9,padding:'2px 7px'}}>Resolver →</button>;
@@ -1364,7 +1370,7 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
               const stFC   = hayFC && l.cantFC > 0 ? (l.cantFC||0) * (l.precioDoc||0) : null;
               return(
                 <tr key={i} style={{background:rowBg}}>
-                  {/* ESTADO — símbolos compactos */}
+                  {/* ESTADO — símbolo + texto descriptivo */}
                   {td(<div style={{display:'flex',flexDirection:'column',gap:2,alignItems:'center'}}>
                     <span style={{fontSize:13,color:estCfg.color,lineHeight:1}}>{
                       est==='EXACTO_COMPLETO'?'✓':
@@ -1373,10 +1379,17 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
                       est==='CANT_MENOR_FC'?'⚠':
                       est==='CANT_MAYOR_FC'?'⚡':
                       est==='NO_ENTREGADO'?'—':
-                      est==='SIN_RECONOCER'?'?':'·'
+                      est==='SIN_RECONOCER'?'?':'~'
+                    }</span>
+                    <span style={{fontSize:6,color:estCfg.color,textAlign:'center',lineHeight:1.2,maxWidth:60,wordBreak:'break-word'}}>{
+                      tipoSit==='no_detectado'?'? No detectado':
+                      tipoSit==='combo_nuevo'?'⊕ Crear combo':
+                      tipoSit==='combo_existe'?'⊕ Combo ✓':
+                      tipoSit==='match_parcial'?'~ Parcial':
+                      estCfg.label
                     }</span>
                     {l.esCombo&&<span style={{fontSize:9,color:esComboNuevo?C.ora:C.vio,lineHeight:1}}>⊕</span>}
-                  </div>,{width:44,textAlign:'center'})}
+                  </div>,{width:68,textAlign:'center'})}
                   {/* CÓD PROV — base + FC debajo + diagnóstico si no reconocido */}
                   {td(<div style={{display:'flex',flexDirection:'column',gap:1}}>
                     <span style={{fontFamily:'DM Mono,monospace',fontSize:8,color:l.reconocido?C.teal:C.red}}>{l.reconocido?codpBase:'—?'}</span>
@@ -1449,20 +1462,32 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
                   {td(l.vs||'—',{textAlign:'right',fontSize:8,color:C.mut})}
                   {td(l.vq||'—',{textAlign:'right',fontSize:8,color:C.mut})}
                   {td(l.vm||'—',{textAlign:'right',fontSize:8,color:C.mut})}
-                  {/* CANTIDAD — cant FC (cajas) · cant OC (u.base) */}
+                  {/* CANTIDAD */}
                   {td(<div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:1}}>
-                    {/* Cant OC en u.base del artículo */}
+                    {/* OC: en unidades del artículo base (bolsas, packs, u) */}
                     <span style={{fontWeight:700,fontSize:10,color:C.txt}}>
                       {(l.cantOC||0).toLocaleString('es-AR')}
-                      <span style={{fontSize:7,color:C.mut,marginLeft:2}}>u OC</span>
-                    </span>
-                    {/* Cant FC tal cual vino */}
-                    {hayFC&&l.cantFC>0&&<span style={{fontSize:9,color:C.green}}>
-                      {l.cantFC}
                       <span style={{fontSize:7,color:C.mut,marginLeft:2}}>
-                        {l.esCombo&&factorReal>1?'cajas':'u'} FC
+                        {l.esCombo&&factorReal>1&&factorInfo?.factorInt>1
+                          ? `bultos OC`
+                          : `u OC`}
                       </span>
-                    </span>}
+                    </span>
+                    {/* FC: cajas tal cual vino + desglose */}
+                    {hayFC&&l.cantFC>0&&<>
+                      <span style={{fontSize:9,color:C.green}}>
+                        {l.cantFC}
+                        <span style={{fontSize:7,color:C.mut,marginLeft:2}}>
+                          {l.esCombo&&factorReal>1?'cajas FC':'u FC'}
+                        </span>
+                      </span>
+                      {l.esCombo&&factorReal>1&&<span style={{fontSize:7,color:C.acc}}>
+                        {factorInfo?.tipo==='doble'
+                          ? `${l.cantFC}×${fiExt}${baseEsBulto?'':('×'+fiInt)}=${(l.cantFC*factorReal).toLocaleString('es-AR')}u`
+                          : `${l.cantFC}×${factorReal}=${(l.cantFC*factorReal).toLocaleString('es-AR')}u`
+                        }
+                      </span>}
+                    </>}
                   </div>,{textAlign:'right'})}
                   {/* COSTO: costo plaza / precio FC / equiv FC/u */}
                   {td(<div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:1}}>
