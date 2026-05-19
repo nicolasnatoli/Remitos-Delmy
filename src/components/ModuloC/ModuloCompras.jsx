@@ -1847,12 +1847,33 @@ function ModalArt({modal,setModal,linea,db,onAsignar,onNuevo,OCprov}){
               ))}
             </div>
             <div style={{paddingTop:10,borderTop:`1px solid ${C.b1}`,display:'flex',gap:8,alignItems:'center'}}>
-              <button onClick={()=>setModal(m=>({...m,tab:'buscar'}))} style={{...Btn(C.mut),marginLeft:'auto'}}>← Volver a buscar</button>
-              <button onClick={onNuevo} style={{background:C.acc,color:'#0c0e14',border:'none',borderRadius:4,padding:'6px 14px',fontSize:11,fontFamily:'DM Mono,monospace',fontWeight:600,cursor:'pointer'}}>＋ Agregar a importación</button>
+              <button 
+                onClick={() => setModal(m => ({ ...m, tab: 'buscar' }))} 
+                style={{ ...Btn(C.mut), marginLeft: 'auto' }}
+              >
+                ← Volver a buscar
+              </button>
+              
+              <button 
+                onClick={onNuevo} 
+                style={{
+                  background: C.acc,
+                  color: '#0c0e14',
+                  border: 'none',
+                  borderRadius: 4,
+                  padding: '6px 14px',
+                  cursor: 'pointer',
+                  fontWeight: '500'
+                }}
+              >
+                Guardar Artículo
+              </button>
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
+
+export default ModuloCompras;
