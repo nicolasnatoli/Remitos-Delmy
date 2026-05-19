@@ -51,6 +51,30 @@ function provMatch(provDoc, provBase) {
 // Nivel 2 PARCIAL:  codDoc contenido en codp o cod interno → confirmar + exportar
 // Nivel 3 NO MATCH: va al modal con recomendados
 // SIEMPRE filtrar por proveedor de la OC. Nunca matchear fuera.
+// ─── Extrae color clave de una descripción ───────────────────────────────────
+function extraerColor(desc) {
+  const d = (desc||'').toLowerCase();
+  const colores = {
+    'negro':'NE','negra':'NE','black':'NE',
+    'celeste':'CE','azul':'AZ','blue':'AZ',
+    'rojo':'ROJO','roja':'ROJO','red':'ROJO',
+    'rosa':'RS','rosado':'RS','pink':'RS',
+    'blanco':'BLX1','blanca':'BLX1','white':'BLX1',
+    'verde':'VE','green':'VE',
+    'amarillo':'AM','amarilla':'AM','yellow':'AM',
+    'naranja':'NA','orange':'NA',
+    'violeta':'VIO','lila':'LIP','fucsia':'FUC',
+    'traslucido':'TRAS','traslucida':'TRAS','transparente':'TRAS',
+    'marron':'MP','perlado':'MP','perla':'MP',
+    'cristal':'CE','plata':'PLATA','dorado':'ORO',
+    'magenta':'MAG',
+  };
+  for (const [palabra, cod] of Object.entries(colores)) {
+    if (d.includes(palabra)) return cod;
+  }
+  return null;
+}
+
 function cruzar(codDoc, descDoc, prov, art, ocLineas) {
   if (!codDoc || !art || typeof art !== 'object') return {cod:null, nivel:null};
   const cod = String(codDoc).trim();
@@ -132,21 +156,21 @@ function cruzar(codDoc, descDoc, prov, art, ocLineas) {
   return {cod:null, nivel:null};
 }
 
-// ─── Búsqueda para modal — ranking inteligente de 6 prioridades ──────────────
+// ─── Búsqueda para modal — ranking inteligente con color y proveedor ───────────
 function buscar(descDoc, codDoc, prov, famF, catF, marcaF, q, art) {
   if (!art || typeof art !== 'object' || !Object.keys(art).length) return [];
   const cod = String(codDoc||'').trim();
   const qLow = (q||'').toLowerCase().trim();
 
-  // Palabras clave de la descripción FC — ignorar palabras genéricas
-  const STOP = new Set(['con','para','por','los','las','una','unos','unas','del','etc','und','paq','pack','packs','caja','cajas','bolsa','bolsas','unidad','unidades','bulto','bultos']);
+  const STOP = new Set(['con','para','por','los','las','una','unos','unas','del','etc','und','paq','pack','packs','caja','cajas','bolsa','bolsas','unidad','unidades','bulto','bultos','kovalplast','cemave','oriental','ledevit','bechar']);
   const wordsFC = (descDoc||'').toLowerCase()
     .replace(/[^\w\s]/g,' ').split(/\s+/)
     .filter(w => w.length > 2 && !STOP.has(w) && !/^\d+$/.test(w))
     .slice(0, 8);
 
-  // Inferir familia probable desde la descripción FC
   const descLow = (descDoc||'').toLowerCase();
+  const colorFC = extraerColor(descLow);
+
   const famInferida = (()=>{
     if(/cuchillo|cuchara|tenedor|plato|vaso|cubierto|descartable/i.test(descLow)) return 'DESCARTABLES';
     if(/acrilico|pintura|tiza|barniz|esmalte|pincel/i.test(descLow)) return 'REPOSTERIA';
@@ -163,27 +187,25 @@ function buscar(descDoc, codDoc, prov, famF, catF, marcaF, q, art) {
     const esMismo = prov ? provMatch(prov, a.prov||'') : false;
     if (famF && (a.fam||'') !== famF) continue;
     if (catF  && (a.cat||'') !== catF)  continue;
-    if (marcaF && (a.marca||'') !== marcaF) continue;
-
     const hayDesc = (a.desc||'').toLowerCase();
     const hayWords = hayDesc.replace(/[^\w\s]/g,' ').split(/\s+/);
     const cp = String(a.codp||'').trim();
     let score = 0; let type = 'desc';
 
-    // ── Prioridad 1: código exacto (30pts) ────────────────────────────────
+    // P1: código exacto
     if (cod) {
-      if (cp === cod)                    { score += 30; type = 'exacto'; }
-      else if (cp.includes(cod))         { score += 22; type = 'parcial_codp'; }
-      else if (k.includes(cod))          { score += 18; type = 'parcial_cod'; }
-      else if (cod.length>=4 && cp.endsWith(cod))   { score += 14; type = 'parcial_codp'; }
-      else if (cod.length>=4 && cp.startsWith(cod)) { score += 12; type = 'parcial_codp'; }
+      if (cp === cod)                              { score += 30; type = 'exacto'; }
+      else if (cp.includes(cod))                   { score += 22; type = 'parcial_codp'; }
+      else if (k.includes(cod))                    { score += 18; type = 'parcial_cod'; }
+      else if (cod.length>=4 && cp.endsWith(cod))  { score += 14; type = 'parcial_codp'; }
+      else if (cod.length>=4 && cp.startsWith(cod)){ score += 12; type = 'parcial_codp'; }
     }
 
-    // ── Prioridad 2: búsqueda manual del usuario (15pts base) ─────────────
+    // P2: query manual
     if (qLow) {
-      if (hayDesc.includes(qLow))                  score += 20;
-      else if (k.includes(qLow))                   score += 18;
-      else if (cp.toLowerCase().includes(qLow))    score += 18;
+      if (hayDesc.includes(qLow))               score += 20;
+      else if (k.includes(qLow))                score += 18;
+      else if (cp.toLowerCase().includes(qLow)) score += 18;
       else {
         const qWords = qLow.split(/\s+/).filter(w=>w.length>1);
         const qMatch = qWords.filter(w=>hayDesc.includes(w)||k.includes(w)||cp.toLowerCase().includes(w)).length;
@@ -191,38 +213,43 @@ function buscar(descDoc, codDoc, prov, famF, catF, marcaF, q, art) {
       }
     }
 
-    // ── Prioridad 3: palabras de descripción FC (8pts por palabra) ─────────
+    // P3: palabras descripción FC
     const wm = wordsFC.filter(w =>
       hayWords.some(hw => hw.startsWith(w) || w.startsWith(hw) || hw.includes(w))
     ).length;
-    if (wm >= 3) { score += wm * 8; if(type==='desc') type='desc'; }
+    if (wm >= 3) score += wm * 8;
     else if (wm === 2) score += 12;
     else if (wm === 1) score += 4;
 
-    // ── Prioridad 4: familia inferida coincide (6pts) ──────────────────────
+    // P4: color coincide — clave para vasos/artículos con variantes de color
+    if (colorFC) {
+      const colorArt = extraerColor(hayDesc);
+      if (colorArt && colorArt === colorFC) score += 15;
+    }
+
+    // P5: familia inferida
     if (famInferida && (a.fam||'') === famInferida) score += 6;
 
-    // ── Prioridad 5: mismo proveedor base (3pts) ───────────────────────────
-    if (esMismo) score += 3;
+    // P6: mismo proveedor — boost FUERTE, siempre primero
+    if (esMismo) score += 20;
+    else if (!qLow && score > 0) score = Math.max(1, score - 15); // penalizar otros prov
 
-    // ── Prioridad 6: si sin query, siempre incluir mismo proveedor ─────────
+    // Fallback: incluir todos del mismo proveedor aunque score=0
     if (!qLow && score === 0 && esMismo) score = 1;
 
     if (score > 0) results.push({cod:k, a, score, type, esMismo});
   }
 
-  // Ordenar: mismo proveedor primero, luego por score desc
   results.sort((a, b) => {
+    // Mismo proveedor SIEMPRE antes que otros sin excepción
     if (a.esMismo !== b.esMismo) return a.esMismo ? -1 : 1;
     const o = {exacto:0, parcial_codp:1, parcial_cod:2, desc:3};
     if ((o[a.type]||3) !== (o[b.type]||3)) return (o[a.type]||3)-(o[b.type]||3);
     return b.score - a.score;
   });
 
-  // Mismo proveedor: máx 20 · Otros: máx 10 — total 30
-  const mismos  = results.filter(r=>r.esMismo).slice(0,20);
-  const otros   = results.filter(r=>!r.esMismo).slice(0,10);
-  // Separador visual: agregar flag para renderizar divisor en el modal
+  const mismos = results.filter(r=>r.esMismo).slice(0,20);
+  const otros  = results.filter(r=>!r.esMismo).slice(0,10);
   if(otros.length && mismos.length) otros[0]._separador = true;
   return [...mismos, ...otros];
 }

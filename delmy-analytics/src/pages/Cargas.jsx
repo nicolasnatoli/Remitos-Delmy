@@ -31,11 +31,30 @@ export default function Cargas({ T }) {
       const resp = await fetch('/api/upload', { method: 'POST', body: form })
       const data = await resp.json()
       if (!resp.ok) throw new Error(data.error || 'Error desconocido')
-      setResult(data)
-      reload()
+
+      // If processing in background, poll for status
+      if (data.procesando) {
+        setResult({ ...data, status: 'procesando' })
+        reload()
+        const poll = setInterval(async () => {
+          try {
+            const sr = await fetch(`/api/upload-status/${data.uploadId}`)
+            const s = await sr.json()
+            if (s.status === 'ok' || s.status === 'error') {
+              clearInterval(poll)
+              setResult(s)
+              setUploading(false)
+              reload()
+            }
+          } catch {}
+        }, 3000)
+      } else {
+        setResult(data)
+        setUploading(false)
+        reload()
+      }
     } catch (e) {
       setError(e.message)
-    } finally {
       setUploading(false)
     }
   }, [reload])
@@ -90,7 +109,16 @@ export default function Cargas({ T }) {
         {uploading ? (
           <div>
             <div style={{ fontSize: 24, marginBottom: 8 }}>⟳</div>
-            <div style={{ color: 'var(--acc)', fontSize: 13 }}>Procesando planilla...</div>
+            <div style={{ color: 'var(--acc)', fontSize: 13 }}>
+              {result?.status === 'procesando'
+                ? `Insertando datos... ${result?.encabezados || 0} comprobantes · ${result?.detalles || 0} líneas`
+                : 'Leyendo planilla...'}
+            </div>
+            {result?.status === 'procesando' && (
+              <div style={{ fontSize: 11, color: 'var(--mut)', marginTop: 6 }}>
+                Las planillas grandes tardan 2-5 min. No cierres la pestaña.
+              </div>
+            )}
           </div>
         ) : (
           <div>

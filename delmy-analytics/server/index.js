@@ -170,54 +170,40 @@ if (process.env.NODE_ENV === 'production') {
   app.use(express.static(path.join(__dirname, '../dist')))
 }
 
-// ─── Upload ───────────────────────────────────────────────────────────────────
-app.post('/api/upload', upload.single('file'), async (req, res) => {
+// ─── Background processor ─────────────────────────────────────────────────────
+async function processUpload(uploadId, encabezados, detalles) {
   const client = await pool.connect()
   try {
-    if (!req.file) return res.status(400).json({ error: 'No se recibió archivo' })
-
-    const { encabezados, detalles } = parsePlanillaVentas(req.file.buffer)
-    if (encabezados.length === 0) return res.status(400).json({ error: 'No se encontraron encabezados' })
-
-    const fechas = encabezados.map(e => e.fecha).filter(Boolean).sort()
-    const sucursales = [...new Set(encabezados.map(e => e.sucursal).filter(Boolean))]
-    const fechaDesde = fechas[0] || null
-    const fechaHasta = fechas[fechas.length - 1] || null
-
-    const logRes = await client.query(
-      `INSERT INTO uploads_log (filename, fecha_desde, fecha_hasta, sucursales, n_encabezados, n_detalles, status) VALUES ($1,$2,$3,$4,$5,$6,'procesando') RETURNING id`,
-      [req.file.originalname, fechaDesde, fechaHasta, sucursales.join(', '), encabezados.length, detalles.length]
-    )
-    const uploadId = logRes.rows[0].id
-
     await client.query('BEGIN')
-
     let insertados = 0, actualizados = 0
 
-    // Upsert comprobantes in batches
-    for (const enc of encabezados) {
-      const r = await client.query(
-        `INSERT INTO comprobantes (nro_comprobante,id_transaccion,id_operacion,id_sucursal,sucursal,fecha,fecha_carga,tipo_comprob,tipo_cliente,razon_social,cond_iva,cond_venta,lista_precios,subtotal,neto_gravado,iva_105,iva_21,total,moneda,usuario,upload_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
-         ON CONFLICT (nro_comprobante) DO UPDATE SET subtotal=EXCLUDED.subtotal,neto_gravado=EXCLUDED.neto_gravado,iva_105=EXCLUDED.iva_105,iva_21=EXCLUDED.iva_21,total=EXCLUDED.total,upload_id=EXCLUDED.upload_id
-         RETURNING (xmax = 0) AS inserted`,
-        [enc.nro_comprobante,enc.id_transaccion,enc.id_operacion,enc.id_sucursal,enc.sucursal,enc.fecha,enc.fecha_carga,enc.tipo_comprob,enc.tipo_cliente,enc.razon_social,enc.cond_iva,enc.cond_venta,enc.lista_precios,enc.subtotal,enc.neto_gravado,enc.iva_105,enc.iva_21,enc.total,enc.moneda,enc.usuario,uploadId]
-      )
-      if (r.rows[0].inserted) insertados++; else actualizados++
+    // Upsert comprobantes in chunks of 100
+    const compChunk = 100
+    for (let i = 0; i < encabezados.length; i += compChunk) {
+      const chunk = encabezados.slice(i, i + compChunk)
+      for (const enc of chunk) {
+        const r = await client.query(
+          `INSERT INTO comprobantes (nro_comprobante,id_transaccion,id_operacion,id_sucursal,sucursal,fecha,fecha_carga,tipo_comprob,tipo_cliente,razon_social,cond_iva,cond_venta,lista_precios,subtotal,neto_gravado,iva_105,iva_21,total,moneda,usuario,upload_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+           ON CONFLICT (nro_comprobante) DO UPDATE SET subtotal=EXCLUDED.subtotal,neto_gravado=EXCLUDED.neto_gravado,iva_105=EXCLUDED.iva_105,iva_21=EXCLUDED.iva_21,total=EXCLUDED.total,upload_id=EXCLUDED.upload_id
+           RETURNING (xmax = 0) AS inserted`,
+          [enc.nro_comprobante,enc.id_transaccion,enc.id_operacion,enc.id_sucursal,enc.sucursal,enc.fecha,enc.fecha_carga,enc.tipo_comprob,enc.tipo_cliente,enc.razon_social,enc.cond_iva,enc.cond_venta,enc.lista_precios,enc.subtotal,enc.neto_gravado,enc.iva_105,enc.iva_21,enc.total,enc.moneda,enc.usuario,uploadId]
+        )
+        if (r.rows[0].inserted) insertados++; else actualizados++
+      }
     }
 
-    // Delete+reinsert detalles by comprobante
+    // Delete+reinsert detalles
     const compNros = [...new Set(detalles.map(d => d.nro_comprobante))]
     if (compNros.length > 0) {
       await client.query(`DELETE FROM ventas_lineas WHERE nro_comprobante = ANY($1)`, [compNros])
     }
 
-    // Batch insert detalles (chunks of 500)
-    const chunkSize = 500
+    // Batch insert detalles in chunks of 200
+    const chunkSize = 200
     for (let i = 0; i < detalles.length; i += chunkSize) {
       const chunk = detalles.slice(i, i + chunkSize)
-      const values = []
-      const params = []
+      const values = [], params = []
       let p = 1
       for (const l of chunk) {
         values.push(`($${p},$${p+1},$${p+2},$${p+3},$${p+4},$${p+5},$${p+6},$${p+7},$${p+8},$${p+9},$${p+10},$${p+11},$${p+12},$${p+13},$${p+14},$${p+15},$${p+16})`)
@@ -231,16 +217,54 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     }
 
     await client.query('COMMIT')
-    await client.query(`UPDATE uploads_log SET n_insertados=$1,n_actualizados=$2,status='ok' WHERE id=$3`, [insertados, actualizados, uploadId])
-
-    res.json({ ok: true, uploadId, encabezados: encabezados.length, detalles: detalles.length, insertados, actualizados, fechaDesde, fechaHasta, sucursales })
+    await pool.query(`UPDATE uploads_log SET n_insertados=$1,n_actualizados=$2,status='ok' WHERE id=$3`, [insertados, actualizados, uploadId])
+    console.log(`Upload ${uploadId} done: ${insertados} new, ${actualizados} updated`)
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {})
-    console.error('Upload error:', err)
-    res.status(500).json({ error: err.message })
+    await pool.query(`UPDATE uploads_log SET status='error' WHERE id=$1`, [uploadId])
+    console.error(`Upload ${uploadId} error:`, err.message)
   } finally {
     client.release()
   }
+}
+
+// ─── Upload ───────────────────────────────────────────────────────────────────
+app.post('/api/upload', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No se recibió archivo' })
+
+    const { encabezados, detalles } = parsePlanillaVentas(req.file.buffer)
+    if (encabezados.length === 0) return res.status(400).json({ error: 'No se encontraron encabezados' })
+
+    const fechas = encabezados.map(e => e.fecha).filter(Boolean).sort()
+    const sucursales = [...new Set(encabezados.map(e => e.sucursal).filter(Boolean))]
+    const fechaDesde = fechas[0] || null
+    const fechaHasta = fechas[fechas.length - 1] || null
+
+    const logRes = await pool.query(
+      `INSERT INTO uploads_log (filename, fecha_desde, fecha_hasta, sucursales, n_encabezados, n_detalles, status) VALUES ($1,$2,$3,$4,$5,$6,'procesando') RETURNING id`,
+      [req.file.originalname, fechaDesde, fechaHasta, sucursales.join(', '), encabezados.length, detalles.length]
+    )
+    const uploadId = logRes.rows[0].id
+
+    // Respond immediately, process in background
+    res.json({ ok: true, uploadId, encabezados: encabezados.length, detalles: detalles.length, fechaDesde, fechaHasta, sucursales, procesando: true })
+
+    // Process in background (non-blocking)
+    setImmediate(() => processUpload(uploadId, encabezados, detalles))
+
+  } catch (err) {
+    console.error('Upload error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ─── Upload status polling ────────────────────────────────────────────────────
+app.get('/api/upload-status/:id', async (req, res) => {
+  try {
+    const r = await pool.query('SELECT * FROM uploads_log WHERE id=$1', [req.params.id])
+    res.json(r.rows[0] || { status: 'not_found' })
+  } catch (err) { res.status(500).json({ error: err.message }) }
 })
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
