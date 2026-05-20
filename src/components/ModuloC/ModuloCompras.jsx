@@ -172,11 +172,12 @@ function buscar(descDoc, codDoc, prov, famF, catF, marcaF, q, art) {
   const colorFC = extraerColor(descLow);
 
   const famInferida = (()=>{
-    if(/cuchillo|cuchara|tenedor|plato|vaso|cubierto|descartable/i.test(descLow)) return 'DESCARTABLES';
-    if(/acrilico|pintura|tiza|barniz|esmalte|pincel/i.test(descLow)) return 'REPOSTERIA';
-    if(/globo|guirnalda|cotillon|festejo|fiesta/i.test(descLow)) return 'COTILLON';
-    if(/libro|cuaderno|lapiz|boligrafo|carpeta|papel/i.test(descLow)) return 'LIBRERIA';
-    if(/juguete|muñeca|peluche|juego/i.test(descLow)) return 'JUGUETERIA';
+    if(/cuchillo|cuchara|tenedor|plato|vaso|cubierto|descartable|film|papel\s*film|envas/i.test(descLow)) return 'REPOSTERIA';
+    if(/globo|guirnalda|cotillon|festejo|fiesta|disfraz|antifaz|serpentina|papel\s*picado/i.test(descLow)) return 'COTILLON';
+    if(/libro|cuaderno|lapiz|boligrafo|carpeta|papel\s+bond|resma|block|agenda|goma|tijera|regla/i.test(descLow)) return 'LIBRERIA';
+    if(/juguete|muñeca|peluche|juego|rompecabezas|puzzle|auto\s+a\s+friccion/i.test(descLow)) return 'JUGUETERIA';
+    if(/acrilico|pintura|barniz|esmalte|pasta|molde|colorante|vainilla|azucar|harina|chocolate|dulce|leche|crema|gelatin|mermelad|conserva|almendra|nuez|pasas|coco|miel|canela|esencia/i.test(descLow)) return 'REPOSTERIA';
+    if(/souvenir|recuerdo|portarretrato|marco|figura|adorno|decoracion/i.test(descLow)) return 'SOUVENIR';
     return null;
   })();
 
@@ -192,13 +193,17 @@ function buscar(descDoc, codDoc, prov, famF, catF, marcaF, q, art) {
     const cp = String(a.codp||'').trim();
     let score = 0; let type = 'desc';
 
-    // P1: código exacto
-    if (cod) {
+    // P1: código exacto — SOLO vale si es el mismo proveedor
+    // Si el código coincide pero el proveedor es distinto → coincidencia accidental, ignorar
+    if (cod && esMismo) {
       if (cp === cod)                              { score += 30; type = 'exacto'; }
       else if (cp.includes(cod))                   { score += 22; type = 'parcial_codp'; }
       else if (k.includes(cod))                    { score += 18; type = 'parcial_cod'; }
       else if (cod.length>=4 && cp.endsWith(cod))  { score += 14; type = 'parcial_codp'; }
       else if (cod.length>=4 && cp.startsWith(cod)){ score += 12; type = 'parcial_codp'; }
+    } else if (cod && !esMismo) {
+      // Código coincide en otro proveedor — score mínimo, solo para mostrar como referencia
+      if (cp === cod || k === cod) score += 2;
     }
 
     // P2: query manual
@@ -233,6 +238,13 @@ function buscar(descDoc, codDoc, prov, famF, catF, marcaF, q, art) {
     // P6: mismo proveedor — boost FUERTE, siempre primero
     if (esMismo) score += 20;
     else if (!qLow && score > 0) score = Math.max(1, score - 15); // penalizar otros prov
+
+    // BARRERA DE FAMILIA: si hay familia inferida y el artículo es de otra familia
+    // Y no es el mismo proveedor → score = 0 (no mostrar)
+    // Excepción: si hay query manual o código exacto
+    if (!esMismo && famInferida && (a.fam||'') !== famInferida && !qLow && type !== 'exacto') {
+      score = 0;
+    }
 
     // Fallback: incluir todos del mismo proveedor aunque score=0
     if (!qLow && score === 0 && esMismo) score = 1;
@@ -918,40 +930,150 @@ export default function ModuloCompras(){
 
   const exportarNuevos=()=>{
     const nList=lsGet(SK.nuevos,[]);
-    const parciales=OCdata.lineas.filter(l=>l.aprobado&&(l.matchTipo==='parcial_codp'||l.matchTipo==='parcial_cod'||l.matchTipo==='descripcion'));
-    const otrosProv=OCdata.lineas.filter(l=>l.otroProveedor);
-    const noEntregados=OCdata.lineas.filter(l=>estadoLinea(l)==='NO_ENTREGADO');
-    // Combos nuevos: detectados por descripción (inferido) que NO existen en db.combos
-    const combosNuevos=OCdata.lineas.filter(l=>
+
+    // ── Detectar los 5 tipos desde las líneas de la OC ───────────────────────
+    // 1. CORR_COD_PROV: el artículo existe pero el código proveedor FC difiere del base
+    //    → hay que agregar/corregir el codp en la base de Delmy
+    const corrCodProv = OCdata.lineas.filter(l=>
+      l.reconocido && l.codDocFC && l.codDocFC !== (l.codp||l.cod) &&
+      !l.esCombo
+    );
+
+    // 2. NUEVO_PROV: artículo detectado por descripción/color pero el proveedor FC
+    //    no coincide con el proveedor de la base → agregar nuevo proveedor al artículo
+    const nuevoProv = OCdata.lineas.filter(l=>
+      l.reconocido &&
+      (l.matchTipo==='descripcion'||l.matchTipo==='parcial_cod') &&
+      l.aprobado
+    );
+
+    // 3. Parciales aprobados con código similar → corrección de código
+    const corrCod = OCdata.lineas.filter(l=>
+      l.aprobado &&
+      (l.matchTipo==='parcial_codp'||l.matchTipo==='parcial_sufijo'||l.matchTipo==='parcial_prefijo')
+    );
+
+    // 4. Combos nuevos detectados por descripción (inferidos, no en db.combos)
+    const combosNuevos = OCdata.lineas.filter(l=>
       l.esCombo && l.comboTipo==='inferido' &&
       !db.combos?.[l.codp] && !db.combos?.[l.cod]
     );
-    const rows=[['Tipo','Código Interno','Cód.Prov FC','Cód.Prov Base','Descripción FC','Factor','Cant.Combo','Cant.Base','Precio Combo','Costo Unit.Base','Proveedor','Motivo']];
-    // Solo artículos nuevos reales — los combos se manejan separado abajo
+
+    // Encabezados del Excel — diseñados para importación en Delmy
+    const rows=[['TIPO','Acción','Código Interno','Cód.Prov FC','Cód.Prov Base','Descripción','Familia','Factor','Precio Unitario','Costo Unitario','Proveedor FC','Observación']];
+
+    const prov = OCdata.meta.proveedor||'';
+    const fn2 = v => v ? Number(v).toLocaleString('es-AR',{minimumFractionDigits:2}) : '';
+
+    // ── 1. CORR_COD_PROV ─────────────────────────────────────────────────────
+    corrCodProv.forEach(l=>{
+      if(rows.find(r=>r[2]===l.cod&&r[0]==='CORR_COD_PROV')) return;
+      rows.push(['CORR_COD_PROV',
+        `Cambiar codp de "${l.codp}" a "${l.codDocFC}"`,
+        l.cod, l.codDocFC, l.codp,
+        l.desc, l.fam||'', l.factor||1,
+        fn2(l.precioDoc), fn2(l.costoReal),
+        prov, `Artículo existente — actualizar código proveedor`
+      ]);
+    });
+
+    // ── 2. NUEVO_PROV ────────────────────────────────────────────────────────
+    nuevoProv.forEach(l=>{
+      if(rows.find(r=>r[2]===l.cod&&r[0]==='NUEVO_PROV')) return;
+      rows.push(['NUEVO_PROV',
+        `Agregar proveedor ${prov} con código ${l.codDocFC||l.codp}`,
+        l.cod, l.codDocFC||l.codp, l.codp,
+        l.desc, l.fam||'', 1,
+        fn2(l.precioDoc), fn2(l.costoReal),
+        prov, `Artículo existente — nuevo proveedor`
+      ]);
+    });
+
+    // ── 3. CORR_COD (código similar, aprobado) ───────────────────────────────
+    corrCod.forEach(l=>{
+      if(rows.find(r=>r[2]===l.cod&&r[0]==='CORR_COD')) return;
+      rows.push(['CORR_COD',
+        `Verificar y corregir código: FC="${l.codDocFC}" Base="${l.codp}"`,
+        l.cod, l.codDocFC||l.codp, l.codp,
+        l.desc, l.fam||'', l.factor||1,
+        fn2(l.precioDoc), fn2(l.costoReal),
+        prov, `Match parcial aprobado`
+      ]);
+    });
+
+    // ── 4. NUEVO_ART (artículos completamente nuevos) ────────────────────────
     nList.filter(n=>!n.tipo||n.tipo==='NUEVO_ART').forEach(n=>{
-      rows.push(['NUEVO_ART',n.cod,n.codp,n.codp,n.desc,1,'','',n.costoReal,n.costoReal,n.prov,'Artículo nuevo']);
+      if(rows.find(r=>r[2]===n.cod)) return;
+      rows.push(['NUEVO_ART',
+        `Crear artículo nuevo`,
+        n.cod, n.codp, n.codp,
+        n.desc, n.fam||'', 1,
+        fn2(n.costoReal), fn2(n.costoReal),
+        n.prov||prov, `Artículo no encontrado en base`
+      ]);
     });
-    parciales.forEach(l=>{rows.push(['CORR_COD',l.cod,l.codDocFC||l.codp,l.codp,l.desc,l.factor||1,l.cantFC||'',l.cantReal||'',l.precioDoc||'',l.costoReal,l.prov,`Corregir código: FC=${l.codDocFC||l.codp} → Base=${l.codp}`]);});
-    otrosProv.forEach(l=>{if(!rows.find(r=>r[1]===l.cod))rows.push(['NUEVO_PROV',l.cod,l.codDocFC||l.codp,l.codp,l.desc,l.factor||1,l.cantFC||'',l.cantReal||'',l.precioDoc||'',l.costoReal,OCdata.meta.proveedor,'Nueva línea proveedor']);});
-    noEntregados.forEach(l=>{rows.push(['NO_ENTREGADO',l.cod,l.codDocFC||l.codp,l.codp,l.desc,l.factor||1,l.cantFC||'',l.cantReal||'',l.precioDoc||'',l.costoReal,l.prov,'No entregado — pendiente']);});
-    // Combos de SK.nuevos — solo los tipo COMBO_NUEVO/COMBO_INTERMEDIO, sin duplicar con combosNuevos
+
+    // ── 5. COMBO_NUEVO — desde botones en pantalla ────────────────────────────
     nList.filter(n=>n.tipo==='COMBO_NUEVO'||n.tipo==='COMBO_INTERMEDIO').forEach(n=>{
-      if(!rows.find(r=>r[1]===n.cod)){
-        rows.push([n.tipo,n.cod,n.codp,n.codp,n.desc,n.factor||1,'','',n.costoReal,n.costoReal,n.prov,`Combo ×${n.factor} — crear en base`]);
-      }
+      if(rows.find(r=>r[2]===n.cod)) return;
+      rows.push([n.tipo,
+        `Crear combo ${n.cod} — ×${n.factor}u del artículo base`,
+        n.cod, n.codp||'', n.codp||'',
+        n.desc, n.fam||'', n.factor||1,
+        fn2(n.costoReal*(n.factor||1)), fn2(n.costoReal),
+        n.prov||prov, `Combo a crear en base`
+      ]);
     });
-    // Combos de OC no capturados via botón — solo si no ya están en nList
+
+    // ── 5b. CORR_COD_COMBO — correcciones de código de combo ─────────────────
+    nList.filter(n=>n.tipo==='CORR_COD_COMBO').forEach(n=>{
+      if(rows.find(r=>r[2]===n.cod)) return;
+      rows.push(['CORR_COD_COMBO',
+        `Renombrar combo: "${n.codActual}" → "${n.cod}"`,
+        n.cod, n.codActual||'', n.codp||'',
+        n.desc, n.fam||'', n.factor||1,
+        '', fn2(n.costoReal),
+        n.prov||prov, `Código combo incorrecto — corregir`
+      ]);
+    });
+
+    // ── 5c. COMBO_NUEVO — inferidos automáticamente (no capturados via botón) ─
     combosNuevos.forEach(l=>{
-      const codSug=l.codp?`${l.codp}x${l.factor}`:`${l.cod}x${l.factor}`;
-      if(!rows.find(r=>r[1]===codSug)){
-        const factorReal2=l.factor||1;
-        const precioBase=factorReal2>1?(l.precioDoc||0)/factorReal2:(l.precioDoc||0);
-        rows.push(['COMBO_NUEVO',codSug,l.codDocFC||l.codp,l.codp,l.descFC||l.desc,factorReal2,l.cantFC||'',l.cantFC?(l.cantFC*factorReal2):'',l.precioDoc||'',precioBase,l.prov,`Combo nuevo inferido ×${factorReal2} — crear en base`]);
-      }
+      const f = l.factor||1;
+      const codSug = l.codp ? `${l.codp}x${f}` : `${l.cod}x${f}`;
+      if(rows.find(r=>r[2]===codSug)) return;
+      const precioBase = f>1 ? (l.precioDoc||0)/f : (l.precioDoc||0);
+      rows.push(['COMBO_NUEVO',
+        `Crear combo inferido ×${f}`,
+        codSug, l.codDocFC||l.codp, l.codp,
+        l.descFC||l.desc, l.fam||'', f,
+        fn2(l.precioDoc), fn2(precioBase),
+        prov, `Combo detectado en descripción FC — no existe en base`
+      ]);
     });
-    if(rows.length===1){alert('Sin artículos nuevos para exportar');return;}
-    const wb=XLSX.utils.book_new();const ws=XLSX.utils.aoa_to_sheet(rows);XLSX.utils.book_append_sheet(wb,ws,'Nuevos');
-    XLSX.writeFile(wb,`articulos_nuevos_${new Date().toISOString().slice(0,10)}.xlsx`);
+
+    if(rows.length===1){alert('Sin elementos para exportar al Masivo');return;}
+
+    // Agregar hoja de instrucciones
+    const instrRows=[
+      ['TIPO','DESCRIPCIÓN','ACCIÓN EN DELMY'],
+      ['CORR_COD_PROV','Cambiar código proveedor en artículo existente','Stock+ → Artículos → Editar → Proveedor → cambiar Cód.Prov'],
+      ['NUEVO_PROV','Agregar nuevo proveedor a artículo existente','Stock+ → Artículos → Editar → Proveedores → Agregar'],
+      ['CORR_COD','Verificar y corregir código similar','Stock+ → Artículos → revisar manualmente'],
+      ['NUEVO_ART','Crear artículo nuevo en la base','Stock+ → Artículos → Nuevo'],
+      ['COMBO_NUEVO','Crear nuevo combo','Stock+ → Combos → Nuevo'],
+      ['COMBO_INTERMEDIO','Crear combo intermedio (pack)','Stock+ → Combos → Nuevo'],
+      ['CORR_COD_COMBO','Renombrar combo existente','Stock+ → Combos → Editar → cambiar código'],
+    ];
+
+    const wb=XLSX.utils.book_new();
+    const ws=XLSX.utils.aoa_to_sheet(rows);
+    const wsI=XLSX.utils.aoa_to_sheet(instrRows);
+    // Ancho de columnas
+    ws['!cols']=[{wch:18},{wch:50},{wch:15},{wch:15},{wch:15},{wch:40},{wch:12},{wch:8},{wch:14},{wch:14},{wch:25},{wch:40}];
+    XLSX.utils.book_append_sheet(wb,ws,'Masivo');
+    XLSX.utils.book_append_sheet(wb,wsI,'Instrucciones');
+    XLSX.writeFile(wb,`masivo_${(prov||'SinProv').replace(/\s/g,'_').slice(0,20)}_${new Date().toISOString().slice(0,10)}.xlsx`);
   };
 
   const exportarOC=()=>{
@@ -1847,33 +1969,12 @@ function ModalArt({modal,setModal,linea,db,onAsignar,onNuevo,OCprov}){
               ))}
             </div>
             <div style={{paddingTop:10,borderTop:`1px solid ${C.b1}`,display:'flex',gap:8,alignItems:'center'}}>
-              <button 
-                onClick={() => setModal(m => ({ ...m, tab: 'buscar' }))} 
-                style={{ ...Btn(C.mut), marginLeft: 'auto' }}
-              >
-                ← Volver a buscar
-              </button>
-              
-              <button 
-                onClick={onNuevo} 
-                style={{
-                  background: C.acc,
-                  color: '#0c0e14',
-                  border: 'none',
-                  borderRadius: 4,
-                  padding: '6px 14px',
-                  cursor: 'pointer',
-                  fontWeight: '500'
-                }}
-              >
-                Guardar Artículo
-              </button>
+              <button onClick={()=>setModal(m=>({...m,tab:'buscar'}))} style={{...Btn(C.mut),marginLeft:'auto'}}>← Volver a buscar</button>
+              <button onClick={onNuevo} style={{background:C.acc,color:'#0c0e14',border:'none',borderRadius:4,padding:'6px 14px',fontSize:11,fontFamily:'DM Mono,monospace',fontWeight:600,cursor:'pointer'}}>＋ Agregar a importación</button>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
-
-export default ModuloCompras;

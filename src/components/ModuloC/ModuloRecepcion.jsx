@@ -126,9 +126,12 @@ function buscar(descDoc, codDoc, prov, famF, catF, marcaF, q, art) {
   const descLow = (descDoc||'').toLowerCase();
   const colorFC = extraerColor(descLow);
   const famInferida=(()=>{
-    if(/cuchillo|cuchara|tenedor|plato|vaso|cubierto/i.test(descLow))return 'DESCARTABLES';
-    if(/acrilico|pintura|barniz|esmalte/i.test(descLow))return 'REPOSTERIA';
-    if(/globo|cotillon|festejo/i.test(descLow))return 'COTILLON';
+    if(/cuchillo|cuchara|tenedor|plato|vaso|cubierto|descartable|film|envas/i.test(descLow))return 'REPOSTERIA';
+    if(/globo|guirnalda|cotillon|festejo|fiesta|disfraz|serpentina/i.test(descLow))return 'COTILLON';
+    if(/libro|cuaderno|lapiz|boligrafo|carpeta|papel\s+bond|resma|block/i.test(descLow))return 'LIBRERIA';
+    if(/juguete|muñeca|peluche|juego|rompecabezas/i.test(descLow))return 'JUGUETERIA';
+    if(/acrilico|pintura|barniz|esmalte|pasta|molde|colorante|vainilla|azucar|harina|chocolate|dulce|leche|crema|esencia/i.test(descLow))return 'REPOSTERIA';
+    if(/souvenir|recuerdo|portarretrato|marco|figura|adorno/i.test(descLow))return 'SOUVENIR';
     return null;
   })();
   const results=[];
@@ -159,6 +162,8 @@ function buscar(descDoc, codDoc, prov, famF, catF, marcaF, q, art) {
     if(colorFC){const colorArt=extraerColor(hayDesc);if(colorArt&&colorArt===colorFC)score+=15;}
     if(famInferida&&(a.fam||'')===famInferida)score+=6;
     if(esMismo)score+=20;else if(!qLow&&score>0)score=Math.max(1,score-15);
+    // Barrera de familia: si hay familia inferida, artículo de otra familia y no mismo proveedor → excluir
+    if(!esMismo&&famInferida&&(a.fam||'')!==famInferida&&!qLow&&type!=='exacto'){score=0;}
     if(!qLow&&score===0&&esMismo)score=1;
     if(score>0)results.push({cod:k,a,score,type,esMismo});
   }

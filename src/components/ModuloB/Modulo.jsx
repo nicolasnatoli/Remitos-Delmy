@@ -2,6 +2,7 @@ import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { storage, KEYS, mergeRemitos } from '../../utils/storage';
 import { parseExcelRemitos } from '../../utils/excelParser';
 import { loadCombos, saveCombos } from '../../utils/db';
+import * as XLSX from 'xlsx';
 import Dashboard from './Dashboard';
 import TabPedidos from './TabPedidos';
 import TabPendientes from './TabPendientes';
@@ -17,23 +18,39 @@ const TABS = [
 ];
 
 export default function ModuloB() {
-  const [tab, setTab]         = useState('dashboard');
-  const [remitos, setRemitos] = useState(() => storage.get(KEYS.REMITOS, {}));
-  const [loading, setLoading] = useState(false);
+  const [tab, setTab]           = useState('dashboard');
+  const [remitos, setRemitos]   = useState(() => storage.get(KEYS.REMITOS, {}));
+  const [loading, setLoading]   = useState(false);
+  const [syncing, setSyncing]   = useState(false);
   const [lastLoad, setLastLoad] = useState(null);
   const [loadStats, setLoadStats] = useState(null);
   const [dragOver, setDragOver] = useState(false);
-  const [combos, setCombos] = useState({});
+  const [combos, setCombos]     = useState({});
   const [combosLoaded, setCombosLoaded] = useState(false);
-  const [combosStats, setCombosStats] = useState(null);
+  const [combosStats, setCombosStats]   = useState(null);
   const combosFileRef = useRef();
 
+  // Al montar: sincronizar desde Redis para tener los datos más recientes
   useEffect(() => {
+    setSyncing(true);
+    storage.fetch(KEYS.REMITOS, {}).then(remitosRemoto => {
+      if (remitosRemoto && Object.keys(remitosRemoto).length > 0) {
+        // Mergear con lo que había en localStorage (puede tener cosas más nuevas)
+        const local = storage.get(KEYS.REMITOS, {});
+        const merged = mergeRemitos(remitosRemoto, local);
+        storage.set(KEYS.REMITOS, merged);
+        setRemitos(merged);
+      }
+    }).catch(() => {}).finally(() => setSyncing(false));
+
     loadCombos().then(c => {
       if (c && Object.keys(c).length > 0) {
         setCombos(c);
         setCombosLoaded(true);
-        setCombosStats({ total: Object.keys(c).length, multiComp: Object.values(c).filter(x=>x.componentes?.length>1).length });
+        setCombosStats({
+          total: Object.keys(c).length,
+          multiComp: Object.values(c).filter(x=>x.componentes?.length>1).length
+        });
       }
     });
   }, []);
@@ -43,12 +60,9 @@ export default function ModuloB() {
     try {
       let data = {};
       if (file.name.endsWith('.json')) {
-        // JSON directo
         const text = await file.text();
         data = JSON.parse(text);
       } else if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
-        // Excel exportado de Stock+ — mismo formato que Compras
-        const XLSX = await import('xlsx');
         const buf = await file.arrayBuffer();
         const wb = XLSX.read(buf);
         const ws = wb.Sheets[wb.SheetNames[0]];
@@ -57,16 +71,16 @@ export default function ModuloB() {
         const dataRows = hdrIdx >= 0 ? rows.slice(hdrIdx+1) : rows.slice(2);
         let current = null;
         for (const r of dataRows) {
-          const tipo = String(r[0]||'').trim();
+          const tipo     = String(r[0]||'').trim();
           const codCombo = String(r[1]||'').trim();
-          const descCombo = String(r[2]||'').trim();
-          const codArt = String(r[5]||'').trim();
-          const descArt = String(r[6]||'').trim();
-          const cant = parseFloat(String(r[7]||'0').replace(',','.'))||0;
-          if(tipo==='Combo' && codCombo && codCombo!=='-') {
+          const descCombo= String(r[2]||'').trim();
+          const codArt   = String(r[5]||'').trim();
+          const descArt  = String(r[6]||'').trim();
+          const cant     = parseFloat(String(r[7]||'0').replace(',','.'))||0;
+          if (tipo==='Combo' && codCombo && codCombo!=='-') {
             current = codCombo;
             data[codCombo] = { desc: descCombo, componentes: [] };
-          } else if((tipo==='Artículo'||tipo==='Articulo') && current && codArt && codArt!=='-') {
+          } else if ((tipo==='Artículo'||tipo==='Articulo') && current && codArt && codArt!=='-') {
             data[current].componentes.push({ cod:codArt, desc:descArt, cant:Math.round(cant)||1 });
           }
         }
@@ -79,7 +93,11 @@ export default function ModuloB() {
       await saveCombos(data);
       setCombos(data);
       setCombosLoaded(true);
-      setCombosStats({ total, multiComp: Object.values(data).filter(c=>c.componentes?.length>1).length, archivo: file.name });
+      setCombosStats({
+        total,
+        multiComp: Object.values(data).filter(c=>c.componentes?.length>1).length,
+        archivo: file.name
+      });
       alert(`✓ ${total} combos importados correctamente.`);
     } catch(e) { alert('Error al procesar el archivo: ' + e.message); }
   }, []);
@@ -89,13 +107,26 @@ export default function ModuloB() {
     setLoading(true);
     try {
       const nuevos = await parseExcelRemitos(file);
+      const totalNuevos = Object.keys(nuevos).length;
+      if (totalNuevos === 0) {
+        alert('No se encontraron remitos en el archivo. Verificá el formato.');
+        return;
+      }
+
+      // Leer existentes frescos desde localStorage (ya sincronizado al montar)
       const existentes = storage.get(KEYS.REMITOS, {});
+
+      // Contar correctamente: nuevo = no existía, actualizado = ya existía
+      const added   = Object.keys(nuevos).filter(k => !existentes[k]).length;
+      const updated = Object.keys(nuevos).filter(k =>  existentes[k] &&
+        // Solo contar como actualizado si algo cambió (estado, obs, lineas)
+        JSON.stringify(existentes[k]) !== JSON.stringify({...existentes[k], ...nuevos[k]})
+      ).length;
+
       const merged = mergeRemitos(existentes, nuevos);
       storage.set(KEYS.REMITOS, merged);
-      const added   = Object.keys(nuevos).filter(k => !existentes[k]).length;
-      const updated = Object.keys(nuevos).filter(k =>  existentes[k]).length;
-      setLoadStats({ total: Object.keys(nuevos).length, added, updated, archivo: file.name });
       setRemitos(merged);
+      setLoadStats({ total: totalNuevos, added, updated, archivo: file.name });
       setLastLoad(new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }));
     } catch (err) {
       alert(`Error al procesar el archivo: ${err.message}`);
@@ -106,16 +137,10 @@ export default function ModuloB() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 56px)' }}>
-      {/* Sub-header with tabs + load */}
       <div style={{
-        background: 'var(--panel)',
-        borderBottom: '1px solid var(--border)',
-        padding: '0 20px',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 16,
-        flexWrap: 'wrap',
+        background: 'var(--panel)', borderBottom: '1px solid var(--border)',
+        padding: '0 20px', display: 'flex', alignItems: 'center',
+        justifyContent: 'space-between', gap: 16, flexWrap: 'wrap',
       }}>
         <div style={{ display: 'flex', gap: 0 }}>
           {TABS.map(t => (
@@ -124,22 +149,24 @@ export default function ModuloB() {
               color: tab === t.id ? 'var(--accent)' : 'var(--text-3)',
               borderBottom: tab === t.id ? '2px solid var(--accent)' : '2px solid transparent',
               borderTop: 'none', borderLeft: 'none', borderRight: 'none',
-              padding: '14px 16px',
-              fontSize: 12,
-              letterSpacing: '0.04em',
-              fontFamily: 'var(--font-mono)',
-              transition: 'color var(--transition)',
+              padding: '14px 16px', fontSize: 12, letterSpacing: '0.04em',
+              fontFamily: 'var(--font-mono)', transition: 'color var(--transition)',
             }}>{t.label}</button>
           ))}
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {syncing && <span style={{fontSize:10,color:'var(--text-3)'}}>⟳ sincronizando...</span>}
           {lastLoad && (
             <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
               Última carga: <span style={{ color: 'var(--verde)' }}>{lastLoad}</span>
-              {loadStats && <span style={{ marginLeft: 8 }}>
-                +{loadStats.added} nuevos · {loadStats.updated} act.
-              </span>}
+              {loadStats && (
+                <span style={{ marginLeft: 8 }}>
+                  <span style={{color:'var(--verde)'}}>+{loadStats.added} nuevos</span>
+                  {loadStats.updated > 0 && <span style={{color:'var(--ambar)',marginLeft:4}}>· {loadStats.updated} act.</span>}
+                  <span style={{color:'var(--text-3)',marginLeft:4}}>({loadStats.total} total)</span>
+                </span>
+              )}
             </div>
           )}
           <label
@@ -150,11 +177,8 @@ export default function ModuloB() {
               background: dragOver ? 'rgba(240,192,64,0.2)' : 'rgba(240,192,64,0.08)',
               color: 'var(--accent)',
               border: `1px solid ${dragOver ? 'var(--accent)' : 'rgba(240,192,64,0.2)'}`,
-              borderRadius: 'var(--radius)',
-              padding: '6px 14px',
-              fontSize: 12,
-              cursor: 'pointer',
-              fontFamily: 'var(--font-mono)',
+              borderRadius: 'var(--radius)', padding: '6px 14px', fontSize: 12,
+              cursor: 'pointer', fontFamily: 'var(--font-mono)',
               display: 'flex', alignItems: 'center', gap: 6,
               transition: 'all var(--transition)',
             }}
@@ -175,21 +199,21 @@ export default function ModuloB() {
           }} style={{
             background: 'transparent', color: 'var(--text-3)', fontSize: 11,
             border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '6px 10px',
+            cursor: 'pointer',
           }}>⌦ Limpiar</button>
         </div>
       </div>
 
-      {/* Tab content */}
       <div style={{ flex: 1, overflow: 'auto', padding: 20 }}>
         {Object.keys(remitos).length === 0 ? (
           <EmptyState onLoad={handleFile} />
         ) : (
           <>
-            {tab === 'dashboard'  && <Dashboard  remitos={remitos} />}
-            {tab === 'pedidos'    && <TabPedidos  remitos={remitos} combos={combos} />}
+            {tab === 'dashboard'  && <Dashboard    remitos={remitos} />}
+            {tab === 'pedidos'    && <TabPedidos    remitos={remitos} combos={combos} />}
             {tab === 'pendientes' && <TabPendientes remitos={remitos} combos={combos} />}
             {tab === 'anomalias'  && <TabAnomalias  remitos={remitos} />}
-            {tab === 'combos'     && <TabCombos combos={combos} onLoad={handleCombosFile} loaded={combosLoaded} stats={combosStats} fileRef={combosFileRef} />}
+            {tab === 'combos'     && <TabCombos     combos={combos} onLoad={handleCombosFile} loaded={combosLoaded} stats={combosStats} fileRef={combosFileRef} />}
           </>
         )}
       </div>

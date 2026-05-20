@@ -3,12 +3,14 @@ import ModuloCompras   from './components/ModuloC/ModuloCompras';
 import ModuloRecepcion from './components/ModuloC/ModuloRecepcion';
 import ModuloStock     from './components/ModuloC/ModuloStock';
 import ModuloB         from './components/ModuloB/ModuloB';
+import ModuloInventario from './components/ModuloC/ModuloInventario';
 
 const NAV = [
   { id: 'compras',        icon: '\ud83d\uded2', label: 'Compras',       desc: 'OC y distribuci\u00f3n'    },
   { id: 'recepcion_prov', icon: '\ud83d\udce6', label: 'Recepci\u00f3n',     desc: 'Control de ingresos'  },
   { id: 'stock',          icon: '\ud83d\udccb', label: 'Stock+',        desc: 'Maestro de art\u00edculos'  },
   { id: 'movimientos',    icon: '\ud83d\udd04', label: 'Movimientos',   desc: 'Remitos internos'     },
+  { id: 'inventario',     icon: '\ud83d\udccb', label: 'Inventario',    desc: 'Control de stock'     },
 ];
 
 export default function App() {
@@ -85,6 +87,7 @@ export default function App() {
           {modulo === 'compras'        && <ModuloCompras />}
           {modulo === 'recepcion_prov' && <ModuloRecepcion />}
           {modulo === 'stock'          && <ModuloStock />}
+          {modulo === 'inventario'     && <ModuloInventario />}
           {modulo === 'movimientos'    && <ModuloB />}
         </main>
       </div>
