@@ -239,6 +239,12 @@ function buscar(descDoc, codDoc, prov, famF, catF, marcaF, q, art) {
     if (esMismo) score += 20;
     else if (!qLow && score > 0) score = Math.max(1, score - 15); // penalizar otros prov
 
+    // BARRERA ADICIONAL: código muy corto (≤5 chars) con proveedor distinto
+    // Ej: "432" de Ledevit no puede matchear artículos de otros proveedores
+    if (!esMismo && cod.length <= 5 && type !== 'exacto') {
+      score = 0;
+    }
+
     // BARRERA DE FAMILIA: si hay familia inferida y el artículo es de otra familia
     // Y no es el mismo proveedor → score = 0 (no mostrar)
     // Excepción: si hay query manual o código exacto

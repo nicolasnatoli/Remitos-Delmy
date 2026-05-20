@@ -162,6 +162,8 @@ function buscar(descDoc, codDoc, prov, famF, catF, marcaF, q, art) {
     if(colorFC){const colorArt=extraerColor(hayDesc);if(colorArt&&colorArt===colorFC)score+=15;}
     if(famInferida&&(a.fam||'')===famInferida)score+=6;
     if(esMismo)score+=20;else if(!qLow&&score>0)score=Math.max(1,score-15);
+    // Barrera código corto: ≤5 chars con proveedor distinto → excluir
+    if(!esMismo&&cod.length<=5&&type!=='exacto'){score=0;}
     // Barrera de familia: si hay familia inferida, artículo de otra familia y no mismo proveedor → excluir
     if(!esMismo&&famInferida&&(a.fam||'')!==famInferida&&!qLow&&type!=='exacto'){score=0;}
     if(!qLow&&score===0&&esMismo)score=1;
