@@ -2,7 +2,7 @@
 cargar_planilla.py
 ==================
 Carga planillas de ventas DIRECTAMENTE a PostgreSQL de Railway.
-Sin límite de tamaño, sin timeout HTTP.
+Sin límite de tamaño, sin timeout HTTP (Optimizado para archivos grandes).
 
 Uso:
   python cargar_planilla.py "ruta/al/archivo.xlsx"
@@ -32,12 +32,7 @@ except ImportError:
     sys.exit(1)
 
 # ─── CONFIGURACIÓN ────────────────────────────────────────────────────────────
-# Pegá acá la URL de conexión de Railway (la que empieza con postgresql://)
-# La encontrás en: Railway → Postgres → Variables → DATABASE_URL (versión pública)
-# Usá la URL con hopper.proxy.rlwy.net (NO la interna .railway.internal)
-
 DATABASE_URL = "postgresql://postgres:OKJgfYNlWjgrSzStAAkpVCIFHgNrywBe@hopper.proxy.rlwy.net:19148/railway"
-
 # ─────────────────────────────────────────────────────────────────────────────
 
 def parse_date(v):
@@ -78,7 +73,6 @@ def parse_planilla(filepath):
     for row in ws.iter_rows(values_only=True):
         row_count += 1
         if headers is None:
-            # Find header row (contains 'Referencia')
             if row and 'Referencia' in row:
                 headers = row
                 idx = {str(h): i for i, h in enumerate(headers) if h}
@@ -174,11 +168,11 @@ def cargar_en_db(filepath, encabezados, detalles):
     print(f"Período: {fecha_desde} → {fecha_hasta}")
     print(f"Sucursales: {', '.join(sucursales)}")
 
-    # Upsert comprobantes in chunks
+    # Upsert comprobantes en tandas optimizadas
     print(f"\nInsertando {len(encabezados)} comprobantes...")
     insertados = 0
     actualizados = 0
-    chunk = 500
+    chunk = 200  # Reducido para evitar timeouts
 
     for i in range(0, len(encabezados), chunk):
         batch = [e + (upload_id,) for e in encabezados[i:i+chunk]]
@@ -200,18 +194,20 @@ def cargar_en_db(filepath, encabezados, detalles):
             else:
                 actualizados += 1
         conn.commit()
-        print(f"  Comprobantes: {min(i+chunk, len(encabezados))}/{len(encabezados)}")
+        if (i // chunk) % 5 == 0 or i + chunk >= len(encabezados):
+            print(f"  Comprobantes: {min(i+chunk, len(encabezados))}/{len(encabezados)}")
 
-    # Delete existing detalles and reinsert
-    print(f"\nInsertando {len(detalles)} líneas de detalle...")
+    # Delete existing detalles en bloques CHICOS
+    print(f"\nLimpiando líneas anteriores...")
     nros = list(set(d[0] for d in detalles))
-
-    for i in range(0, len(nros), 1000):
-        batch_nros = nros[i:i+1000]
+    delete_chunk = 200  # Bajado drásticamente para evitar colapsar la BD
+    for i in range(0, len(nros), delete_chunk):
+        batch_nros = nros[i:i+delete_chunk]
         cur.execute("DELETE FROM ventas_lineas WHERE nro_comprobante = ANY(%s)", (batch_nros,))
+        conn.commit()
 
-    conn.commit()
-
+    # Insert detalles optimizados
+    print(f"\nInsertando {len(detalles)} líneas de detalle...")
     for i in range(0, len(detalles), chunk):
         batch = [d + (upload_id,) for d in detalles[i:i+chunk]]
         execute_values(cur, """
@@ -222,7 +218,7 @@ def cargar_en_db(filepath, encabezados, detalles):
             VALUES %s
         """, batch)
         conn.commit()
-        if (i // chunk) % 10 == 0:
+        if (i // chunk) % 10 == 0 or i + chunk >= len(detalles):
             print(f"  Detalles: {min(i+chunk, len(detalles))}/{len(detalles)}")
 
     # Update log
