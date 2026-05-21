@@ -11,16 +11,6 @@ const C = {
   teal:'#2dd4bf', ora:'#fb923c', vio:'#c084fc', mut:'#6b7280', txt:'#e8eaf0',
 };
 
-// Extrae valores únicos de un campo
-function unicos(art, campo) {
-  const set = new Set();
-  for (const a of Object.values(art||{})) {
-    const v = a?.[campo];
-    if (v && typeof v === 'string' && v.trim()) set.add(v.trim());
-  }
-  return [...set].sort();
-}
-
 // Aplica un filtro a una lista de [cod, art]
 function aplicarFiltro(lista, filtro) {
   const { tipo, valor } = filtro;

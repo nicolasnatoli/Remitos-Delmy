@@ -1370,12 +1370,6 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
               const estCfg=ESTADO_CONFIG[est]||ESTADO_CONFIG.SIN_RECONOCER;
               const rowBg=estCfg.bg;
               const codpBase=l.reconocido&&db.art[l.cod]?(db.art[l.cod].codp||l.codp||'—'):l.codp||'—';
-              // Determinar tipo de situación para mostrar al usuario
-              const tipoSit = !l.reconocido ? 'no_detectado'
-                : l.esCombo && esComboNuevo ? 'combo_nuevo'
-                : l.esCombo && !esComboNuevo ? 'combo_existe'
-                : esParcial ? 'match_parcial'
-                : 'exacto';
               let accion=null;
               if(l.esSobrante&&!l.reconocido){
                 accion=<button onClick={()=>abrirModal(i)} style={{...Btn(C.acc,'rgba(240,192,64,.12)'),fontSize:9,padding:'2px 7px'}}>Resolver →</button>;
@@ -1470,6 +1464,12 @@ function EtValidacion({OCdata,setOCdata,db,dbReady,fileRef,procesarDoc,procesand
               // esComboNuevo: no existe en db.combos ni en db.art
               const comboEnArt = !!(db.art?.[codComboSugerido]);
               const esComboNuevo = l.esCombo && !comboData && !comboEnArt;
+              // Determinar tipo de situación para mostrar al usuario
+              const tipoSit = !l.reconocido ? 'no_detectado'
+                : l.esCombo && esComboNuevo ? 'combo_nuevo'
+                : l.esCombo && !esComboNuevo ? 'combo_existe'
+                : esParcial ? 'match_parcial'
+                : 'exacto';
               // Verificar existencia de cada nivel de combo
               // Excluir el combo principal (factorReal) — ya aparece en R2
               // Solo mostrar niveles intermedios (ej: x10 pack cuando el combo principal es x120 caja)

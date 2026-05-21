@@ -9,7 +9,6 @@ const C = {
   teal:'#2dd4bf', ora:'#fb923c', vio:'#c084fc', mut:'#6b7280', txt:'#e8eaf0',
 };
 
-const fp = v => v?'$'+Number(v).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2}):'—';
 const fn = v => Number(v||0).toLocaleString('es-AR');
 
 const SUCURSALES = ['SCN-Central','S01-Solano','S03-Quilmes','SRC-Depósito'];
@@ -178,7 +177,7 @@ export default function ModuloInventario({ db: dbProp }) {
 
       {/* Tabs */}
       <div style={{display:'flex',gap:0,borderBottom:`1px solid ${C.b1}`}}>
-        {[['interactivo','◈ Interactivo'],['impreso','▤ Planilla impresa'],['resultados','⚡ Resultados']].map(([id,label])=>(
+        {[['interactivo','◈ Interactivo'],['impreso','▤ Planilla impresa'],['resultados','⚡ Resultados'],['temporadas','◎ Temporadas']].map(([id,label])=>(
           <button key={id} onClick={()=>setTab(id)}
             style={{padding:'10px 18px',background:'transparent',border:'none',borderBottom:`2px solid ${tab===id?C.acc:'transparent'}`,color:tab===id?C.acc:C.mut,fontSize:11,fontFamily:'DM Mono,monospace',cursor:'pointer',letterSpacing:'.04em'}}>
             {label}
@@ -363,6 +362,9 @@ export default function ModuloInventario({ db: dbProp }) {
           </div>
         </div>
       )}
+
+      {/* TAB: TEMPORADAS */}
+      {tab==='temporadas'&&<TabTemporadas db={db} sucursal={sucursal}/>}
 
       {/* TAB: RESULTADOS */}
       {tab==='resultados'&&(
