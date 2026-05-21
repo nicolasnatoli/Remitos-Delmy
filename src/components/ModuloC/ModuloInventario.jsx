@@ -364,7 +364,9 @@ export default function ModuloInventario({ db: dbProp }) {
       )}
 
       {/* TAB: TEMPORADAS */}
-      {tab==='temporadas'&&<TabTemporadas db={db} sucursal={sucursal}/>}
+      {tab==='temporadas'&&<div style={{padding:40,textAlign:'center',color:'#6b7280',fontSize:12}}>
+        ◎ Módulo Temporadas — próximamente
+      </div>}
 
       {/* TAB: RESULTADOS */}
       {tab==='resultados'&&(
