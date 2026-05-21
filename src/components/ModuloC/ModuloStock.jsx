@@ -26,23 +26,16 @@ function CobBadge({ semanas }) {
 }
 
 function FichaArticulo({ cod, art, combos, db }) {
-  if (!cod || !art) return (
-    <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:300,color:C.mut,gap:8}}>
-      <span style={{fontSize:28,opacity:.3}}>◎</span>
-      <span style={{fontSize:11}}>Seleccioná un artículo</span>
-    </div>
-  );
-
-  const stk = db?.stk?.[cod]||{};
-  const vs = db?.vs?.[cod]||0;
-  const vq = db?.vq?.[cod]||0;
-  const vm = db?.vm?.[cod]||0;
+  const stk = (cod && db?.stk?.[cod])||{};
+  const vs = cod ? (db?.vs?.[cod]||0) : 0;
+  const vq = cod ? (db?.vq?.[cod]||0) : 0;
+  const vm = cod ? (db?.vm?.[cod]||0) : 0;
   const totStk = (stk.DMCN||0)+(stk.DM01||0)+(stk.DM03||0);
   const cob = cobertura(totStk, vm);
 
   // Combos donde aparece este artículo como componente
   const combosDeEste = useMemo(() => {
-    if (!combos) return [];
+    if (!combos || !cod) return [];
     return Object.entries(combos).filter(([,c])=>
       c?.componentes?.some(comp=>comp.cod===cod)
     ).map(([codCombo, c])=>{
@@ -53,12 +46,19 @@ function FichaArticulo({ cod, art, combos, db }) {
 
   // Artículos del mismo grupo (misma familia + descripción similar)
   const similares = useMemo(() => {
-    if (!db?.art) return [];
+    if (!db?.art || !art) return [];
     const words = (art.desc||'').toLowerCase().split(/\s+/).filter(w=>w.length>4).slice(0,3);
     return Object.entries(db.art)
       .filter(([k,a])=>k!==cod && a.fam===art.fam && words.some(w=>(a.desc||'').toLowerCase().includes(w)) && a.prov!==art.prov)
       .slice(0,5);
   }, [db?.art, cod, art]);
+
+  if (!cod || !art) return (
+    <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:300,color:C.mut,gap:8}}>
+      <span style={{fontSize:28,opacity:.3}}>◎</span>
+      <span style={{fontSize:11}}>Seleccioná un artículo</span>
+    </div>
+  );
 
   const pctMargen = art.costoReal && art.pvMin
     ? Math.round(((art.pvMin - art.costoReal) / art.costoReal) * 100)
