@@ -175,7 +175,7 @@ function FichaArticulo({ cod, art, combos, db }) {
 export default function ModuloStock({ db: dbProp }) {
   const [dbLocal, setDbLocal] = React.useState({art:{},stk:{},vs:{},vq:{},vm:{},combos:{}});
   React.useEffect(()=>{
-    import('./db').then(({default:_,loadDB})=>{
+    import('../../utils/db').then(({default:_,loadDB})=>{
       if(typeof loadDB==='function') loadDB().then(d=>{ if(d) setDbLocal(d); });
     }).catch(()=>{
       try{
