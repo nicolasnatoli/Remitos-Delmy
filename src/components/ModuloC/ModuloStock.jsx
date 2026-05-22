@@ -15,14 +15,28 @@ const fp = v => v ? '$'+Number(v).toLocaleString('es-AR',{minimumFractionDigits:
 
 // ─── Compactar/expandir ───────────────────────────────────────────────────────
 const compactArt  = e => { const o={}; for(const[k,a]of Object.entries(e)) o[k]=`${a.prov}|${a.codp}|${a.desc}|${a.fam}|${a.cat||''}|${a.marca||''}|${a.costoReal||0}|${a.pvMin||0}|${a.mostrador||0}`; return o; };
-const expandArt   = c => { const o={}; for(const[k,s]of Object.entries(c||{})){const p=s.split('|');o[k]={prov:p[0]||'',codp:p[1]||'',desc:p[2]||'',fam:p[3]||'',cat:p[4]||'',marca:p[5]||'',costoReal:+p[6]||0,pvMin:+p[7]||0,mostrador:+p[8]||0};} return o; };
+const expandArt   = c => {
+  const o={};
+  for(const[k,s]of Object.entries(c||{})){
+    // Puede venir compacto como string desde localStorage/Redis, o ya expandido desde loadArt()
+    if(typeof s === 'string'){
+      const p=s.split('|');
+      o[k]={prov:p[0]||'',codp:p[1]||'',desc:p[2]||'',fam:p[3]||'',cat:p[4]||'',marca:p[5]||'',costoReal:+p[6]||0,pvMin:+p[7]||0,mostrador:+p[8]||0};
+    } else if(s && typeof s === 'object'){
+      o[k]={
+        prov:s.prov||'', codp:s.codp||'', desc:s.desc||'', fam:s.fam||'', cat:s.cat||'', marca:s.marca||'',
+        costoReal:+s.costoReal||0, pvMin:+s.pvMin||0, mostrador:+s.mostrador||0
+      };
+    }
+  }
+  return o;
+};
 const compactStk  = e => { const o={}; for(const[k,s]of Object.entries(e)) o[k]=`${s.DM01||0},${s.DM03||0},${s.DMCN||0}`; return o; };
 const expandStk   = c => { const o={}; for(const[k,s]of Object.entries(c||{})){const p=s.split(',');o[k]={DM01:+p[0]||0,DM03:+p[1]||0,DMCN:+p[2]||0};} return o; };
 const compactVent = o => Object.entries(o).filter(([,v])=>v>0).map(([k,v])=>`${k}:${v}`).join('|');
 const expandVent  = s => { if(!s||typeof s!=='string')return{}; const o={}; s.replace(/^"|"$/g,'').split('|').forEach(p=>{const i=p.lastIndexOf(':');if(i>0)o[p.slice(0,i)]=+p.slice(i+1)||0;}); return o; };
 const compactPlan = e => { const o={}; for(const[k,p]of Object.entries(e)) if(p.ac||p.d1||p.d3||p.dc) o[k]=`${p.ac||0},${p.d1||0},${p.d3||0},${p.dc||0}`; return o; };
 const expandPlan  = c => { const o={}; for(const[k,s]of Object.entries(c||{})){const p=s.split(',');o[k]={ac:+p[0]||0,d1:+p[1]||0,d3:+p[2]||0,dc:+p[3]||0};} return o; };
-const ART_KEY = SK.art || 'dm_art_v3';
 
 // ─── Parsers ──────────────────────────────────────────────────────────────────
 function parseFormatoProveedores(wb){
@@ -315,14 +329,8 @@ export default function ModuloStock(){
 
   useEffect(()=>{
     const meta=getMeta();
-
-    // Primero intenta leer artículos desde Redis/API con loadArt().
-    // Si no hay datos o Redis falla, usa el backup local guardado en localStorage.
-    loadArt().catch(()=>null).then(artCompact=>{
-      const artBackup=lsGet(ART_KEY,null);
-      const baseArt=artCompact&&Object.keys(artCompact).length>0?artCompact:artBackup;
-      const art=baseArt&&Object.keys(baseArt).length>0?expandArt(baseArt):{};
-
+    loadArt().then(artCompact=>{
+      const art=artCompact&&Object.keys(artCompact).length>0?expandArt(artCompact):{};
       const stkC=lsGet(SK.stk,null);const stk=stkC?expandStk(stkC):{};
       const vs=expandVent(lsGetRaw(SK.vs)||'');
       const vq=expandVent(lsGetRaw(SK.vq)||'');
@@ -397,18 +405,13 @@ export default function ModuloStock(){
       const wb=XLSX.read(ab,{type:'array',cellDates:false});
       const meta=getMeta();
       if(tipo==='art'){
-        setSaveStatus('Guardando en Redis/local...');
+        setSaveStatus('Guardando en Redis...');
         const art=parseFormatoProveedores(wb);
         const compact=compactArt(art);
-
-        // Guarda en Redis/API si está disponible.
         const ok=await saveArt(compact);
-
-        // Backup local obligatorio: permite recuperar la base aunque Redis falle
-        // o aunque loadArt() vuelva vacío al reingresar al módulo.
-        lsSet(ART_KEY,compact);
-
-        setSaveStatus(ok?`✓ ${Object.keys(art).length} artículos en Redis/local`:`⚠ Redis falló, ${Object.keys(art).length} artículos guardados local`);
+        // Backup local obligatorio: permite recuperar la base aunque Redis/API falle
+        lsSet(SK.art, compact);
+        setSaveStatus(ok?`✓ ${Object.keys(art).length} artículos en Redis/local`:`⚠ Redis falló, pero ${Object.keys(art).length} artículos quedaron en local`);
         meta.art={f:file.name,n:Object.keys(art).length,t:Date.now()};
         saveMeta(meta);
         setMem(prev=>({...prev,art,meta}));
@@ -444,7 +447,6 @@ export default function ModuloStock(){
   const doReset=useCallback(()=>{
     if(!window.confirm('¿Eliminar todos los datos?'))return;
     Object.values(SK).forEach(k=>{try{localStorage.removeItem(k);}catch{}});
-    try{localStorage.removeItem(ART_KEY);}catch{}
     setMem({art:{},stk:{},vs:{},vq:{},vm:{},vh:{},plan:{},meta:{}});
     setLista({prov:'',items:{},ts:null});setProvPrincipal(null);setProvSel(null);setProvQ('');
   },[]);
