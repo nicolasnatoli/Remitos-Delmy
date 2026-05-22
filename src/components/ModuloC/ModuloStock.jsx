@@ -2,7 +2,7 @@
 import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import FiltroArticulos from './FiltroArticulos';
-import { SK, lsGet, lsSet, lsSetRaw, saveArt, loadArt, saveMedium, loadMedium, getMeta, saveMeta, getListaCompra, saveListaCompra, clearListaCompra } from '../../utils/db';
+import { SK, lsGet, lsSet, lsSetRaw, lsGetRaw, saveArt, loadArt, getMeta, saveMeta, getListaCompra, saveListaCompra, clearListaCompra } from '../../utils/db';
 
 const C = {
   bg:'#0c0e14', p:'#111420', p2:'#161925', b1:'#1e2133', b2:'#242840',
@@ -74,19 +74,6 @@ function parseStk(wb){
     }
   }
   return stk;
-}
-
-function parseVentas(wb){
-  const ws=wb.Sheets[wb.SheetNames[0]];
-  const raw=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
-  let hRow=2;
-  for(let i=0;i<Math.min(raw.length,8);i++){if(raw[i].some(c=>String(c).toLowerCase().includes('digo'))){hRow=i;break;}}
-  const hdrs=raw[hRow].map(h=>String(h||'').toLowerCase().trim());
-  const iCod=Math.max(hdrs.findIndex(h=>h.includes('digo')),1);
-  const iVent=Math.max(hdrs.findIndex(h=>h.includes('venta total')),7);
-  const ventas={};
-  for(let i=hRow+1;i<raw.length;i++){const r=raw[i];const cod=String(r[iCod]||'').trim();if(!cod)continue;ventas[cod]=parseFloat(String(r[iVent]||'0').replace(',','.'))||0;}
-  return ventas;
 }
 
 function getProveedores(art){
@@ -292,6 +279,26 @@ function TabBuscador({mem}){
   );
 }
 
+
+// ─── Analytics ventas ────────────────────────────────────────────────────────
+const ANALYTICS_URL_KEY = 'dm_analytics_api_base';
+
+function getAnalyticsBaseUrl() {
+  return (localStorage.getItem(ANALYTICS_URL_KEY) || '').replace(/\/$/, '');
+}
+
+function splitVentasResumen(resumen) {
+  const vs = {}, vq = {}, vm = {}, vh = {};
+  for (const [cod, x] of Object.entries(resumen || {})) {
+    vs[cod] = Number(x.vs || 0);
+    vq[cod] = Number(x.vq || 0);
+    vm[cod] = Number(x.vm || 0);
+    // vh = promedio semanal histórico, solo de semanas con venta.
+    vh[cod] = Number(x.vh || 0);
+  }
+  return { vs, vq, vm, vh };
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // COMPONENTE PRINCIPAL
 // ════════════════════════════════════════════════════════════════════════════
@@ -313,23 +320,18 @@ export default function ModuloStock(){
 
   useEffect(()=>{
     const meta=getMeta();
-    (async()=>{
-      // loadArt() ya devuelve artículos expandidos desde db.js.
-      // No volver a ejecutar expandArt() porque rompe el objeto al reingresar.
-      const artLoaded=await loadArt();
-      const art=artLoaded&&Object.keys(artLoaded).length>0?artLoaded:{};
-
-      const stk=await loadMedium(SK.stk, expandStk);
-      const vs =await loadMedium(SK.vs,  expandVent);
-      const vq =await loadMedium(SK.vq,  expandVent);
-      const vm =await loadMedium(SK.vm,  expandVent);
-      const vh =await loadMedium(SK.vh,  expandVent);
-
+    loadArt().then(artCompact=>{
+      const art=artCompact&&Object.keys(artCompact).length>0?artCompact:{};
+      const stkC=lsGet(SK.stk,null);const stk=stkC?expandStk(stkC):{};
+      const vs=expandVent(lsGetRaw(SK.vs)||'');
+      const vq=expandVent(lsGetRaw(SK.vq)||'');
+      const vm=expandVent(lsGetRaw(SK.vm)||'');
+      const vh=expandVent(lsGetRaw(SK.vh)||'');
       const sh=lsGet(SK.share,null);
       const planC=sh?.planC||lsGet(SK.plan,null);
       const plan=planC?expandPlan(planC):{};
       setMem({art,stk,vs,vq,vm,vh,plan,meta});
-    })();
+    });
     const lc=getListaCompra();
     if(lc.prov)setProvPrincipal(lc.prov);
   },[]);
@@ -398,31 +400,58 @@ export default function ModuloStock(){
         const art=parseFormatoProveedores(wb);
         const compact=compactArt(art);
         const ok=await saveArt(compact);
-        // Backup local obligatorio, aun si Redis falla.
-        lsSet(SK.art, compact);
-        setSaveStatus(ok?`✓ ${Object.keys(art).length} artículos en Redis/local`:'⚠ Redis falló, guardado local');
+        lsSet(SK.art,compact);
+        setSaveStatus(ok?`✓ ${Object.keys(art).length} artículos en Redis/local`:'⚠ Redis falló: artículos guardados local');
         meta.art={f:file.name,n:Object.keys(art).length,t:Date.now()};
         saveMeta(meta);
         setMem(prev=>({...prev,art,meta}));
       } else if(tipo==='stk'){
         const stk=parseStk(wb);
-        const compact=compactStk(stk);
-        lsSet(SK.stk,compact);
-        saveMedium(SK.stk,compact).catch(()=>{});
+        lsSet(SK.stk,compactStk(stk));
         meta.stk={f:file.name,n:Object.keys(stk).length,t:Date.now()};
         saveMeta(meta);
         setMem(prev=>({...prev,stk,meta}));
       } else {
-        const v=parseVentas(wb);
-        const compact=compactVent(v);
-        lsSetRaw(SK[tipo],compact);
-        saveMedium(SK[tipo],compact).catch(()=>{});
-        meta[tipo]={f:file.name,n:Object.keys(v).length,t:Date.now()};
-        saveMeta(meta);
-        setMem(prev=>({...prev,[tipo]:v,meta}));
+        throw new Error('La carga manual de ventas fue reemplazada por Analytics.');
       }
     }catch(e){console.error('[Stock]',e);setSaveStatus('Error: '+e.message);}
     finally{setLoading(p=>({...p,[tipo]:false}));}
+  },[]);
+
+  const actualizarVentasAnalytics=useCallback(async()=>{
+    setLoading(p=>({...p,analytics:true}));
+    setSaveStatus('Consultando ventas en Analytics...');
+    try{
+      let base=getAnalyticsBaseUrl();
+      if(!base){
+        const ingresada=window.prompt('URL base de Delmy Analytics. Dejá vacío si Analytics está en el mismo dominio.', '');
+        if(ingresada===null){setSaveStatus('Actualización cancelada');return;}
+        base=(ingresada||'').replace(/\/$/, '');
+        localStorage.setItem(ANALYTICS_URL_KEY,base);
+      }
+      const url=`${base}/api/stock/ventas-resumen`;
+      const r=await fetch(url);
+      if(!r.ok)throw new Error(`HTTP ${r.status}`);
+      const resumen=await r.json();
+      const {vs,vq,vm,vh}=splitVentasResumen(resumen);
+      lsSetRaw(SK.vs,compactVent(vs));
+      lsSetRaw(SK.vq,compactVent(vq));
+      lsSetRaw(SK.vm,compactVent(vm));
+      lsSetRaw(SK.vh,compactVent(vh));
+      lsSet(SK.vr||'dm_ventas_resumen_v1',resumen);
+      const meta=getMeta();
+      const n=Object.keys(resumen||{}).length;
+      const stamp={f:'Delmy Analytics',n,t:Date.now()};
+      meta.vs=stamp;meta.vq=stamp;meta.vm=stamp;meta.vh=stamp;meta.analytics={...stamp,url};
+      saveMeta(meta);
+      setMem(prev=>({...prev,vs,vq,vm,vh,meta}));
+      setSaveStatus(`✓ ${n.toLocaleString('es-AR')} artículos actualizados desde Analytics`);
+    }catch(e){
+      console.error('[Stock Analytics]',e);
+      setSaveStatus('Error Analytics: '+e.message);
+    }finally{
+      setLoading(p=>({...p,analytics:false}));
+    }
   },[]);
 
   const updPlan=useCallback((cod,field,val)=>{
@@ -465,12 +494,8 @@ export default function ModuloStock(){
   const nOtroProv=Object.values(lista.items||{}).filter(it=>it.esOtroProveedor).length;
 
   const UZONES=[
-    {id:'art',icon:'📋',label:'ARTÍCULOS + PROVEEDORES',sub:'FormatoProveedores.xlsx → Redis'},
+    {id:'art',icon:'📋',label:'ARTÍCULOS + PROVEEDORES',sub:'FormatoProveedores.xlsx → Redis/local'},
     {id:'stk',icon:'📦',label:'STOCK POR SUCURSAL',sub:'StockDisponible.xlsx'},
-    {id:'vs', icon:'📊',label:'VENTAS SEMANA',sub:'7 días'},
-    {id:'vq', icon:'📊',label:'VENTAS QUINCENA',sub:'15 días'},
-    {id:'vm', icon:'📊',label:'VENTAS MES',sub:'30 días'},
-    {id:'vh', icon:'📈',label:'PROM. HISTÓRICO',sub:'Semanal histórico'},
   ];
 
   const TABS=[
@@ -490,6 +515,7 @@ export default function ModuloStock(){
         );})}
         {saveStatus&&<span style={{fontSize:9,color:saveStatus.startsWith('✓')?C.green:C.acc}}>{saveStatus}</span>}
         <div style={{marginLeft:'auto',display:'flex',gap:6}}>
+          <button onClick={actualizarVentasAnalytics} disabled={!!loading.analytics} style={{cursor:loading.analytics?'default':'pointer',fontFamily:'DM Mono,monospace',fontSize:10,borderRadius:4,padding:'3px 9px',border:'1px solid rgba(96,165,250,.35)',background:'rgba(96,165,250,.10)',color:C.blue}}>↺ Ventas Analytics</button>
           <button onClick={doReset} style={{cursor:'pointer',fontFamily:'DM Mono,monospace',fontSize:10,borderRadius:4,padding:'3px 9px',border:`1px solid ${C.mut}`,background:'transparent',color:C.mut}}>✕ Reset</button>
           <button onClick={exportExcel} style={{cursor:'pointer',fontFamily:'DM Mono,monospace',fontSize:10,borderRadius:4,padding:'3px 9px',border:'1px solid rgba(45,212,191,.3)',background:'rgba(45,212,191,.1)',color:C.teal}}>↓ Excel</button>
         </div>

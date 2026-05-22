@@ -296,13 +296,28 @@ app.get('/api/kpis', async (req, res) => {
     const { where: wn, params: pn } = buildWhere(`tipo_comprob IN ('NC','NCB')`, req.query)
     const { where: wl, params: pl } = buildWhere(`tipo_comprob IN ('FCB','FCA','RE')`, req.query)
 
-    const [t, nc, l] = await Promise.all([
+    const [t, nc, l, av] = await Promise.all([
       pool.query(`SELECT COUNT(*) as n_comp, SUM(total) as facturacion, SUM(neto_gravado) as neto, SUM(iva_21) as iva21, SUM(iva_105) as iva105, AVG(total) as ticket, COUNT(DISTINCT fecha) as dias FROM comprobantes WHERE ${wc}`, pc),
       pool.query(`SELECT COUNT(*) as n_nc, SUM(total) as total_nc FROM comprobantes WHERE ${wn}`, pn),
-      pool.query(`SELECT COUNT(*) as n_lin, SUM(cantidad) as unidades, COUNT(DISTINCT codigo) as arts, SUM(costo*cantidad) as costo, SUM(subtotal_neto) as venta_neta FROM ventas_lineas WHERE ${wl}`, pl)
+      pool.query(`SELECT COUNT(*) as n_lin, SUM(cantidad) as unidades, COUNT(DISTINCT codigo) as arts, SUM(costo*cantidad) as costo, SUM(subtotal_neto) as venta_neta FROM ventas_lineas WHERE ${wl}`, pl),
+      pool.query(`
+        SELECT
+          AVG(arts_por_venta) as articulos_promedio_por_venta,
+          AVG(unidades_por_venta) as unidades_promedio_por_venta,
+          MAX(arts_por_venta) as max_articulos_por_venta
+        FROM (
+          SELECT
+            nro_comprobante,
+            COUNT(DISTINCT codigo) as arts_por_venta,
+            SUM(cantidad) as unidades_por_venta
+          FROM ventas_lineas
+          WHERE ${wl}
+          GROUP BY nro_comprobante
+        ) x
+      `, pl)
     ])
 
-    const tv = t.rows[0], nv = nc.rows[0], lv = l.rows[0]
+    const tv = t.rows[0], nv = nc.rows[0], lv = l.rows[0], avv = av.rows[0] || {}
     const facturacion = (+tv.facturacion || 0) - (+nv.total_nc || 0)
     const venta_neta = +lv.venta_neta || 0
     const costo = +lv.costo || 0
@@ -315,7 +330,10 @@ app.get('/api/kpis', async (req, res) => {
       dias_con_venta: +tv.dias || 0, n_nc: +nv.n_nc || 0, total_nc: +nv.total_nc || 0,
       n_lineas: +lv.n_lin || 0, unidades_vendidas: +lv.unidades || 0,
       articulos_distintos: +lv.arts || 0, costo_total: costo, venta_neta, margen_bruto_pct: margen,
-      lineas_por_comprobante: tv.n_comp > 0 ? Math.round((lv.n_lin / tv.n_comp) * 10) / 10 : 0
+      lineas_por_comprobante: tv.n_comp > 0 ? Math.round((lv.n_lin / tv.n_comp) * 10) / 10 : 0,
+      articulos_promedio_por_venta: +avv.articulos_promedio_por_venta || 0,
+      unidades_promedio_por_venta: +avv.unidades_promedio_por_venta || 0,
+      max_articulos_por_venta: +avv.max_articulos_por_venta || 0
     })
   } catch (err) { res.status(500).json({ error: err.message }) }
 })
@@ -355,6 +373,146 @@ app.get('/api/articulos/ranking', async (req, res) => {
       [...params, parseInt(limit)]
     )
     res.json(r.rows)
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+
+// ─── Stock consumer: ventas resumen por artículo ─────────────────────────────
+// Devuelve resumen de unidades vendidas por código para que Stock+ deje de cargar
+// planillas manuales de ventas. Los promedios históricos se calculan SOLO sobre
+// semanas/meses con venta, útil para artículos estacionales.
+app.get('/api/stock/ventas-resumen', async (req, res) => {
+  try {
+    const { sucursal = 'todas' } = req.query
+    const sucFiltro = sucursal && sucursal !== 'todas' ? 'AND sucursal = $1' : ''
+    const params = sucFiltro ? [sucursal] : []
+
+    const r = await pool.query(`
+      WITH base AS (
+        SELECT
+          codigo,
+          descripcion,
+          fecha::date AS fecha,
+          DATE_TRUNC('week', fecha)::date AS semana,
+          TO_CHAR(fecha, 'YYYY-MM') AS mes,
+          cantidad,
+          subtotal_neto,
+          costo * cantidad AS costo_total,
+          nro_comprobante
+        FROM ventas_lineas
+        WHERE tipo_comprob IN ('FCB','FCA','RE')
+          AND codigo IS NOT NULL
+          ${sucFiltro}
+      ),
+      semanal AS (
+        SELECT
+          codigo,
+          semana,
+          SUM(cantidad) AS unidades_semana,
+          SUM(subtotal_neto) AS facturacion_semana,
+          COUNT(DISTINCT nro_comprobante) AS tickets_semana
+        FROM base
+        GROUP BY codigo, semana
+      ),
+      mensual AS (
+        SELECT
+          codigo,
+          mes,
+          SUM(cantidad) AS unidades_mes,
+          SUM(subtotal_neto) AS facturacion_mes
+        FROM base
+        GROUP BY codigo, mes
+      ),
+      ultimos AS (
+        SELECT
+          codigo,
+          MAX(descripcion) AS descripcion,
+          SUM(CASE WHEN fecha >= CURRENT_DATE - INTERVAL '7 day'  THEN cantidad ELSE 0 END) AS vs,
+          SUM(CASE WHEN fecha >= CURRENT_DATE - INTERVAL '15 day' THEN cantidad ELSE 0 END) AS vq,
+          SUM(CASE WHEN fecha >= CURRENT_DATE - INTERVAL '30 day' THEN cantidad ELSE 0 END) AS vm,
+          SUM(CASE WHEN fecha >= CURRENT_DATE - INTERVAL '90 day' THEN cantidad ELSE 0 END) AS v90,
+          SUM(cantidad) AS unidades_total,
+          SUM(subtotal_neto) AS facturacion_total,
+          SUM(costo_total) AS costo_total,
+          COUNT(DISTINCT nro_comprobante) AS tickets_total,
+          MIN(fecha)::text AS primera_venta,
+          MAX(fecha)::text AS ultima_venta
+        FROM base
+        GROUP BY codigo
+      ),
+      hist_sem AS (
+        SELECT
+          codigo,
+          COUNT(*) AS semanas_con_venta,
+          AVG(unidades_semana) AS prom_semana_con_venta,
+          MAX(unidades_semana) AS max_semana,
+          AVG(facturacion_semana) AS prom_fact_semana_con_venta,
+          MAX(facturacion_semana) AS max_fact_semana
+        FROM semanal
+        WHERE unidades_semana > 0
+        GROUP BY codigo
+      ),
+      hist_mes AS (
+        SELECT
+          codigo,
+          COUNT(*) AS meses_con_venta,
+          AVG(unidades_mes) AS prom_mes_con_venta,
+          MAX(unidades_mes) AS max_mes,
+          AVG(facturacion_mes) AS prom_fact_mes_con_venta,
+          MAX(facturacion_mes) AS max_fact_mes
+        FROM mensual
+        WHERE unidades_mes > 0
+        GROUP BY codigo
+      )
+      SELECT
+        u.codigo,
+        u.descripcion,
+        COALESCE(u.vs,0) AS vs,
+        COALESCE(u.vq,0) AS vq,
+        COALESCE(u.vm,0) AS vm,
+        COALESCE(u.v90,0) AS v90,
+        COALESCE(hs.prom_semana_con_venta,0) AS vh,
+        COALESCE(hs.max_semana,0) AS max_semana,
+        COALESCE(hm.prom_mes_con_venta,0) AS prom_mes_activo,
+        COALESCE(hm.max_mes,0) AS max_mes,
+        COALESCE(hs.semanas_con_venta,0) AS semanas_con_venta,
+        COALESCE(hm.meses_con_venta,0) AS meses_con_venta,
+        COALESCE(u.unidades_total,0) AS unidades_total,
+        COALESCE(u.facturacion_total,0) AS facturacion_total,
+        COALESCE(u.costo_total,0) AS costo_total,
+        COALESCE(u.tickets_total,0) AS tickets_total,
+        u.primera_venta,
+        u.ultima_venta
+      FROM ultimos u
+      LEFT JOIN hist_sem hs ON hs.codigo = u.codigo
+      LEFT JOIN hist_mes hm ON hm.codigo = u.codigo
+      ORDER BY u.codigo
+    `, params)
+
+    const out = {}
+    for (const x of r.rows) {
+      out[x.codigo] = {
+        descripcion: x.descripcion,
+        vs: Number(x.vs || 0),
+        vq: Number(x.vq || 0),
+        vm: Number(x.vm || 0),
+        v90: Number(x.v90 || 0),
+        // vh queda como promedio semanal histórico, pero solo de semanas con venta.
+        vh: Number(x.vh || 0),
+        maxSemana: Number(x.max_semana || 0),
+        promMesActivo: Number(x.prom_mes_activo || 0),
+        maxMes: Number(x.max_mes || 0),
+        semanasConVenta: Number(x.semanas_con_venta || 0),
+        mesesConVenta: Number(x.meses_con_venta || 0),
+        unidadesTotal: Number(x.unidades_total || 0),
+        facturacionTotal: Number(x.facturacion_total || 0),
+        costoTotal: Number(x.costo_total || 0),
+        ticketsTotal: Number(x.tickets_total || 0),
+        primeraVenta: x.primera_venta,
+        ultimaVenta: x.ultima_venta,
+      }
+    }
+    res.json(out)
   } catch (err) { res.status(500).json({ error: err.message }) }
 })
 

@@ -9,6 +9,7 @@ export const SK = {
   vq:     'dm_vq_v3',
   vm:     'dm_vm_v3',
   vh:     'dm_vh_v3',
+  vr:     'dm_ventas_resumen_v1',
   plan:   'dm_plan_v3',
   share:  'dm_share_v3',
   meta:   'dm_meta_v3',
@@ -150,52 +151,31 @@ export function expandirLineasConCombos(lineas, combos, modo = 'expandir') {
     }
 
     // PRIORIDAD 2: factor inferido de la descripción
-    // Importante: detectarFactorCombo() devuelve factorExt/factorInt/factorTotal,
-    // no devuelve `factor`. Se guardan ambos factores porque la FC puede venir
-    // en caja/bulto y el artículo de compra puede estar cargado como bolsa, pack o unidad.
     const inferido = detectarFactorCombo(l.desc);
-    if (inferido && (inferido.factorTotal || inferido.factorExt || 0) > 1) {
-      const factorModuloCompra = inferido.factorExt || inferido.factorTotal || 1;
-      const factorUnidadFinal  = inferido.factorTotal || inferido.factorExt || 1;
-      const nivelesCombo = inferido.nivelesCombo || [];
-      const estadoCombo = nivelesCombo.length > 1 ? 'REVISAR_COMBO' : 'COMBO_INFERIDO';
-
+    if (inferido && inferido.factorTotalTotal > 1) {
       if (modo === 'expandir') {
         // Intentar encontrar el artículo base (quitar sufijo del código)
         const codBase = l.cod.replace(/[/\\-]\d+$/, '').trim() || l.cod;
         expandidas.push({
           ...l,
           cod:       codBase,
-          cant:      l.cant * factorModuloCompra,
+          cant:      l.cant * inferido.factorTotal,
           esCombo:   true,
           comboTipo: 'inferido',   // requiere confirmación del usuario
-          estadoCombo,
           codCombo:  l.cod,
           descCombo: l.desc,
           cantCombo: l.cant,
-          factor:    factorModuloCompra,
-          factorModuloCompra,
-          factorUnidadFinal,
-          nivelesCombo,
+          factor:    inferido.factorTotal,
           factorTipo: inferido.tipo,
-          factorDesc: `${l.cant}×${factorUnidadFinal}=${l.cant*factorUnidadFinal}u`,
-          cantRealModuloCompra: l.cant * factorModuloCompra,
-          cantRealUnidadFinal:  l.cant * factorUnidadFinal,
+          factorDesc: `${l.cant}×${inferido.factorTotal}=${l.cant*inferido.factorTotal}u`,
         });
       } else {
         expandidas.push({
           ...l,
-          esCombo: true,
-          comboTipo: 'inferido',
-          estadoCombo,
-          factor: factorModuloCompra,
-          factorModuloCompra,
-          factorUnidadFinal,
-          nivelesCombo,
+          esCombo: true, comboTipo: 'inferido',
+          factor: inferido.factorTotal,
           factorDesc: inferido.detalle,
-          cantReal: l.cant * factorModuloCompra,
-          cantRealModuloCompra: l.cant * factorModuloCompra,
-          cantRealUnidadFinal:  l.cant * factorUnidadFinal,
+          cantReal: l.cant * inferido.factorTotal,
         });
       }
       continue;
@@ -280,12 +260,11 @@ export async function loadArt() {
 export async function saveMedium(key, value) {
   try {
     await api.set(key, value);
-    if (typeof value === 'string') lsSetRaw(key, value);
-    else lsSet(key, value);
+    lsSet(key, value);
     return true;
   } catch(e) {
     // Fallback solo localStorage
-    return typeof value === 'string' ? lsSetRaw(key, value) : lsSet(key, value);
+    return lsSet(key, value);
   }
 }
 
@@ -294,28 +273,16 @@ export async function loadMedium(key, expandFn) {
   try {
     const local = localStorage.getItem(key);
     if (local) {
-      let obj;
-      try { obj = JSON.parse(local); }
-      catch { obj = local; }
-
-      if (typeof obj === 'string' && obj.length > 0) {
-        return expandFn ? expandFn(obj) : obj;
-      }
-
-      if (obj && typeof obj === 'object' && Object.keys(obj).length > 0) {
-        return expandFn ? expandFn(obj) : obj;
-      }
+      const obj = JSON.parse(local);
+      if (typeof obj === 'string') return expandFn ? expandFn(obj) : obj;
+      if (obj && Object.keys(obj).length > 0) return expandFn ? expandFn(obj) : obj;
     }
   } catch {}
-
   // 2. Redis
   try {
     const { value, exists } = await api.get(key);
     if (exists && value) {
-      try {
-        if (typeof value === 'string') localStorage.setItem(key, value);
-        else localStorage.setItem(key, JSON.stringify(value));
-      } catch {}
+      try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
       return expandFn ? expandFn(value) : value;
     }
   } catch(e) { console.error(`[loadMedium ${key}]`, e.message); }
@@ -332,41 +299,27 @@ export const saveListaCompra = (l) => lsSet(SK.lista, l);
 export const clearListaCompra= ()  => lsDel(SK.lista);
 
 
-// ─── OC Persistencia Redis + localStorage ───────────────────────────────────
-export async function saveOCRecord(id, data) {
+// ─── OC Persistencia completa ────────────────────────────────────────────────
+export async function saveOC(id, data) {
   if (!id) return false;
-  const payload = {
-    meta: data?.meta || {},
-    lineas: Array.isArray(data?.lineas) ? data.lineas : [],
-    ts: data?.ts || Date.now(),
-  };
-
-  try { localStorage.setItem('dm_oc_v3_' + id, JSON.stringify(payload)); } catch(e) { console.error('[saveOCRecord Local]', e.message); }
-
-  try {
-    await api.set('dm_oc_v3_' + id, payload);
-    return true;
-  } catch(e) {
-    console.error('[saveOCRecord Redis]', e.message);
-    return false;
-  }
+  const key = 'dm_oc_v3_' + id;
+  try { localStorage.setItem(key, JSON.stringify(data)); } catch(e) { console.error('[saveOC Local]', e.message); }
+  try { await api.set(key, data); return true; } catch(e) { console.error('[saveOC Redis]', e.message); return false; }
 }
 
-export async function loadOCRecord(id) {
+export async function loadOC(id) {
   if (!id) return null;
-
+  const key = 'dm_oc_v3_' + id;
   try {
-    const { value, exists } = await api.get('dm_oc_v3_' + id);
+    const { value, exists } = await api.get(key);
     if (exists && value) {
-      try { localStorage.setItem('dm_oc_v3_' + id, JSON.stringify(value)); } catch {}
+      try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
       return value;
     }
-  } catch(e) { console.error('[loadOCRecord Redis]', e.message); }
-
+  } catch(e) { console.error('[loadOC Redis]', e.message); }
   try {
-    const local = localStorage.getItem('dm_oc_v3_' + id);
+    const local = localStorage.getItem(key);
     if (local) return JSON.parse(local);
-  } catch(e) { console.error('[loadOCRecord Local]', e.message); }
-
+  } catch(e) { console.error('[loadOC Local]', e.message); }
   return null;
 }
