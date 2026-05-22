@@ -323,3 +323,9 @@ export async function loadOC(id) {
   } catch(e) { console.error('[loadOC Local]', e.message); }
   return null;
 }
+
+// ─── Aliases de compatibilidad para ModuloCompras.jsx ───────────────────────
+// ModuloCompras corregido importa saveOCRecord/loadOCRecord.
+// Mantener estos nombres evita romper builds si internamente usamos saveOC/loadOC.
+export const saveOCRecord = saveOC;
+export const loadOCRecord = loadOC;
