@@ -150,31 +150,52 @@ export function expandirLineasConCombos(lineas, combos, modo = 'expandir') {
     }
 
     // PRIORIDAD 2: factor inferido de la descripción
+    // Importante: detectarFactorCombo() devuelve factorExt/factorInt/factorTotal,
+    // no devuelve `factor`. Se guardan ambos factores porque la FC puede venir
+    // en caja/bulto y el artículo de compra puede estar cargado como bolsa, pack o unidad.
     const inferido = detectarFactorCombo(l.desc);
-    if (inferido && inferido.factor > 1) {
+    if (inferido && (inferido.factorTotal || inferido.factorExt || 0) > 1) {
+      const factorModuloCompra = inferido.factorExt || inferido.factorTotal || 1;
+      const factorUnidadFinal  = inferido.factorTotal || inferido.factorExt || 1;
+      const nivelesCombo = inferido.nivelesCombo || [];
+      const estadoCombo = nivelesCombo.length > 1 ? 'REVISAR_COMBO' : 'COMBO_INFERIDO';
+
       if (modo === 'expandir') {
         // Intentar encontrar el artículo base (quitar sufijo del código)
         const codBase = l.cod.replace(/[/\\-]\d+$/, '').trim() || l.cod;
         expandidas.push({
           ...l,
           cod:       codBase,
-          cant:      l.cant * inferido.factor,
+          cant:      l.cant * factorModuloCompra,
           esCombo:   true,
           comboTipo: 'inferido',   // requiere confirmación del usuario
+          estadoCombo,
           codCombo:  l.cod,
           descCombo: l.desc,
           cantCombo: l.cant,
-          factor:    inferido.factor,
+          factor:    factorModuloCompra,
+          factorModuloCompra,
+          factorUnidadFinal,
+          nivelesCombo,
           factorTipo: inferido.tipo,
-          factorDesc: `${l.cant}×${inferido.factor}=${l.cant*inferido.factor}u`,
+          factorDesc: `${l.cant}×${factorUnidadFinal}=${l.cant*factorUnidadFinal}u`,
+          cantRealModuloCompra: l.cant * factorModuloCompra,
+          cantRealUnidadFinal:  l.cant * factorUnidadFinal,
         });
       } else {
         expandidas.push({
           ...l,
-          esCombo: true, comboTipo: 'inferido',
-          factor: inferido.factor,
+          esCombo: true,
+          comboTipo: 'inferido',
+          estadoCombo,
+          factor: factorModuloCompra,
+          factorModuloCompra,
+          factorUnidadFinal,
+          nivelesCombo,
           factorDesc: inferido.detalle,
-          cantReal: l.cant * inferido.factor,
+          cantReal: l.cant * factorModuloCompra,
+          cantRealModuloCompra: l.cant * factorModuloCompra,
+          cantRealUnidadFinal:  l.cant * factorUnidadFinal,
         });
       }
       continue;
@@ -259,11 +280,12 @@ export async function loadArt() {
 export async function saveMedium(key, value) {
   try {
     await api.set(key, value);
-    lsSet(key, value);
+    if (typeof value === 'string') lsSetRaw(key, value);
+    else lsSet(key, value);
     return true;
   } catch(e) {
     // Fallback solo localStorage
-    return lsSet(key, value);
+    return typeof value === 'string' ? lsSetRaw(key, value) : lsSet(key, value);
   }
 }
 
@@ -272,15 +294,28 @@ export async function loadMedium(key, expandFn) {
   try {
     const local = localStorage.getItem(key);
     if (local) {
-      const obj = JSON.parse(local);
-      if (obj && Object.keys(obj).length > 0) return expandFn ? expandFn(obj) : obj;
+      let obj;
+      try { obj = JSON.parse(local); }
+      catch { obj = local; }
+
+      if (typeof obj === 'string' && obj.length > 0) {
+        return expandFn ? expandFn(obj) : obj;
+      }
+
+      if (obj && typeof obj === 'object' && Object.keys(obj).length > 0) {
+        return expandFn ? expandFn(obj) : obj;
+      }
     }
   } catch {}
+
   // 2. Redis
   try {
     const { value, exists } = await api.get(key);
     if (exists && value) {
-      try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+      try {
+        if (typeof value === 'string') localStorage.setItem(key, value);
+        else localStorage.setItem(key, JSON.stringify(value));
+      } catch {}
       return expandFn ? expandFn(value) : value;
     }
   } catch(e) { console.error(`[loadMedium ${key}]`, e.message); }
@@ -295,3 +330,43 @@ export const saveMeta = (m)   => lsSet(SK.meta, m);
 export const getListaCompra  = ()  => lsGet(SK.lista, { prov:'', items:{}, ts:null });
 export const saveListaCompra = (l) => lsSet(SK.lista, l);
 export const clearListaCompra= ()  => lsDel(SK.lista);
+
+
+// ─── OC Persistencia Redis + localStorage ───────────────────────────────────
+export async function saveOCRecord(id, data) {
+  if (!id) return false;
+  const payload = {
+    meta: data?.meta || {},
+    lineas: Array.isArray(data?.lineas) ? data.lineas : [],
+    ts: data?.ts || Date.now(),
+  };
+
+  try { localStorage.setItem('dm_oc_v3_' + id, JSON.stringify(payload)); } catch(e) { console.error('[saveOCRecord Local]', e.message); }
+
+  try {
+    await api.set('dm_oc_v3_' + id, payload);
+    return true;
+  } catch(e) {
+    console.error('[saveOCRecord Redis]', e.message);
+    return false;
+  }
+}
+
+export async function loadOCRecord(id) {
+  if (!id) return null;
+
+  try {
+    const { value, exists } = await api.get('dm_oc_v3_' + id);
+    if (exists && value) {
+      try { localStorage.setItem('dm_oc_v3_' + id, JSON.stringify(value)); } catch {}
+      return value;
+    }
+  } catch(e) { console.error('[loadOCRecord Redis]', e.message); }
+
+  try {
+    const local = localStorage.getItem('dm_oc_v3_' + id);
+    if (local) return JSON.parse(local);
+  } catch(e) { console.error('[loadOCRecord Local]', e.message); }
+
+  return null;
+}

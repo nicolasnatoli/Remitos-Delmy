@@ -2,7 +2,7 @@
 import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import FiltroArticulos from './FiltroArticulos';
-import { SK, lsGet, lsSet, lsSetRaw, lsGetRaw, saveArt, loadArt, getMeta, saveMeta, getListaCompra, saveListaCompra, clearListaCompra } from '../../utils/db';
+import { SK, lsGet, lsSet, lsSetRaw, lsGetRaw, saveArt, loadArt, saveMedium, loadMedium, getMeta, saveMeta, getListaCompra, saveListaCompra, clearListaCompra } from '../../utils/db';
 
 const C = {
   bg:'#0c0e14', p:'#111420', p2:'#161925', b1:'#1e2133', b2:'#242840',
@@ -15,22 +15,7 @@ const fp = v => v ? '$'+Number(v).toLocaleString('es-AR',{minimumFractionDigits:
 
 // ─── Compactar/expandir ───────────────────────────────────────────────────────
 const compactArt  = e => { const o={}; for(const[k,a]of Object.entries(e)) o[k]=`${a.prov}|${a.codp}|${a.desc}|${a.fam}|${a.cat||''}|${a.marca||''}|${a.costoReal||0}|${a.pvMin||0}|${a.mostrador||0}`; return o; };
-const expandArt   = c => {
-  const o={};
-  for(const[k,s]of Object.entries(c||{})){
-    // Puede venir compacto como string desde localStorage/Redis, o ya expandido desde loadArt()
-    if(typeof s === 'string'){
-      const p=s.split('|');
-      o[k]={prov:p[0]||'',codp:p[1]||'',desc:p[2]||'',fam:p[3]||'',cat:p[4]||'',marca:p[5]||'',costoReal:+p[6]||0,pvMin:+p[7]||0,mostrador:+p[8]||0};
-    } else if(s && typeof s === 'object'){
-      o[k]={
-        prov:s.prov||'', codp:s.codp||'', desc:s.desc||'', fam:s.fam||'', cat:s.cat||'', marca:s.marca||'',
-        costoReal:+s.costoReal||0, pvMin:+s.pvMin||0, mostrador:+s.mostrador||0
-      };
-    }
-  }
-  return o;
-};
+const expandArt   = c => { const o={}; for(const[k,s]of Object.entries(c||{})){const p=s.split('|');o[k]={prov:p[0]||'',codp:p[1]||'',desc:p[2]||'',fam:p[3]||'',cat:p[4]||'',marca:p[5]||'',costoReal:+p[6]||0,pvMin:+p[7]||0,mostrador:+p[8]||0};} return o; };
 const compactStk  = e => { const o={}; for(const[k,s]of Object.entries(e)) o[k]=`${s.DM01||0},${s.DM03||0},${s.DMCN||0}`; return o; };
 const expandStk   = c => { const o={}; for(const[k,s]of Object.entries(c||{})){const p=s.split(',');o[k]={DM01:+p[0]||0,DM03:+p[1]||0,DMCN:+p[2]||0};} return o; };
 const compactVent = o => Object.entries(o).filter(([,v])=>v>0).map(([k,v])=>`${k}:${v}`).join('|');
@@ -329,18 +314,23 @@ export default function ModuloStock(){
 
   useEffect(()=>{
     const meta=getMeta();
-    loadArt().then(artCompact=>{
-      const art=artCompact&&Object.keys(artCompact).length>0?expandArt(artCompact):{};
-      const stkC=lsGet(SK.stk,null);const stk=stkC?expandStk(stkC):{};
-      const vs=expandVent(lsGetRaw(SK.vs)||'');
-      const vq=expandVent(lsGetRaw(SK.vq)||'');
-      const vm=expandVent(lsGetRaw(SK.vm)||'');
-      const vh=expandVent(lsGetRaw(SK.vh)||'');
+    (async()=>{
+      // loadArt() ya devuelve artículos expandidos desde db.js.
+      // No volver a ejecutar expandArt() porque rompe el objeto al reingresar.
+      const artLoaded=await loadArt();
+      const art=artLoaded&&Object.keys(artLoaded).length>0?artLoaded:{};
+
+      const stk=await loadMedium(SK.stk, expandStk);
+      const vs =await loadMedium(SK.vs,  expandVent);
+      const vq =await loadMedium(SK.vq,  expandVent);
+      const vm =await loadMedium(SK.vm,  expandVent);
+      const vh =await loadMedium(SK.vh,  expandVent);
+
       const sh=lsGet(SK.share,null);
       const planC=sh?.planC||lsGet(SK.plan,null);
       const plan=planC?expandPlan(planC):{};
       setMem({art,stk,vs,vq,vm,vh,plan,meta});
-    });
+    })();
     const lc=getListaCompra();
     if(lc.prov)setProvPrincipal(lc.prov);
   },[]);
@@ -409,21 +399,25 @@ export default function ModuloStock(){
         const art=parseFormatoProveedores(wb);
         const compact=compactArt(art);
         const ok=await saveArt(compact);
-        // Backup local obligatorio: permite recuperar la base aunque Redis/API falle
+        // Backup local obligatorio, aun si Redis falla.
         lsSet(SK.art, compact);
-        setSaveStatus(ok?`✓ ${Object.keys(art).length} artículos en Redis/local`:`⚠ Redis falló, pero ${Object.keys(art).length} artículos quedaron en local`);
+        setSaveStatus(ok?`✓ ${Object.keys(art).length} artículos en Redis/local`:'⚠ Redis falló, guardado local');
         meta.art={f:file.name,n:Object.keys(art).length,t:Date.now()};
         saveMeta(meta);
         setMem(prev=>({...prev,art,meta}));
       } else if(tipo==='stk'){
         const stk=parseStk(wb);
-        lsSet(SK.stk,compactStk(stk));
+        const compact=compactStk(stk);
+        lsSet(SK.stk,compact);
+        saveMedium(SK.stk,compact).catch(()=>{});
         meta.stk={f:file.name,n:Object.keys(stk).length,t:Date.now()};
         saveMeta(meta);
         setMem(prev=>({...prev,stk,meta}));
       } else {
         const v=parseVentas(wb);
-        lsSetRaw(SK[tipo],compactVent(v));
+        const compact=compactVent(v);
+        lsSetRaw(SK[tipo],compact);
+        saveMedium(SK[tipo],compact).catch(()=>{});
         meta[tipo]={f:file.name,n:Object.keys(v).length,t:Date.now()};
         saveMeta(meta);
         setMem(prev=>({...prev,[tipo]:v,meta}));
