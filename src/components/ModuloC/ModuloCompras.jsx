@@ -1,7 +1,7 @@
 // ===== MÓDULO COMPRAS V6 =====
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
-import { SK, lsGet, lsSet, lsGetRaw, loadArt, getListaCompra, detectarFactorCombo, saveCombos, saveOCRecord, loadOCRecord } from '../../utils/db';
+import { SK, lsGet, lsSet, lsGetRaw, loadArt, getListaCompra, detectarFactorCombo, saveCombos, registrarEventoOperacion, registrarCambioEstado, TIPOS_EVENTO_OPERACION, MODULOS_OPERACION } from '../../utils/db';
 
 async function apiFetch(path){const r=await fetch(path,{headers:{'Content-Type':'application/json'}});if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}
 
@@ -639,19 +639,25 @@ export default function ModuloCompras(){
 
   const saveOC=useCallback((id,data)=>{
     if(!id)return;
-    const payload={meta:data.meta||{},lineas:Array.isArray(data.lineas)?data.lineas:[],ts:Date.now()};
     setOCS(prev=>{const n=prev.includes(id)?prev:[...prev,id];lsSet(SK.ocs,n);return n;});
-    // Guardado inmediato local + intento Redis. No esperar Redis para no trabar operación.
-    try{localStorage.setItem('dm_oc_v3_'+id,JSON.stringify(payload));}catch{}
-    saveOCRecord(id,payload).catch(()=>{});
-  },[]);
+    const registroOC = {meta:data.meta,lineas:data.lineas,tsGuardado:Date.now()};
+    lsSet('dm_oc_v3_'+id, registroOC);
 
-  // Persistencia automática de la OC activa: evita perder FC/validación al cambiar de pantalla.
-  useEffect(()=>{
-    if(!OCact)return;
-    if(!OCdata || (!OCdata.meta && !OCdata.lineas))return;
-    saveOC(OCact,OCdata);
-  },[OCact,OCdata,saveOC]);
+    // FASE 1: Event Log central — guardado de OC
+    registrarEventoOperacion({
+      modulo: MODULOS_OPERACION.COMPRAS,
+      tipo_evento: TIPOS_EVENTO_OPERACION.GUARDADO,
+      objeto: 'OC',
+      objeto_id: id,
+      estado_nuevo: data.meta?.estado || '',
+      resultado: 'ok',
+      payload: {
+        proveedor: data.meta?.proveedor || '',
+        documento: data.meta?.documento || '',
+        lineas: Array.isArray(data.lineas) ? data.lineas.length : 0,
+      },
+    });
+  },[]);
 
   const transicion=useCallback((id,est,data)=>{
     const ts=now();const h=data.meta.historial||[];
@@ -659,7 +665,19 @@ export default function ModuloCompras(){
     const mins=prev?Math.round((new Date(ts)-new Date(prev.ts))/60000):0;
     const entrada={estado:est,ts,label:nowLabel(),usuario:'Operario',desdePrev:mins};
     const meta={...data.meta,estado:est,historial:[...h,entrada]};
-    const updated={...data,meta};setOCdata(updated);saveOC(id,updated);return updated;
+    const updated={...data,meta};setOCdata(updated);saveOC(id,updated);
+
+    // FASE 1: Event Log central — cambio de estado de OC
+    registrarCambioEstado({
+      modulo: MODULOS_OPERACION.COMPRAS,
+      objeto: 'OC',
+      objeto_id: id,
+      estado_anterior: data.meta?.estado || '',
+      estado_nuevo: est,
+      payload: { desdePrevMin: mins },
+    });
+
+    return updated;
   },[saveOC]);
 
   // ─── Importar desde Stock+ ────────────────────────────────────────────────
@@ -778,6 +796,24 @@ export default function ModuloCompras(){
 
         const updated={...prev,meta,lineas:[...lineasActualizadas,...sobrantes]};
         saveOC(OCact,updated);
+
+        registrarEventoOperacion({
+          modulo: MODULOS_OPERACION.COMPRAS,
+          tipo_evento: TIPOS_EVENTO_OPERACION.DOCUMENTO_CARGADO,
+          objeto: 'OC',
+          objeto_id: OCact,
+          estado_nuevo: updated.meta?.estado || '',
+          resultado: sobrantes.length ? 'observado' : 'ok',
+          criticidad: sobrantes.length ? 'media' : 'normal',
+          payload: {
+            documento: updated.meta?.documento || '',
+            proveedor: updated.meta?.proveedor || '',
+            lineasDocumento: docLineas.length,
+            sobrantes: sobrantes.length,
+            lineasOC: lineasActualizadas.length,
+          },
+        });
+
         return updated;
       });
     } else {
@@ -787,6 +823,21 @@ export default function ModuloCompras(){
       const id=generarOC();
       const data={meta:{proveedor:prov,fecha:new Date().toISOString().slice(0,10),documento:docMeta.nDocumento||'',origen:'Documento',estado:'generada',historial:[{estado:'generada',ts:now(),label:nowLabel(),usuario:'Operario',desdePrev:0}]},lineas};
       setOCdata(data);setOCact(id);saveOC(id,data);
+
+      registrarEventoOperacion({
+        modulo: MODULOS_OPERACION.COMPRAS,
+        tipo_evento: TIPOS_EVENTO_OPERACION.DOCUMENTO_CARGADO,
+        objeto: 'OC',
+        objeto_id: id,
+        estado_nuevo: data.meta?.estado || '',
+        resultado: 'ok',
+        payload: {
+          origen: 'documento_sin_oc_previa',
+          proveedor: prov,
+          documento: docMeta.nDocumento || '',
+          lineasDocumento: docLineas.length,
+        },
+      });
     }
     setEtC('validacion');
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -930,16 +981,24 @@ export default function ModuloCompras(){
     const id=generarOC();
     const data={meta:{proveedor:'',fecha:new Date().toISOString().slice(0,10),documento:'',estado:'generada',historial:[{estado:'generada',ts:now(),label:nowLabel(),usuario:'Operario',desdePrev:0}]},lineas:[]};
     setOCdata(data);setOCS(prev=>{const n=[...prev,id];lsSet(SK.ocs,n);return n;});
-    setOCact(id);saveOC(id,data);setEtC('carga');
+    setOCact(id);lsSet('dm_oc_v3_'+id,data);
+
+    registrarEventoOperacion({
+      modulo: MODULOS_OPERACION.COMPRAS,
+      tipo_evento: TIPOS_EVENTO_OPERACION.CREADO,
+      objeto: 'OC',
+      objeto_id: id,
+      estado_nuevo: 'generada',
+      resultado: 'ok',
+      payload: { origen: 'manual', lineas: 0 },
+    });
+
+    setEtC('carga');
   };
-  const selectOC=async(id)=>{
-    const d=await loadOCRecord(id);
-    if(d){
-      // Primero cargar datos, después activar id para que el autosave no pise la OC con datos viejos.
-      setOCdata({meta:d.meta||{},lineas:Array.isArray(d.lineas)?d.lineas:[]});
-      setOCact(id);
-      setEtC('validacion');
-    }
+  const selectOC=(id)=>{
+    setOCact(id);
+    const d=lsGet('dm_oc_v3_'+id,null);
+    if(d){setOCdata({meta:d.meta||{},lineas:d.lineas||[]});setEtC('validacion');}
   };
   const deleteOC=(id)=>{
     if(!window.confirm('¿Eliminar OC?'))return;

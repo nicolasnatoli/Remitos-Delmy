@@ -9,7 +9,6 @@ export const SK = {
   vq:     'dm_vq_v3',
   vm:     'dm_vm_v3',
   vh:     'dm_vh_v3',
-  vr:     'dm_ventas_resumen_v1',
   plan:   'dm_plan_v3',
   share:  'dm_share_v3',
   meta:   'dm_meta_v3',
@@ -19,6 +18,8 @@ export const SK = {
   nuevos: 'dm_nuevos_art',
   lista:  'dm_lista_compra',
   combos: 'dm_combos_v1',    // tabla de combos y componentes
+  opEvents: 'dm_eventos_operacion_v1', // event log operacional central
+  opAudit:  'dm_auditoria_operacion_v1', // métricas/auditoría agregada
 };
 
 // ─── Combos ───────────────────────────────────────────────────────────────────
@@ -152,30 +153,30 @@ export function expandirLineasConCombos(lineas, combos, modo = 'expandir') {
 
     // PRIORIDAD 2: factor inferido de la descripción
     const inferido = detectarFactorCombo(l.desc);
-    if (inferido && inferido.factorTotalTotal > 1) {
+    if (inferido && inferido.factor > 1) {
       if (modo === 'expandir') {
         // Intentar encontrar el artículo base (quitar sufijo del código)
         const codBase = l.cod.replace(/[/\\-]\d+$/, '').trim() || l.cod;
         expandidas.push({
           ...l,
           cod:       codBase,
-          cant:      l.cant * inferido.factorTotal,
+          cant:      l.cant * inferido.factor,
           esCombo:   true,
           comboTipo: 'inferido',   // requiere confirmación del usuario
           codCombo:  l.cod,
           descCombo: l.desc,
           cantCombo: l.cant,
-          factor:    inferido.factorTotal,
+          factor:    inferido.factor,
           factorTipo: inferido.tipo,
-          factorDesc: `${l.cant}×${inferido.factorTotal}=${l.cant*inferido.factorTotal}u`,
+          factorDesc: `${l.cant}×${inferido.factor}=${l.cant*inferido.factor}u`,
         });
       } else {
         expandidas.push({
           ...l,
           esCombo: true, comboTipo: 'inferido',
-          factor: inferido.factorTotal,
+          factor: inferido.factor,
           factorDesc: inferido.detalle,
-          cantReal: l.cant * inferido.factorTotal,
+          cantReal: l.cant * inferido.factor,
         });
       }
       continue;
@@ -274,7 +275,6 @@ export async function loadMedium(key, expandFn) {
     const local = localStorage.getItem(key);
     if (local) {
       const obj = JSON.parse(local);
-      if (typeof obj === 'string') return expandFn ? expandFn(obj) : obj;
       if (obj && Object.keys(obj).length > 0) return expandFn ? expandFn(obj) : obj;
     }
   } catch {}
@@ -299,33 +299,171 @@ export const saveListaCompra = (l) => lsSet(SK.lista, l);
 export const clearListaCompra= ()  => lsDel(SK.lista);
 
 
-// ─── OC Persistencia completa ────────────────────────────────────────────────
-export async function saveOC(id, data) {
-  if (!id) return false;
-  const key = 'dm_oc_v3_' + id;
-  try { localStorage.setItem(key, JSON.stringify(data)); } catch(e) { console.error('[saveOC Local]', e.message); }
-  try { await api.set(key, data); return true; } catch(e) { console.error('[saveOC Redis]', e.message); return false; }
+// ═══════════════════════════════════════════════════════════════════════════════
+// FASE 1 — Núcleo operacional central
+// Estados universales + Event Log
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export const ESTADOS_OPERACIONALES = {
+  PENDIENTE:  'PENDIENTE',
+  EN_PROCESO: 'EN_PROCESO',
+  VALIDANDO:  'VALIDANDO',
+  OBSERVADO:  'OBSERVADO',
+  CORREGIR:   'CORREGIR',
+  PARCIAL:    'PARCIAL',
+  APROBADO:   'APROBADO',
+  FINALIZADO: 'FINALIZADO',
+  CANCELADO:  'CANCELADO',
+};
+
+export const MODULOS_OPERACION = {
+  COMPRAS:      'compras',
+  RECEPCION:    'recepcion',
+  STOCK:        'stock',
+  MOVIMIENTOS:  'movimientos',
+  INVENTARIO:   'inventario',
+  VENTAS:       'ventas',
+  ANALYTICS:    'analytics',
+  SISTEMA:      'sistema',
+};
+
+export const TIPOS_EVENTO_OPERACION = {
+  CREADO:             'CREADO',
+  GUARDADO:           'GUARDADO',
+  ESTADO_CAMBIADO:    'ESTADO_CAMBIADO',
+  DOCUMENTO_CARGADO:  'DOCUMENTO_CARGADO',
+  ERROR_DETECTADO:    'ERROR_DETECTADO',
+  CORRECCION_CREADA:  'CORRECCION_CREADA',
+  CORRECCION_APLICADA:'CORRECCION_APLICADA',
+  RECEPCION_CREADA:   'RECEPCION_CREADA',
+  MOVIMIENTO_CREADO:  'MOVIMIENTO_CREADO',
+  INVENTARIO_AJUSTADO:'INVENTARIO_AJUSTADO',
+  AUDITORIA:          'AUDITORIA',
+};
+
+export function crearEventoOperacion({
+  modulo = MODULOS_OPERACION.SISTEMA,
+  tipo_evento = TIPOS_EVENTO_OPERACION.GUARDADO,
+  objeto = '',
+  objeto_id = '',
+  estado_anterior = '',
+  estado_nuevo = '',
+  resultado = 'ok',
+  criticidad = 'normal',
+  usuario = 'Operario',
+  duracion_ms = null,
+  payload = {},
+} = {}) {
+  const ts = new Date().toISOString();
+
+  return {
+    id_evento: `EVT-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    fecha_hora: ts,
+    usuario,
+    modulo,
+    tipo_evento,
+    objeto,
+    objeto_id,
+    estado_anterior,
+    estado_nuevo,
+    resultado,
+    criticidad,
+    duracion_ms,
+    payload,
+  };
 }
 
-export async function loadOC(id) {
-  if (!id) return null;
-  const key = 'dm_oc_v3_' + id;
+export async function registrarEventoOperacion(eventoInput = {}) {
+  const evento = crearEventoOperacion(eventoInput);
+
+  let eventos = [];
   try {
-    const { value, exists } = await api.get(key);
-    if (exists && value) {
-      try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
-      return value;
+    eventos = lsGet(SK.opEvents, []);
+    if (!Array.isArray(eventos)) eventos = [];
+  } catch {
+    eventos = [];
+  }
+
+  eventos.push(evento);
+
+  // Mantener una cola local razonable para no saturar localStorage.
+  // Redis conserva la misma estructura como respaldo compartido.
+  if (eventos.length > 3000) eventos = eventos.slice(eventos.length - 3000);
+
+  try { lsSet(SK.opEvents, eventos); } catch {}
+
+  try {
+    await api.set(SK.opEvents, eventos);
+  } catch(e) {
+    console.error('[registrarEventoOperacion Redis]', e.message);
+  }
+
+  return evento;
+}
+
+export async function cargarEventosOperacion({ modulo = '', objeto = '', objeto_id = '', limit = 500 } = {}) {
+  let eventos = [];
+
+  try {
+    const { value, exists } = await api.get(SK.opEvents);
+    if (exists && Array.isArray(value)) {
+      eventos = value;
+      try { lsSet(SK.opEvents, value); } catch {}
     }
-  } catch(e) { console.error('[loadOC Redis]', e.message); }
-  try {
-    const local = localStorage.getItem(key);
-    if (local) return JSON.parse(local);
-  } catch(e) { console.error('[loadOC Local]', e.message); }
-  return null;
+  } catch(e) {
+    console.error('[cargarEventosOperacion Redis]', e.message);
+  }
+
+  if (!eventos.length) {
+    eventos = lsGet(SK.opEvents, []);
+    if (!Array.isArray(eventos)) eventos = [];
+  }
+
+  if (modulo) eventos = eventos.filter(e => e.modulo === modulo);
+  if (objeto) eventos = eventos.filter(e => e.objeto === objeto);
+  if (objeto_id) eventos = eventos.filter(e => e.objeto_id === objeto_id);
+
+  return eventos.slice(-limit).reverse();
 }
 
-// ─── Aliases de compatibilidad para ModuloCompras.jsx ───────────────────────
-// ModuloCompras corregido importa saveOCRecord/loadOCRecord.
-// Mantener estos nombres evita romper builds si internamente usamos saveOC/loadOC.
-export const saveOCRecord = saveOC;
-export const loadOCRecord = loadOC;
+export async function registrarCambioEstado({
+  modulo,
+  objeto,
+  objeto_id,
+  estado_anterior,
+  estado_nuevo,
+  usuario = 'Operario',
+  payload = {},
+}) {
+  return registrarEventoOperacion({
+    modulo,
+    tipo_evento: TIPOS_EVENTO_OPERACION.ESTADO_CAMBIADO,
+    objeto,
+    objeto_id,
+    estado_anterior,
+    estado_nuevo,
+    resultado: 'ok',
+    usuario,
+    payload,
+  });
+}
+
+export function calcularResumenEventos(eventos = []) {
+  const resumen = {
+    total: eventos.length,
+    porModulo: {},
+    porTipo: {},
+    porResultado: {},
+    porCriticidad: {},
+  };
+
+  for (const e of eventos) {
+    resumen.porModulo[e.modulo] = (resumen.porModulo[e.modulo] || 0) + 1;
+    resumen.porTipo[e.tipo_evento] = (resumen.porTipo[e.tipo_evento] || 0) + 1;
+    resumen.porResultado[e.resultado] = (resumen.porResultado[e.resultado] || 0) + 1;
+    resumen.porCriticidad[e.criticidad] = (resumen.porCriticidad[e.criticidad] || 0) + 1;
+  }
+
+  return resumen;
+}
+
