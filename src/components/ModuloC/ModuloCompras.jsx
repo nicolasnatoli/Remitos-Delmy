@@ -1,7 +1,7 @@
 // ===== MÓDULO COMPRAS V6 =====
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
-import { SK, lsGet, lsSet, lsGetRaw, loadArt, getListaCompra, detectarFactorCombo, saveCombos, registrarEventoOperacion, registrarCambioEstado, TIPOS_EVENTO_OPERACION, MODULOS_OPERACION } from '../../utils/db';
+import { SK, lsGet, lsSet, lsGetRaw, loadArt, getListaCompra, detectarFactorCombo, saveCombos, registrarEventoOperacion, registrarCambioEstado, cargarEventosOperacion, saveOCRecord, loadOCRecord, TIPOS_EVENTO_OPERACION, MODULOS_OPERACION } from '../../utils/db';
 
 async function apiFetch(path){const r=await fetch(path,{headers:{'Content-Type':'application/json'}});if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}
 
@@ -570,6 +570,7 @@ export default function ModuloCompras(){
   const [OCdata, setOCdata]= useState({meta:{proveedor:'',fecha:'',documento:'',estado:'generada',historial:[]},lineas:[]});
   const [etC,    setEtC]   = useState('carga');
   const [modal,  setModal] = useState({open:false,idx:0,tab:'buscar',busqQ:'',selFam:'',selCat:'',selMarca:'',clasificacion:null,nuevoForm:{cod:'',desc:'',codp:'',prov:'',fam:'',cat:'',marca:'',costoReal:0,pvMin:0,mostrador:0}});
+  const [eventosOp,setEventosOp]=useState([]);
 
   // codpIdx removed — cruzar() no longer uses index
 
@@ -619,6 +620,12 @@ export default function ModuloCompras(){
     e.target.value='';
   },[setDb, setDbReady]);
 
+  const refreshEventos=useCallback(()=>{
+    cargarEventosOperacion({modulo:MODULOS_OPERACION.COMPRAS,limit:12})
+      .then(setEventosOp)
+      .catch(()=>{});
+  },[]);
+
   // Cargar DB al montar y cuando se necesite
   const reloadDB=useCallback(()=>{
     setDbReady(false);
@@ -637,27 +644,39 @@ export default function ModuloCompras(){
     });
   },[]);
 
-  const saveOC=useCallback((id,data)=>{
-    if(!id)return;
-    setOCS(prev=>{const n=prev.includes(id)?prev:[...prev,id];lsSet(SK.ocs,n);return n;});
-    const registroOC = {meta:data.meta,lineas:data.lineas,tsGuardado:Date.now()};
-    lsSet('dm_oc_v3_'+id, registroOC);
+  useEffect(()=>{refreshEventos();},[refreshEventos]);
 
-    // FASE 1: Event Log central — guardado de OC
+  const saveOC=useCallback((id,data)=>{
+    if(!id||!data)return;
+    const registroOC = {
+      meta: data.meta || {},
+      lineas: Array.isArray(data.lineas) ? data.lineas : [],
+      tsGuardado: Date.now()
+    };
+
+    setOCS(prev=>{
+      const n=prev.includes(id)?prev:[...prev,id];
+      lsSet(SK.ocs,n);
+      return n;
+    });
+
+    lsSet('dm_oc_v3_'+id, registroOC);
+    saveOCRecord(id, registroOC).catch(()=>{});
+
     registrarEventoOperacion({
       modulo: MODULOS_OPERACION.COMPRAS,
       tipo_evento: TIPOS_EVENTO_OPERACION.GUARDADO,
       objeto: 'OC',
       objeto_id: id,
-      estado_nuevo: data.meta?.estado || '',
+      estado_nuevo: registroOC.meta?.estado || '',
       resultado: 'ok',
       payload: {
-        proveedor: data.meta?.proveedor || '',
-        documento: data.meta?.documento || '',
-        lineas: Array.isArray(data.lineas) ? data.lineas.length : 0,
+        proveedor: registroOC.meta?.proveedor || '',
+        documento: registroOC.meta?.documento || '',
+        lineas: registroOC.lineas.length,
       },
-    });
-  },[]);
+    }).then(refreshEventos).catch(()=>{});
+  },[refreshEventos]);
 
   const transicion=useCallback((id,est,data)=>{
     const ts=now();const h=data.meta.historial||[];
@@ -841,7 +860,7 @@ export default function ModuloCompras(){
     }
     setEtC('validacion');
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[OCdata.lineas,OCact,db,saveOC]);
+  },[OCdata.lineas,OCdata.meta,OCact,db,saveOC,refreshEventos]);
 
   const procesarDoc=useCallback(async(file)=>{
     const ext=file.name.toLowerCase().split('.').pop();
@@ -980,8 +999,7 @@ export default function ModuloCompras(){
   const nuevaOC=()=>{
     const id=generarOC();
     const data={meta:{proveedor:'',fecha:new Date().toISOString().slice(0,10),documento:'',estado:'generada',historial:[{estado:'generada',ts:now(),label:nowLabel(),usuario:'Operario',desdePrev:0}]},lineas:[]};
-    setOCdata(data);setOCS(prev=>{const n=[...prev,id];lsSet(SK.ocs,n);return n;});
-    setOCact(id);lsSet('dm_oc_v3_'+id,data);
+    setOCdata(data);setOCact(id);saveOC(id,data);
 
     registrarEventoOperacion({
       modulo: MODULOS_OPERACION.COMPRAS,
@@ -995,11 +1013,26 @@ export default function ModuloCompras(){
 
     setEtC('carga');
   };
-  const selectOC=(id)=>{
+  const selectOC=async(id)=>{
     setOCact(id);
-    const d=lsGet('dm_oc_v3_'+id,null);
-    if(d){setOCdata({meta:d.meta||{},lineas:d.lineas||[]});setEtC('validacion');}
+    const d=(await loadOCRecord(id))||lsGet('dm_oc_v3_'+id,null);
+    if(d){
+      setOCdata({meta:d.meta||{},lineas:Array.isArray(d.lineas)?d.lineas:[]});
+      setEtC((d.lineas&&d.lineas.length)?'validacion':'carga');
+    }
+    refreshEventos();
   };
+  useEffect(()=>{
+    if(!OCact)return;
+    const registroOC={
+      meta:OCdata.meta||{},
+      lineas:Array.isArray(OCdata.lineas)?OCdata.lineas:[],
+      tsGuardado:Date.now()
+    };
+    lsSet('dm_oc_v3_'+OCact,registroOC);
+    saveOCRecord(OCact,registroOC).catch(()=>{});
+  },[OCact,OCdata]);
+
   const deleteOC=(id)=>{
     if(!window.confirm('¿Eliminar OC?'))return;
     setOCS(prev=>{const n=prev.filter(x=>x!==id);lsSet(SK.ocs,n);return n;});
@@ -1220,6 +1253,24 @@ export default function ModuloCompras(){
             </div>
           </div>
         )}
+
+        <div style={{background:C.panel,border:`1px solid ${C.b1}`,borderRadius:5,overflow:'hidden',marginBottom:10}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'6px 12px',borderBottom:`1px solid ${C.b1}`}}>
+            <span style={{fontSize:9,color:C.mut,letterSpacing:'.1em',textTransform:'uppercase'}}>LOG OPERACIONAL</span>
+            <button onClick={refreshEventos} style={Btn(C.mut)}>↺</button>
+          </div>
+          <div style={{maxHeight:92,overflowY:'auto'}}>
+            {eventosOp.length===0&&<div style={{padding:'7px 12px',fontSize:10,color:C.mut}}>Sin eventos registrados todavía</div>}
+            {eventosOp.slice(0,8).map(ev=>(
+              <div key={ev.id_evento} style={{display:'flex',gap:8,alignItems:'center',padding:'5px 12px',borderBottom:`1px solid ${C.b2}`}}>
+                <span style={{fontSize:8,color:C.acc,fontFamily:'DM Mono,monospace',minWidth:72}}>{new Date(ev.fecha_hora).toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'})}</span>
+                <span style={{fontSize:9,color:C.txt,minWidth:95}}>{ev.tipo_evento}</span>
+                <span style={{fontSize:9,color:C.mut,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{ev.objeto} {ev.objeto_id||''}</span>
+                <span style={{fontSize:9,color:ev.resultado==='ok'?C.green:C.red}}>{ev.resultado}</span>
+              </div>
+            ))}
+          </div>
+        </div>
 
         {/* Steps */}
         <Steps etC={etC} setEtC={setEtC} />

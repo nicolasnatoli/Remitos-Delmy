@@ -467,3 +467,64 @@ export function calcularResumenEventos(eventos = []) {
   return resumen;
 }
 
+
+
+// ─── OC Persistencia operacional ──────────────────────────────────────────────
+// Guarda y carga OC completa: meta + líneas + timestamp.
+// LocalStorage responde instantáneo; Redis funciona como respaldo compartido.
+export async function saveOCRecord(id, data) {
+  if (!id) return false;
+
+  const key = 'dm_oc_v3_' + id;
+  const record = {
+    meta: data?.meta || {},
+    lineas: Array.isArray(data?.lineas) ? data.lineas : [],
+    tsGuardado: data?.tsGuardado || Date.now(),
+  };
+
+  try { lsSet(key, record); } catch {}
+
+  try {
+    await api.set(key, record);
+    return true;
+  } catch(e) {
+    console.error('[saveOCRecord Redis]', e.message);
+    return false;
+  }
+}
+
+export async function loadOCRecord(id) {
+  if (!id) return null;
+
+  const key = 'dm_oc_v3_' + id;
+
+  try {
+    const { value, exists } = await api.get(key);
+    if (exists && value) {
+      const record = {
+        meta: value.meta || {},
+        lineas: Array.isArray(value.lineas) ? value.lineas : [],
+        tsGuardado: value.tsGuardado || Date.now(),
+      };
+      try { lsSet(key, record); } catch {}
+      return record;
+    }
+  } catch(e) {
+    console.error('[loadOCRecord Redis]', e.message);
+  }
+
+  try {
+    const local = lsGet(key, null);
+    if (local) {
+      return {
+        meta: local.meta || {},
+        lineas: Array.isArray(local.lineas) ? local.lineas : [],
+        tsGuardado: local.tsGuardado || null,
+      };
+    }
+  } catch(e) {
+    console.error('[loadOCRecord Local]', e.message);
+  }
+
+  return null;
+}
