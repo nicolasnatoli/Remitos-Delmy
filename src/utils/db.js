@@ -498,33 +498,42 @@ export async function loadOCRecord(id) {
 
   const key = 'dm_oc_v3_' + id;
 
-  try {
-    const { value, exists } = await api.get(key);
-    if (exists && value) {
-      const record = {
-        meta: value.meta || {},
-        lineas: Array.isArray(value.lineas) ? value.lineas : [],
-        tsGuardado: value.tsGuardado || Date.now(),
-      };
-      try { lsSet(key, record); } catch {}
-      return record;
-    }
-  } catch(e) {
-    console.error('[loadOCRecord Redis]', e.message);
-  }
-
+  // 1) Primero leer localStorage. Es la fuente más reciente durante la sesión del operador.
+  // Esto evita que un registro viejo/vacío de Redis pise una OC cargada en el navegador.
+  let localRecord = null;
   try {
     const local = lsGet(key, null);
     if (local) {
-      return {
+      localRecord = {
         meta: local.meta || {},
         lineas: Array.isArray(local.lineas) ? local.lineas : [],
         tsGuardado: local.tsGuardado || null,
       };
+      if (localRecord.lineas.length > 0) return localRecord;
     }
   } catch(e) {
     console.error('[loadOCRecord Local]', e.message);
   }
 
-  return null;
+  // 2) Después leer Redis como respaldo compartido.
+  try {
+    const { value, exists } = await api.get(key);
+    if (exists && value) {
+      const redisRecord = {
+        meta: value.meta || {},
+        lineas: Array.isArray(value.lineas) ? value.lineas : [],
+        tsGuardado: value.tsGuardado || Date.now(),
+      };
+
+      // Si Redis tiene más líneas que local, usar Redis. Si no, conservar local.
+      if (!localRecord || redisRecord.lineas.length >= localRecord.lineas.length) {
+        try { lsSet(key, redisRecord); } catch {}
+        return redisRecord;
+      }
+    }
+  } catch(e) {
+    console.error('[loadOCRecord Redis]', e.message);
+  }
+
+  return localRecord;
 }

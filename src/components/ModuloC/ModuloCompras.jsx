@@ -1014,24 +1014,22 @@ export default function ModuloCompras(){
     setEtC('carga');
   };
   const selectOC=async(id)=>{
-    setOCact(id);
+    // IMPORTANTE: cargar primero y recién después activar la OC.
+    // Si se activa OCact antes de cargar los datos, un autosave puede pisar la OC guardada
+    // con el estado vacío actual.
     const d=(await loadOCRecord(id))||lsGet('dm_oc_v3_'+id,null);
     if(d){
-      setOCdata({meta:d.meta||{},lineas:Array.isArray(d.lineas)?d.lineas:[]});
-      setEtC((d.lineas&&d.lineas.length)?'validacion':'carga');
+      const lineas=Array.isArray(d.lineas)?d.lineas:[];
+      setOCdata({meta:d.meta||{},lineas});
+      setOCact(id);
+      setEtC(lineas.length?'validacion':'carga');
+    }else{
+      setOCact(id);
+      setOCdata({meta:{proveedor:'',fecha:'',documento:'',estado:'generada',historial:[]},lineas:[]});
+      setEtC('carga');
     }
     refreshEventos();
   };
-  useEffect(()=>{
-    if(!OCact)return;
-    const registroOC={
-      meta:OCdata.meta||{},
-      lineas:Array.isArray(OCdata.lineas)?OCdata.lineas:[],
-      tsGuardado:Date.now()
-    };
-    lsSet('dm_oc_v3_'+OCact,registroOC);
-    saveOCRecord(OCact,registroOC).catch(()=>{});
-  },[OCact,OCdata]);
 
   const deleteOC=(id)=>{
     if(!window.confirm('¿Eliminar OC?'))return;
