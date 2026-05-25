@@ -576,6 +576,53 @@ app.get('/api/fechas-rango', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }) }
 })
 
+// ─── API: Export ventas agrupadas (para sincronización con Sistema) ───────────
+// Devuelve ventas_lineas agregadas por (fecha, codigo, sucursal) para un rango.
+// Formato compatible con ventas_diarias del Sistema principal.
+app.get('/api/export/ventas-grouped', async (req, res) => {
+  try {
+    const { desde, hasta } = req.query
+    if (!desde || !hasta) return res.status(400).json({ error: '"desde" y "hasta" son requeridos (YYYY-MM-DD)' })
+    const r = await pool.query(`
+      SELECT
+        TO_CHAR(fecha, 'YYYY-MM-DD')   AS fecha,
+        codigo                          AS "artCod",
+        MAX(descripcion)                AS "artDesc",
+        sucursal,
+        ROUND(SUM(cantidad)::numeric, 4)              AS "ventaUnit",
+        0                                             AS "ventaCombo",
+        ROUND(SUM(subtotal_neto)::numeric, 2)         AS "ventaTotal",
+        ROUND(SUM(costo * cantidad)::numeric, 2)      AS "costoTotal"
+      FROM ventas_lineas
+      WHERE tipo_comprob IN ('FCB','FCA','RE')
+        AND fecha >= $1::date AND fecha <= $2::date
+        AND codigo IS NOT NULL AND codigo <> ''
+      GROUP BY fecha, codigo, sucursal
+      ORDER BY fecha, codigo, sucursal
+    `, [desde, hasta])
+    res.json(r.rows)
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+// ─── API: Estado de datos (fechas disponibles) ────────────────────────────────
+app.get('/api/export/status', async (req, res) => {
+  try {
+    const r = await pool.query(`
+      SELECT
+        MIN(fecha::text) AS desde,
+        MAX(fecha::text) AS hasta,
+        COUNT(DISTINCT fecha) AS dias,
+        COUNT(DISTINCT nro_comprobante) AS comprobantes,
+        COUNT(*) AS lineas,
+        COUNT(DISTINCT sucursal) AS sucursales,
+        jsonb_agg(DISTINCT sucursal ORDER BY sucursal) AS lista_sucursales
+      FROM ventas_lineas
+      WHERE tipo_comprob IN ('FCB','FCA','RE')
+    `)
+    res.json(r.rows[0] || {})
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
 if (process.env.NODE_ENV === 'production') {
   app.get('*', (req, res) => res.sendFile(path.join(__dirname, '../dist/index.html')))
 }
