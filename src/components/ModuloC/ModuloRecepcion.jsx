@@ -2,6 +2,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import { SK, lsGet, lsSet, loadArt, detectarFactorCombo } from '../../utils/db';
+import { compararAtributos } from '../../utils/atributos';
 
 const fn  = n => Number(n||0).toLocaleString('es-AR');
 const now = () => new Date().toISOString();
@@ -39,25 +40,43 @@ function provMatch(provDoc, provBase) {
 }
 // ─── Cruce de códigos — reglas estrictas con filtro proveedor ─────────────────
 // Regla 1: codp exacto (filtro proveedor)
-// Regla 2: codDoc contenido TAL CUAL en codp (filtro proveedor)  
+// Regla 2: codDoc contenido TAL CUAL en codp (filtro proveedor)
 // Regla 3: codDoc contenido TAL CUAL en código interno (filtro proveedor)
 // Regla 4: primeras 3 palabras descripción (filtro proveedor)
 // Regla 5: sin match
+//
+// Gate de atributos: en TODOS los niveles parciales (codp/cod/sufijo/prefijo/desc)
+// un candidato con conflicto de color/medida/tema/uso respecto a la descripción
+// del documento se descarta — no se acepta "a ciegas" solo porque el código
+// coincide parcialmente. El nivel 'exacto' (codp = código del documento) no se
+// filtra: si el proveedor mandó exactamente ese código, es autoritativo.
 function cruzar(codDoc, descDoc, prov, art, ocLineas) {
   if (!codDoc || !art || typeof art !== 'object') return {cod:null, nivel:null};
   const cod = String(codDoc).trim();
   if (!cod) return {cod:null, nivel:null};
+
+  // Helper: de una lista de candidatos [{cod,desc}], descarta los que tengan
+  // conflicto de atributos con descDoc y devuelve el primero compatible.
+  // Si descDoc está vacío no hay nada que comparar — no se filtra (comportamiento previo).
+  const primerCompatible = (candidatos) => {
+    if (!descDoc) return candidatos[0] || null;
+    const compatibles = candidatos.filter(c => compararAtributos(descDoc, c.desc || '').compatible);
+    return compatibles[0] || null; // si TODOS conflictúan, no hay match en este nivel
+  };
+
   if (ocLineas && ocLineas.length > 0) {
     for (const l of ocLineas) {
       if (String(l.codp||'').trim() === cod) return {cod:l.cod, nivel:'exacto'};
     }
-    for (const l of ocLineas) {
-      const cp = String(l.codp||'').trim();
-      if (cp && cp.includes(cod)) return {cod:l.cod, nivel:'parcial_codp'};
-    }
-    for (const l of ocLineas) {
-      if (String(l.cod||'').includes(cod)) return {cod:l.cod, nivel:'parcial_cod'};
-    }
+    const candCodpOC = ocLineas.filter(l => { const cp=String(l.codp||'').trim(); return cp && cp.includes(cod); })
+      .map(l => ({cod:l.cod, desc:l.desc}));
+    const mCodpOC = primerCompatible(candCodpOC);
+    if (mCodpOC) return {cod:mCodpOC.cod, nivel:'parcial_codp'};
+
+    const candCodOC = ocLineas.filter(l => String(l.cod||'').includes(cod))
+      .map(l => ({cod:l.cod, desc:l.desc}));
+    const mCodOC = primerCompatible(candCodOC);
+    if (mCodOC) return {cod:mCodOC.cod, nivel:'parcial_cod'};
   }
   if (!prov) return {cod:null, nivel:null};
   const artsProv = Object.entries(art).filter(([,a]) =>
@@ -66,38 +85,45 @@ function cruzar(codDoc, descDoc, prov, art, ocLineas) {
   for (const [k, a] of artsProv) {
     if (String(a.codp||'').trim() === cod) return {cod:k, nivel:'exacto'};
   }
-  for (const [k, a] of artsProv) {
-    const cp = String(a.codp||'').trim();
-    if (cp && cp.includes(cod)) return {cod:k, nivel:'parcial_codp'};
-  }
-  for (const [k] of artsProv) {
-    if (k.includes(cod)) return {cod:k, nivel:'parcial_cod'};
-  }
+  const candCodp = artsProv.filter(([,a]) => { const cp=String(a.codp||'').trim(); return cp && cp.includes(cod); })
+    .map(([k,a]) => ({cod:k, desc:a.desc}));
+  const mCodp = primerCompatible(candCodp);
+  if (mCodp) return {cod:mCodp.cod, nivel:'parcial_codp'};
+
+  const candCod = artsProv.filter(([k]) => k.includes(cod)).map(([k,a]) => ({cod:k, desc:a.desc}));
+  const mCod = primerCompatible(candCod);
+  if (mCod) return {cod:mCod.cod, nivel:'parcial_cod'};
+
   // Nivel 2c: sufijo
   if (cod.length >= 4) {
-    for (const [k, a] of artsProv) {
-      const cp = String(a.codp||'').trim();
-      if (cp.length > cod.length && cp.endsWith(cod)) return {cod:k, nivel:'parcial_sufijo'};
-    }
-    for (const [k] of artsProv) {
-      if (k.length > cod.length && k.endsWith(cod)) return {cod:k, nivel:'parcial_sufijo'};
-    }
+    const candSufCodp = artsProv.filter(([,a]) => { const cp=String(a.codp||'').trim(); return cp.length>cod.length && cp.endsWith(cod); })
+      .map(([k,a]) => ({cod:k, desc:a.desc}));
+    const mSufCodp = primerCompatible(candSufCodp);
+    if (mSufCodp) return {cod:mSufCodp.cod, nivel:'parcial_sufijo'};
+
+    const candSufK = artsProv.filter(([k]) => k.length>cod.length && k.endsWith(cod)).map(([k,a]) => ({cod:k, desc:a.desc}));
+    const mSufK = primerCompatible(candSufK);
+    if (mSufK) return {cod:mSufK.cod, nivel:'parcial_sufijo'};
   }
   // Nivel 2d: prefijo
   if (cod.length >= 4) {
-    for (const [k, a] of artsProv) {
-      const cp = String(a.codp||'').trim();
-      if (cp.length > cod.length && cp.startsWith(cod)) return {cod:k, nivel:'parcial_prefijo'};
-    }
-    for (const [k] of artsProv) {
-      if (k.length > cod.length && k.startsWith(cod)) return {cod:k, nivel:'parcial_prefijo'};
-    }
+    const candPreCodp = artsProv.filter(([,a]) => { const cp=String(a.codp||'').trim(); return cp.length>cod.length && cp.startsWith(cod); })
+      .map(([k,a]) => ({cod:k, desc:a.desc}));
+    const mPreCodp = primerCompatible(candPreCodp);
+    if (mPreCodp) return {cod:mPreCodp.cod, nivel:'parcial_prefijo'};
+
+    const candPreK = artsProv.filter(([k]) => k.length>cod.length && k.startsWith(cod)).map(([k,a]) => ({cod:k, desc:a.desc}));
+    const mPreK = primerCompatible(candPreK);
+    if (mPreK) return {cod:mPreK.cod, nivel:'parcial_prefijo'};
   }
   if (descDoc) {
     const words = descDoc.toLowerCase().replace(/[^\w\s]/g,' ').split(/\s+/).filter(w=>w.length>2).slice(0,5);
     if (words.length >= 2) {
       let best = null; let bestScore = 0;
       for (const [k, a] of artsProv) {
+        // Gate de atributos primero — un candidato con color/tema/medida en conflicto
+        // no compite aunque tenga buen solapamiento de palabras genéricas.
+        if (!compararAtributos(descDoc, a.desc||'').compatible) continue;
         const hay = (a.desc||'').toLowerCase().split(/\s+/);
         const score = words.filter(w => hay.some(hw=>hw.startsWith(w)||w.startsWith(hw)||hw.includes(w))).length;
         if (score >= 2 && score > bestScore) { bestScore=score; best=k; }
