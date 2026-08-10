@@ -30,9 +30,9 @@ function SeccionAnomalia({ titulo, items, tipo, render }) {
 
 export default function TabAnomalias({ remitos }) {
   const { anomalias } = usePedidos(remitos);
-  const { recepcionesSinConfirmar, entregasSinReferencia, erroresSinResolver } = anomalias;
+  const { recepcionesSinConfirmar, entregasSinReferencia, erroresSinResolver, diferenciasSinCorregir } = anomalias;
 
-  const totalAnomalias = recepcionesSinConfirmar.length + entregasSinReferencia.length + erroresSinResolver.length;
+  const totalAnomalias = recepcionesSinConfirmar.length + entregasSinReferencia.length + erroresSinResolver.length + diferenciasSinCorregir.length;
 
   const row = (remito, cols) => (
     <div key={remito} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', borderBottom: `1px solid ${C.b2}` }}>
@@ -100,15 +100,32 @@ export default function TabAnomalias({ remitos }) {
         ])}
       />
 
+      {/* 4. Recibido con diferencia sin corregir */}
+      <SeccionAnomalia
+        titulo="Recibido con diferencia sin remito de corrección"
+        items={diferenciasSinCorregir}
+        tipo="err"
+        render={(e, i) => row(e.remito + i, [
+          <div key="r" style={{ width: 160, fontSize: 11, color: C.azul, fontFamily: 'DM Mono,monospace', flexShrink: 0 }}>{e.remito}</div>,
+          <div key="d" style={{ flex: 1 }}>
+            <div style={{ fontSize: 11, color: C.txt }}>{e.origen} → {e.destino}</div>
+            <div style={{ fontSize: 9, color: C.mut, marginTop: 2 }}>Cat: {e.categoria} · Obs: {e.obs || '—'}</div>
+          </div>,
+          <div key="f" style={{ fontSize: 10, color: C.mut, flexShrink: 0 }}>{formatFecha(e.fecha)}</div>,
+          <span key="s" style={{ padding: '2px 8px', borderRadius: 10, fontSize: 9, background: 'rgba(248,113,113,.15)', color: C.red, fontWeight: 600, flexShrink: 0 }}>Sin ERROR asociado</span>,
+        ])}
+      />
+
       {/* Resumen */}
       {totalAnomalias > 0 && (
         <div style={{ background: C.panel, border: `1px solid ${C.b1}`, borderRadius: 8, padding: '12px 14px' }}>
           <div style={{ fontSize: 9, color: C.mut, letterSpacing: '.08em', marginBottom: 10 }}>RESUMEN DE ANOMALÍAS</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10 }}>
             {[
               { l: 'Recepciones pendientes', v: recepcionesSinConfirmar.length, c: C.ambar },
               { l: 'Entregas sin referencia', v: entregasSinReferencia.length, c: C.ambar },
               { l: 'Errores sin resolver', v: erroresSinResolver.length, c: C.red },
+              { l: 'Diferencias sin corregir', v: diferenciasSinCorregir.length, c: C.red },
             ].map(({ l, v, c }) => (
               <div key={l} style={{ background: C.b2, borderRadius: 6, padding: '8px 10px', textAlign: 'center' }}>
                 <div style={{ fontSize: 9, color: C.mut, marginBottom: 4 }}>{l}</div>

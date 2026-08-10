@@ -21,6 +21,24 @@ function linkearEntregas(pedido, entregas) {
   });
 }
 
+// Busca si una entrega con diferencia tiene su remito de corrección (ERROR
+// ENVIO CON SOBRANTES/FALTANTES) asociado — mismo criterio de match que
+// pedido↔entrega: tag en observaciones, o fallback por código + sucursales.
+function tieneErrorAsociado(entrega, errores) {
+  const tag = ultimosCinco(entrega.remito);
+  const cods = new Set(entrega.lineas.map(l => l.cod));
+  return errores.some(e => {
+    if (e.obs && e.obs.includes(tag)) return true;
+    // Fallback: el error involucra las mismas sucursales (en cualquier
+    // sentido, porque sobrante/faltante invierten origen/destino) y comparte
+    // al menos un código con la entrega original.
+    const mismasSucursales =
+      (e.origen === entrega.origen && e.destino === entrega.destino) ||
+      (e.origen === entrega.destino && e.destino === entrega.origen);
+    return mismasSucursales && e.fecha >= entrega.fecha && e.lineas.some(l => cods.has(l.cod));
+  });
+}
+
 export function usePedidos(remitos) {
   const todosLosRemitos = useMemo(() => Object.values(remitos || {}), [remitos]);
   const pedidos  = useMemo(() => todosLosRemitos.filter(r => esPedido(r.categoria)),  [todosLosRemitos]);
@@ -79,7 +97,17 @@ export function usePedidos(remitos) {
       !([...tagsPedidos].some(tag => e.obs && e.obs.includes(tag)))
     );
 
-    return { recepcionesSinConfirmar, entregasSinReferencia, erroresSinResolver };
+    // "Recibido con diferencia" es un estado real y seleccionable en el ERP al
+    // confirmar una recepción — hoy no se está usando en la práctica. Cuando SÍ
+    // se use, esto detecta si quedó sin su remito de corrección correspondiente
+    // (ERROR ENVIO CON SOBRANTES/FALTANTES), que es lo que efectivamente ajusta
+    // el stock. Una entrega marcada con diferencia y sin corrección es un hueco
+    // real de stock que nadie está viendo.
+    const diferenciasSinCorregir = entregas.filter(e =>
+      e.estado === 'Recibido con diferencia' && !tieneErrorAsociado(e, errores)
+    );
+
+    return { recepcionesSinConfirmar, entregasSinReferencia, erroresSinResolver, diferenciasSinCorregir };
   }, [pedidos, entregas, errores]);
 
   const pendientesConsolidados = useMemo(() => {

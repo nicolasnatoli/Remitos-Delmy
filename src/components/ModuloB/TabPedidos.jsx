@@ -254,9 +254,18 @@ function PedidoRow({ pedido, combos, isLast, isExpanded, onToggle, showFecha }) 
                   }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
                       <span style={{ color: 'var(--text)', fontFamily: 'var(--font-mono)' }}>{e.remito}</span>
-                      <span className={`badge ${e.estado === 'Recibido' ? 'badge-verde' : e.estado === 'En tránsito' ? 'badge-ambar' : 'badge-gray'}`}>
+                      <span className={`badge ${
+                        e.estado === 'Recibido' ? 'badge-verde' :
+                        e.estado === 'Recibido con diferencia' ? 'badge-ambar' :
+                        e.estado === 'En tránsito' ? 'badge-ambar' : 'badge-gray'
+                      }`}>
                         {e.estado}
                       </span>
+                      {e.estado === 'Recibido con diferencia' && (
+                        <span style={{ fontSize: 9, color: 'var(--rojo)', marginLeft: 6 }}>
+                          ⚠ requiere remito ERROR de corrección
+                        </span>
+                      )}
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 3 }}>
                       {e.categoria} · {formatFecha(e.fecha)}

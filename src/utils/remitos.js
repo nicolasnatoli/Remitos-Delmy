@@ -58,7 +58,10 @@ export const CATEGORIAS_ENTREGA = [
 ];
 
 export const CATEGORIAS_DEVOLUCION = ['ENVIO SUCURSAL A DEPOSITO'];
-export const CATEGORIAS_ERROR = ['ERROR ENVIO CON FALTANTES', 'ERROR ENVIO CON SOBRANTES'];
+// OJO: "FALTANTE" es singular en el ERP real (confirmado con datos reales de
+// remitos), no "FALTANTES". Con el plural, estos 23+ remitos por período quedaban
+// sin categorizar como error — invisibles para toda la lógica de anomalías.
+export const CATEGORIAS_ERROR = ['ERROR ENVIO CON FALTANTE', 'ERROR ENVIO CON SOBRANTES'];
 
 export function esPedido(cat)     { return CATEGORIAS_PEDIDO.includes(cat); }
 export function esEntrega(cat)    { return CATEGORIAS_ENTREGA.includes(cat); }
