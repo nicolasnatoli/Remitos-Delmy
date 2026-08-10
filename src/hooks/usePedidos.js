@@ -1,7 +1,7 @@
 // ===== HOOK — usePedidos =====
 import { useMemo } from 'react';
 import {
-  esPedido, esEntrega, esError,
+  esPedido, esEntrega, esError, esCompraDirecta,
   calcularEstadoPedido, ultimosCinco,
   hoy, ayer, ORDEN_ESTADO,
   expandirLineas,
@@ -44,6 +44,9 @@ export function usePedidos(remitos) {
   const pedidos  = useMemo(() => todosLosRemitos.filter(r => esPedido(r.categoria)),  [todosLosRemitos]);
   const entregas = useMemo(() => todosLosRemitos.filter(r => esEntrega(r.categoria)), [todosLosRemitos]);
   const errores  = useMemo(() => todosLosRemitos.filter(r => esError(r.categoria)),   [todosLosRemitos]);
+  // Compras directas: entran del proveedor y van directo a sucursal, nunca
+  // responden a un pedido interno — se trackean aparte, nunca se intentan linkear.
+  const comprasDirectas = useMemo(() => todosLosRemitos.filter(r => esCompraDirecta(r.categoria)), [todosLosRemitos]);
 
   const pedidosConEstado = useMemo(() => {
     return pedidos.map(pedido => ({
@@ -136,7 +139,7 @@ export function usePedidos(remitos) {
     return Object.values(mapa).sort((a, b) => b.cant - a.cant);
   }, [pedidosConEstado]);
 
-  return { pedidosConEstado, pedidos, entregas, errores, kpis, anomalias, pendientesConsolidados };
+  return { pedidosConEstado, pedidos, entregas, errores, comprasDirectas, kpis, anomalias, pendientesConsolidados };
 }
 
 export function getComparacion(pedido, entregasAsociadas) {

@@ -62,11 +62,22 @@ export const CATEGORIAS_DEVOLUCION = ['ENVIO SUCURSAL A DEPOSITO'];
 // remitos), no "FALTANTES". Con el plural, estos 23+ remitos por período quedaban
 // sin categorizar como error — invisibles para toda la lógica de anomalías.
 export const CATEGORIAS_ERROR = ['ERROR ENVIO CON FALTANTE', 'ERROR ENVIO CON SOBRANTES'];
+// Compra directa a sucursal: mercadería que el depósito recibe del proveedor y
+// entrega directo a la sucursal, SIN pasar por un pedido interno. No responde a
+// ningún # Remito de pedido — no debe intentar linkearse con pedidos.
+export const CATEGORIAS_COMPRA_DIRECTA = ['ENVIO DE COMPRAS A SUCURSAL'];
+// Entregas que responden a un pedido interno formal.
+export const CATEGORIAS_ENTREGA_CONTRA_PEDIDO = ['ENVIO DEPOSITO A SUCURSAL', 'ENVIO SUCURSAL A SUCURSAL'];
+// Entregas sin pedido interno previo — urgencias, teléfono, cliente en sucursal.
+export const CATEGORIAS_ENTREGA_SIN_PEDIDO = ['ENVIO PEDIDO TELEFONICO', 'ENVIO PEDIDO URGENTE', 'ENVIO PEDIDO A CLIENTE'];
 
 export function esPedido(cat)     { return CATEGORIAS_PEDIDO.includes(cat); }
 export function esEntrega(cat)    { return CATEGORIAS_ENTREGA.includes(cat); }
 export function esDevolucion(cat) { return CATEGORIAS_DEVOLUCION.includes(cat); }
 export function esError(cat)      { return CATEGORIAS_ERROR.includes(cat); }
+export function esCompraDirecta(cat)     { return CATEGORIAS_COMPRA_DIRECTA.includes(cat); }
+export function esContraPedido(cat)      { return CATEGORIAS_ENTREGA_CONTRA_PEDIDO.includes(cat); }
+export function esSinPedidoPrevio(cat)   { return CATEGORIAS_ENTREGA_SIN_PEDIDO.includes(cat); }
 
 // Últimos 5 dígitos de un # Remito
 export function ultimosCinco(nRemito) {

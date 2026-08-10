@@ -5,6 +5,7 @@ import { loadCombos, saveCombos } from '../../utils/db';
 import * as XLSX from 'xlsx';
 import Dashboard from './Dashboard';
 import TabPedidos from './TabPedidos';
+import TabEntregas from './TabEntregas';
 import TabPendientes from './TabPendientes';
 import TabAnomalias from './TabAnomalias';
 import TabCombos from './TabCombos';
@@ -12,6 +13,7 @@ import TabCombos from './TabCombos';
 const TABS = [
   { id: 'dashboard',  label: '◈ Dashboard' },
   { id: 'pedidos',    label: '▤ Pedidos' },
+  { id: 'entregas',   label: '▥ Entregas' },
   { id: 'pendientes', label: '⧖ Pendientes' },
   { id: 'anomalias',  label: '⚠ Anomalías' },
   { id: 'combos',     label: '⊕ Combos' },
@@ -211,6 +213,7 @@ export default function ModuloB() {
           <>
             {tab === 'dashboard'  && <Dashboard    remitos={remitos} />}
             {tab === 'pedidos'    && <TabPedidos    remitos={remitos} combos={combos} />}
+            {tab === 'entregas'   && <TabEntregas   remitos={remitos} />}
             {tab === 'pendientes' && <TabPendientes remitos={remitos} combos={combos} />}
             {tab === 'anomalias'  && <TabAnomalias  remitos={remitos} />}
             {tab === 'combos'     && <TabCombos     combos={combos} onLoad={handleCombosFile} loaded={combosLoaded} stats={combosStats} fileRef={combosFileRef} />}

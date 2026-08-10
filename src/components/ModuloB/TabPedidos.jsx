@@ -271,6 +271,16 @@ function PedidoRow({ pedido, combos, isLast, isExpanded, onToggle, showFecha }) 
                       {e.categoria} · {formatFecha(e.fecha)}
                     </div>
                     {e.obs && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>Obs: {e.obs}</div>}
+                    {/* Líneas de la entrega — abierto por defecto para comparar directo con DETALLE DE ARTÍCULOS */}
+                    <div style={{ marginTop: 6, borderTop: '1px solid var(--border)', paddingTop: 6 }}>
+                      {e.lineas.map((l, li) => (
+                        <div key={li} style={{ display: 'flex', gap: 8, fontSize: 10.5, color: 'var(--text-3)', padding: '1px 0' }}>
+                          <span style={{ fontFamily: 'var(--font-mono)', flexShrink: 0, width: 70, overflow: 'hidden', textOverflow: 'ellipsis' }}>{l.cod}</span>
+                          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{l.desc}</span>
+                          <span style={{ color: 'var(--text-2)', flexShrink: 0 }}>{l.cant}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 ))
               )}
