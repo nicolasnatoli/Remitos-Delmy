@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { usePedidos, getComparacion, groupByFecha } from '../../hooks/usePedidos';
+import { usePedidos, getComparacionPorRemito, groupByRuta } from '../../hooks/usePedidos';
 import { getEstadoConfig, formatFecha } from '../../utils/remitos';
 import { expandirLineasConCombos } from '../../utils/db';
 
@@ -24,7 +24,19 @@ export default function TabPedidos({ remitos, combos }) {
     return list;
   }, [pedidosConEstado, filtroEstado, busqueda]);
 
-  const grupos = useMemo(() => groupByFecha(filtrados), [filtrados]);
+  // Agrupado por ruta (origen → destino) en vez de una lista plana — así se
+  // puede mirar "qué pasa en Central→Delmy1" separado de "Central→Delmy3".
+  const rutas = useMemo(() => {
+    const g = groupByRuta(filtrados);
+    const orden = ['sin_confirmar', 'abierto', 'parcial', 'con_faltantes', 'completo'];
+    for (const r of g) {
+      r.items.sort((a, b) => {
+        const ea = orden.indexOf(a.estadoCalculado), eb = orden.indexOf(b.estadoCalculado);
+        return ea !== eb ? ea - eb : b.fecha.localeCompare(a.fecha);
+      });
+    }
+    return g;
+  }, [filtrados]);
 
   const totalPedidos     = pedidosConEstado.length;
   const confirmados      = pedidosConEstado.filter(p => p.estado === 'Anulado').length;
@@ -36,7 +48,7 @@ export default function TabPedidos({ remitos, combos }) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: 10, marginBottom: 20 }}>
         {[
           { label: 'Total', value: totalPedidos, color: 'var(--text)' },
-          { label: 'Sin confirmar', value: sinConfirmar, color: 'var(--azul)' },
+          { label: 'Sin anular', value: sinConfirmar, color: 'var(--rojo)' },
           { label: 'Confirmados', value: confirmados, color: 'var(--text-2)' },
           { label: 'Abiertos', value: pedidosConEstado.filter(p=>p.estadoCalculado==='abierto').length, color: 'var(--azul)' },
           { label: 'Parciales', value: pedidosConEstado.filter(p=>p.estadoCalculado==='parcial').length, color: 'var(--ambar)' },
@@ -74,34 +86,28 @@ export default function TabPedidos({ remitos, combos }) {
         })}
       </div>
 
-      {/* Lista por secciones */}
-      {[
-        { key: 'hoy',        label: 'HOY' },
-        { key: 'ayer',       label: 'AYER' },
-        { key: 'anteriores', label: 'ANTERIORES' },
-      ].map(({ key, label }) => {
-        const lista = grupos[key];
-        if (!lista || lista.length === 0) return null;
+      {/* Lista por ruta */}
+      {rutas.map(({ ruta, items }) => {
+        const totalUdsPedidas = items.reduce((s, p) => s + p.lineas.reduce((ss,l)=>ss+Number(l.cant||0),0), 0);
         return (
-          <div key={key} style={{ marginBottom: 24 }}>
+          <div key={ruta} style={{ marginBottom: 24 }}>
             <div style={{
-              fontSize: 10, letterSpacing: '0.1em', color: 'var(--text-3)',
+              fontSize: 11, letterSpacing: '0.05em', color: 'var(--text-2)', fontFamily: 'var(--font-mono)',
               marginBottom: 8, display: 'flex', alignItems: 'center', gap: 10,
             }}>
-              {label}
+              {ruta}
               <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
-              <span>{lista.length}</span>
+              <span style={{ color: 'var(--text-3)', fontSize: 10 }}>{items.length} pedidos · {totalUdsPedidas} uds pedidas</span>
             </div>
             <div className="card" style={{ overflow: 'hidden' }}>
-              {lista.map((pedido, idx) => (
+              {items.map((pedido, idx) => (
                 <PedidoRow
                   key={pedido.remito}
                   pedido={pedido}
                   combos={combos}
-                  isLast={idx === lista.length - 1}
+                  isLast={idx === items.length - 1}
                   isExpanded={expandido === pedido.remito}
                   onToggle={() => setExpandido(expandido === pedido.remito ? null : pedido.remito)}
-                  showFecha={key === 'anteriores'}
                 />
               ))}
             </div>
@@ -118,8 +124,7 @@ export default function TabPedidos({ remitos, combos }) {
   );
 }
 
-function PedidoRow({ pedido, combos, isLast, isExpanded, onToggle, showFecha }) {
-  // Expandir combos en las líneas para el detalle
+function PedidoRow({ pedido, combos, isLast, isExpanded, onToggle }) {
   const lineasExpandidas = useMemo(() =>
     expandirLineasConCombos(pedido.lineas || [], combos || {}),
   [pedido.lineas, combos]);
@@ -127,10 +132,11 @@ function PedidoRow({ pedido, combos, isLast, isExpanded, onToggle, showFecha }) 
   const totalPedido   = pedido.lineas.reduce((s,l) => s + Number(l.cant||0), 0);
   const totalEntregado = pedido.entregasAsociadas.reduce((s,e) =>
     s + e.lineas.reduce((ss,l) => ss + Number(l.cant||0), 0), 0);
-  const comparacion = isExpanded ? getComparacion(pedido, pedido.entregasAsociadas) : null;
+  const comparacion = isExpanded ? getComparacionPorRemito(pedido, pedido.entregasAsociadas) : null;
+  const hayInconsistenciaSucursal = pedido.entregasAsociadas.some(e => e.sucursalConsistente === false);
 
   const dotColor = {
-    sin_confirmar: 'var(--azul)',
+    sin_confirmar: 'var(--rojo)',
     abierto: 'var(--azul)',
     parcial: 'var(--ambar)',
     con_faltantes: 'var(--rojo)',
@@ -149,143 +155,110 @@ function PedidoRow({ pedido, combos, isLast, isExpanded, onToggle, showFecha }) 
           transition: 'background var(--transition)',
         }}
       >
-        {/* Color dot */}
         <div style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor, flexShrink: 0 }} />
-
-        {/* Fecha (solo anteriores) */}
-        {showFecha && (
-          <div style={{ fontSize: 11, color: 'var(--text-3)', width: 60, flexShrink: 0 }}>
-            {formatFecha(pedido.fecha)}
-          </div>
-        )}
-
-        {/* Remito */}
+        <div style={{ fontSize: 11, color: 'var(--text-3)', width: 60, flexShrink: 0 }}>{formatFecha(pedido.fecha)}</div>
         <div style={{ fontSize: 12, color: 'var(--text-2)', width: 140, flexShrink: 0, fontFamily: 'var(--font-mono)' }}>
           {pedido.remito}
         </div>
-
-        {/* Ruta */}
-        <div style={{ flex: 1, fontSize: 12, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          <span style={{ color: 'var(--text-2)' }}>{pedido.origen}</span>
-          <span style={{ color: 'var(--text-3)', margin: '0 6px' }}>→</span>
-          <span>{pedido.destino}</span>
-        </div>
-
-        {/* Categoría */}
         <div style={{ fontSize: 10, color: 'var(--text-3)', width: 180, flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {pedido.categoria}
         </div>
-
-        {/* Stats */}
+        {hayInconsistenciaSucursal && (
+          <span style={{ fontSize: 9, color: 'var(--rojo)', flexShrink: 0 }} title="Al menos una entrega vinculada por tag fue a una sucursal distinta">
+            ⚠ sucursal
+          </span>
+        )}
+        <div style={{ flex: 1 }} />
         <div style={{ fontSize: 11, color: 'var(--text-3)', textAlign: 'right', flexShrink: 0 }}>
           <div>{pedido.lineas.length} arts · {totalPedido} uds</div>
           {pedido.entregasAsociadas.length > 0 && (
             <div style={{ color: 'var(--verde)' }}>▸ {totalEntregado} entregadas</div>
           )}
         </div>
-
-        {/* Badge */}
-        <span className={`badge ${cfg.badge}`} style={{ flexShrink: 0 }}>
-          {cfg.label}
-        </span>
-
-        {/* Toggle */}
-        <div style={{ color: 'var(--text-3)', fontSize: 10, flexShrink: 0 }}>
-          {isExpanded ? '▲' : '▼'}
-        </div>
+        <span className={`badge ${cfg.badge}`} style={{ flexShrink: 0 }}>{cfg.label}</span>
+        <div style={{ color: 'var(--text-3)', fontSize: 10, flexShrink: 0 }}>{isExpanded ? '▲' : '▼'}</div>
       </div>
 
-      {/* Expanded detail */}
       {isExpanded && comparacion && (
         <div style={{
           background: 'var(--panel-2)', borderBottom: isLast ? 'none' : '1px solid var(--border)',
           padding: '14px 20px',
         }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-            {/* Comparación artículos con combos expandidos */}
-            <div>
-              <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.07em', marginBottom: 8, display:'flex', justifyContent:'space-between' }}>
-                <span>DETALLE DE ARTÍCULOS</span>
-                {lineasExpandidas.some(l=>l.esCombo) && <span style={{color:'var(--violeta)',fontSize:9}}>⊕ combos expandidos</span>}
-              </div>
-              <table>
-                <thead>
-                  <tr>
-                    <th>CÓDIGO</th>
-                    <th>DESCRIPCIÓN</th>
-                    <th style={{ textAlign: 'right' }}>PEDIDA</th>
-                    <th style={{ textAlign: 'right' }}>ENTREGADA</th>
-                    <th style={{ textAlign: 'right' }}>PENDIENTE</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {comparacion.map(item => (
-                    <tr key={item.cod} style={{background: item.pendiente>0?'rgba(240,192,64,.04)':'transparent'}}>
-                      <td style={{ fontSize: 11, color: 'var(--text-2)', fontFamily:'var(--font-mono)' }}>{item.cod}</td>
-                      <td style={{ fontSize: 11 }}>
-                        {item.desc}
-                        {lineasExpandidas.find(l=>l.cod===item.cod&&l.esCombo) && (
-                          <span style={{fontSize:9,color:'var(--violeta)',marginLeft:5}}>⊕ {lineasExpandidas.find(l=>l.cod===item.cod&&l.esCombo)?.descCombo?.slice(0,20)}</span>
-                        )}
-                      </td>
-                      <td style={{ textAlign: 'right', fontSize: 12 }}>{item.pedida}</td>
-                      <td style={{ textAlign: 'right', fontSize: 12, color: 'var(--verde)' }}>{item.entregada}</td>
-                      <td style={{ textAlign: 'right', fontSize: 12, color: item.pendiente > 0 ? 'var(--ambar)' : 'var(--verde)', fontWeight: item.pendiente > 0 ? 600 : 400 }}>
-                        {item.pendiente > 0 ? item.pendiente : '✓'}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Entregas asociadas */}
-            <div>
-              <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.07em', marginBottom: 8 }}>
-                REMITOS DE ENTREGA ({pedido.entregasAsociadas.length})
-              </div>
-              {pedido.entregasAsociadas.length === 0 ? (
-                <div style={{ color: 'var(--text-3)', fontSize: 12 }}>Sin entregas asociadas</div>
-              ) : (
-                pedido.entregasAsociadas.map(e => (
-                  <div key={e.remito} style={{
-                    border: '1px solid var(--border)', borderRadius: 'var(--radius)',
-                    padding: '8px 12px', marginBottom: 6,
-                  }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
-                      <span style={{ color: 'var(--text)', fontFamily: 'var(--font-mono)' }}>{e.remito}</span>
-                      <span className={`badge ${
-                        e.estado === 'Recibido' ? 'badge-verde' :
-                        e.estado === 'Recibido con diferencia' ? 'badge-ambar' :
-                        e.estado === 'En tránsito' ? 'badge-ambar' : 'badge-gray'
-                      }`}>
-                        {e.estado}
-                      </span>
-                      {e.estado === 'Recibido con diferencia' && (
-                        <span style={{ fontSize: 9, color: 'var(--rojo)', marginLeft: 6 }}>
-                          ⚠ requiere remito ERROR de corrección
-                        </span>
-                      )}
-                    </div>
-                    <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 3 }}>
-                      {e.categoria} · {formatFecha(e.fecha)}
-                    </div>
-                    {e.obs && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>Obs: {e.obs}</div>}
-                    {/* Líneas de la entrega — abierto por defecto para comparar directo con DETALLE DE ARTÍCULOS */}
-                    <div style={{ marginTop: 6, borderTop: '1px solid var(--border)', paddingTop: 6 }}>
-                      {e.lineas.map((l, li) => (
-                        <div key={li} style={{ display: 'flex', gap: 8, fontSize: 10.5, color: 'var(--text-3)', padding: '1px 0' }}>
-                          <span style={{ fontFamily: 'var(--font-mono)', flexShrink: 0, width: 70, overflow: 'hidden', textOverflow: 'ellipsis' }}>{l.cod}</span>
-                          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{l.desc}</span>
-                          <span style={{ color: 'var(--text-2)', flexShrink: 0 }}>{l.cant}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
+          <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.07em', marginBottom: 8, display:'flex', justifyContent:'space-between' }}>
+            <span>DETALLE DE ARTÍCULOS — con el remito que trajo cada línea</span>
+            {lineasExpandidas.some(l=>l.esCombo) && <span style={{color:'var(--violeta)',fontSize:9}}>⊕ combos expandidos</span>}
           </div>
+          <table>
+            <thead>
+              <tr>
+                <th>CÓDIGO</th>
+                <th>DESCRIPCIÓN</th>
+                <th style={{ textAlign: 'right' }}>PEDIDA</th>
+                <th style={{ textAlign: 'right' }}>ENTREGADA</th>
+                <th style={{ textAlign: 'right' }}>PENDIENTE</th>
+                <th>TRAÍDA POR</th>
+              </tr>
+            </thead>
+            <tbody>
+              {comparacion.map(item => (
+                <tr key={item.cod} style={{background: item.pendiente>0?'rgba(240,192,64,.04)':'transparent'}}>
+                  <td style={{ fontSize: 11, color: 'var(--text-2)', fontFamily:'var(--font-mono)' }}>{item.cod}</td>
+                  <td style={{ fontSize: 11 }}>
+                    {item.desc}
+                    {item.noSolicitado && <span style={{fontSize:9,color:'var(--rojo)',marginLeft:5}}>NO PEDIDO</span>}
+                    {lineasExpandidas.find(l=>l.cod===item.cod&&l.esCombo) && (
+                      <span style={{fontSize:9,color:'var(--violeta)',marginLeft:5}}>⊕ {lineasExpandidas.find(l=>l.cod===item.cod&&l.esCombo)?.descCombo?.slice(0,20)}</span>
+                    )}
+                  </td>
+                  <td style={{ textAlign: 'right', fontSize: 12 }}>{item.pedida}</td>
+                  <td style={{ textAlign: 'right', fontSize: 12, color: 'var(--verde)' }}>{item.entregada}</td>
+                  <td style={{ textAlign: 'right', fontSize: 12, color: item.pendiente > 0 ? 'var(--ambar)' : 'var(--verde)', fontWeight: item.pendiente > 0 ? 600 : 400 }}>
+                    {item.pendiente > 0 ? item.pendiente : '✓'}
+                  </td>
+                  <td style={{ fontSize: 9.5, color: 'var(--text-3)' }}>
+                    {item.remitos.length === 0 ? '—' : item.remitos.map((r,i) => (
+                      <span key={r.remito} style={{ color: r.sucursalConsistente ? 'var(--text-3)' : 'var(--rojo)' }}>
+                        {i>0 && ', '}{r.remito} ({r.cant}){!r.sucursalConsistente && ' ⚠'}
+                      </span>
+                    ))}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <div style={{ fontSize: 10, color: 'var(--text-3)', letterSpacing: '0.07em', margin: '16px 0 8px' }}>
+            REMITOS DE ENTREGA ({pedido.entregasAsociadas.length})
+          </div>
+          {pedido.entregasAsociadas.length === 0 ? (
+            <div style={{ color: 'var(--text-3)', fontSize: 12 }}>Sin entregas asociadas</div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(220px,1fr))', gap: 8 }}>
+              {pedido.entregasAsociadas.map(e => (
+                <div key={e.remito} style={{
+                  border: `1px solid ${e.sucursalConsistente===false ? 'var(--rojo)' : 'var(--border)'}`,
+                  borderRadius: 'var(--radius)', padding: '8px 12px',
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
+                    <span style={{ color: 'var(--text)', fontFamily: 'var(--font-mono)' }}>{e.remito}</span>
+                    <span className={`badge ${
+                      e.estado === 'Recibido' ? 'badge-verde' :
+                      e.estado === 'Recibido con diferencia' ? 'badge-ambar' :
+                      e.estado === 'En tránsito' ? 'badge-ambar' : 'badge-gray'
+                    }`}>{e.estado}</span>
+                  </div>
+                  <div style={{ fontSize: 10.5, color: 'var(--text-3)', marginTop: 3 }}>
+                    {e.categoria} · {formatFecha(e.fecha)} · vía {e.viaMatch === 'tag' ? 'tag' : 'fallback'}
+                  </div>
+                  {e.sucursalConsistente === false && (
+                    <div style={{ fontSize: 10, color: 'var(--rojo)', marginTop: 2 }}>
+                      ⚠ fue a {e.destino}, el pedido es de {pedido.origen} — revisar a mano
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </>

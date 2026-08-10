@@ -12,12 +12,28 @@ function linkearEntregas(pedido, entregas) {
   const codsPedido = new Set(pedido.lineas.map(l => l.cod));
   return entregas.filter(e => {
     if (!esEntrega(e.categoria)) return false;
-    if (e.obs && e.obs.includes(tag)) return true;
+    if (e.obs && e.obs.includes(tag)) return true; // tag: se acepta igual aunque la sucursal no cierre — se marca para revisión, no se descarta
+    // Fallback: además de depósito de origen correcto y código compartido,
+    // ahora exige que la sucursal de destino sea la que hizo el pedido. Sin
+    // esto, el fallback empataba ~44% de sus matches con la sucursal
+    // equivocada (validado contra datos reales) — puro ruido, no señal.
     return (
       e.origen === pedido.destino &&
+      e.destino === pedido.origen &&
       e.fecha >= pedido.fecha &&
       e.lineas.some(l => codsPedido.has(l.cod))
     );
+  }).map(e => {
+    const viaTag = e.obs && e.obs.includes(tag);
+    return {
+      ...e,
+      viaMatch: viaTag ? 'tag' : 'fallback',
+      // Con el fallback ya endurecido arriba, esto solo puede dar false para
+      // matches por TAG — un caso que preferimos mostrar para revisar a mano
+      // en vez de asumir que está mal (puede haber pedidos legítimos con
+      // origen=depósito, no confirmado todavía cómo se usan en la operatoria).
+      sucursalConsistente: e.destino === pedido.origen,
+    };
   });
 }
 
@@ -110,8 +126,30 @@ export function usePedidos(remitos) {
       e.estado === 'Recibido con diferencia' && !tieneErrorAsociado(e, errores)
     );
 
-    return { recepcionesSinConfirmar, entregasSinReferencia, erroresSinResolver, diferenciasSinCorregir };
+    // Entrega vinculada a un pedido, pero despachada a una sucursal distinta
+    // de la que hizo el pedido — el cruce por tag/código puede dar positivo
+    // aunque la mercadería haya ido al lugar equivocado, porque nunca se
+    // valida destino contra origen del pedido.
+    const entregasSucursalInconsistente = [];
+    for (const p of pedidos) {
+      const asociadas = linkearEntregas(p, entregas);
+      for (const e of asociadas) {
+        if (!e.sucursalConsistente) entregasSucursalInconsistente.push({ ...e, pedido: p });
+      }
+    }
+
+    return { recepcionesSinConfirmar, entregasSinReferencia, erroresSinResolver, diferenciasSinCorregir, entregasSucursalInconsistente };
   }, [pedidos, entregas, errores]);
+
+  // Mapa remito de entrega -> pedido que la reclama, para no recalcularlo en
+  // cada pestaña que lo necesite (Pedidos y Entregas lo usan por igual).
+  const pedidoDeEntrega = useMemo(() => {
+    const m = {};
+    for (const p of pedidosConEstado) {
+      for (const e of p.entregasAsociadas) m[e.remito] = p;
+    }
+    return m;
+  }, [pedidosConEstado]);
 
   const pendientesConsolidados = useMemo(() => {
     const mapa = {};
@@ -139,7 +177,7 @@ export function usePedidos(remitos) {
     return Object.values(mapa).sort((a, b) => b.cant - a.cant);
   }, [pedidosConEstado]);
 
-  return { pedidosConEstado, pedidos, entregas, errores, comprasDirectas, kpis, anomalias, pendientesConsolidados };
+  return { pedidosConEstado, pedidos, entregas, errores, comprasDirectas, pedidoDeEntrega, kpis, anomalias, pendientesConsolidados };
 }
 
 export function getComparacion(pedido, entregasAsociadas) {
@@ -201,4 +239,90 @@ export function groupByFecha(pedidos) {
   }
   g.hoy.sort(sortFn); g.ayer.sort(sortFn); g.anteriores.sort(sortFn);
   return g;
+}
+
+// ─── Agrupar cualquier lista de remitos por ruta (origen → destino) ───────────
+// Es el eje que pediste para separar "qué pasa en Central→Delmy1" de
+// "qué pasa en Central→Delmy3" en vez de ver todo mezclado en una lista plana.
+export function groupByRuta(lista) {
+  const mapa = {};
+  for (const r of lista) {
+    const key = `${r.origen} → ${r.destino}`;
+    if (!mapa[key]) mapa[key] = { ruta: key, origen: r.origen, destino: r.destino, items: [] };
+    mapa[key].items.push(r);
+  }
+  return Object.values(mapa).sort((a, b) => b.items.length - a.items.length);
+}
+
+// ─── Comparación pedido↔entregas CON el detalle de qué remito trajo qué ───────
+// Como getComparacion(), pero cada línea además trae `remitos: [{remito, cant,
+// estado, sucursalConsistente}]` — de dónde salió específicamente lo entregado,
+// para no tener que ir remito por remito adivinando cuál cubrió cuál línea.
+export function getComparacionPorRemito(pedido, entregasAsociadas) {
+  const combos = (() => { try { return JSON.parse(localStorage.getItem('dm_combos_v1')||'{}'); } catch { return {}; } })();
+  const pedidoMap = {};
+  for (const l of expandirLineas(pedido.lineas, combos)) {
+    if (!pedidoMap[l.cod]) pedidoMap[l.cod] = { cod: l.cod, desc: l.desc, pedida: 0, remitos: [] };
+    pedidoMap[l.cod].pedida += Number(l.cant || 0);
+  }
+  const entregadoDesc = {};
+  for (const e of entregasAsociadas) {
+    for (const l of expandirLineas(e.lineas, combos)) {
+      if (!entregadoDesc[l.cod]) entregadoDesc[l.cod] = l.desc;
+      if (!pedidoMap[l.cod]) {
+        pedidoMap[l.cod] = { cod: l.cod, desc: l.desc, pedida: 0, remitos: [] };
+      }
+      pedidoMap[l.cod].remitos.push({
+        remito: e.remito, cant: Number(l.cant || 0), estado: e.estado,
+        sucursalConsistente: e.sucursalConsistente !== false,
+      });
+    }
+  }
+
+  return Object.values(pedidoMap).map(item => {
+    const entregada = item.remitos.reduce((s, r) => s + r.cant, 0);
+    return {
+      ...item,
+      entregada,
+      pendiente: Math.max(0, item.pedida - entregada),
+      sobrante:  Math.max(0, entregada - item.pedida),
+      noSolicitado: item.pedida === 0,
+    };
+  });
+}
+
+// ─── Clasificar las líneas de UNA entrega contra el pedido que la reclama ────
+// Separa en dos grupos, en vez de mezclarlos en una sola tabla:
+//  - respondeAPedido: la línea corresponde a algo que el pedido pedía —
+//    incluye cuánto pedía en total el pedido y cuánto le queda pendiente
+//    considerando TODAS sus entregas (no solo ésta).
+//  - noSolicitadas: venían en el mismo remito pero el pedido no las pedía.
+export function clasificarLineasEntrega(entrega, pedidoVinculado) {
+  const combos = (() => { try { return JSON.parse(localStorage.getItem('dm_combos_v1')||'{}'); } catch { return {}; } })();
+  const lineasEntrega = expandirLineas(entrega.lineas, combos);
+
+  if (!pedidoVinculado) {
+    return { respondeAPedido: [], noSolicitadas: lineasEntrega.map(l => ({ ...l })) };
+  }
+
+  const comparacion = getComparacionPorRemito(pedidoVinculado, pedidoVinculado.entregasAsociadas || []);
+  const compMap = {};
+  for (const c of comparacion) compMap[c.cod] = c;
+
+  const respondeAPedido = [];
+  const noSolicitadas = [];
+  for (const l of lineasEntrega) {
+    const c = compMap[l.cod];
+    if (c && c.pedida > 0) {
+      respondeAPedido.push({
+        ...l,
+        pedidaTotal: c.pedida,
+        entregadaTotalTodasLasEntregas: c.entregada,
+        pendienteTotal: c.pendiente,
+      });
+    } else {
+      noSolicitadas.push({ ...l });
+    }
+  }
+  return { respondeAPedido, noSolicitadas };
 }
