@@ -11,7 +11,37 @@ export default function Cargas({ T }) {
   const [error, setError] = useState(null)
   const [dragging, setDragging] = useState(false)
 
+  const [uploadingMaestro, setUploadingMaestro] = useState(false)
+  const [resultMaestro, setResultMaestro] = useState(null)
+  const [errorMaestro, setErrorMaestro] = useState(null)
+  const [draggingMaestro, setDraggingMaestro] = useState(false)
+
   const { data: uploads, reload } = useFetch('/api/uploads')
+  const { data: cobertura, reload: reloadCobertura } = useFetch('/api/maestro/cobertura')
+
+  const processFileMaestro = useCallback(async (file) => {
+    if (!file) return
+    if (!file.name.match(/\.(xlsx|xls)$/i)) {
+      setErrorMaestro('Solo se aceptan archivos .xlsx o .xls')
+      return
+    }
+    setUploadingMaestro(true)
+    setErrorMaestro(null)
+    setResultMaestro(null)
+    const form = new FormData()
+    form.append('file', file)
+    try {
+      const resp = await fetch('/api/upload-maestro', { method: 'POST', body: form })
+      const data = await resp.json()
+      if (!resp.ok) throw new Error(data.error || 'Error desconocido')
+      setResultMaestro(data)
+      reloadCobertura()
+    } catch (e) {
+      setErrorMaestro(e.message)
+    } finally {
+      setUploadingMaestro(false)
+    }
+  }, [reloadCobertura])
 
   const processFile = useCallback(async (file) => {
     if (!file) return
@@ -166,6 +196,100 @@ export default function Cargas({ T }) {
       {error && (
         <div style={{ ...PANEL, borderColor: 'var(--red)' }}>
           <div style={{ fontSize: 12, color: 'var(--red)' }}>✗ Error: {error}</div>
+        </div>
+      )}
+
+      {/* ─── Maestro de artículos (Proveedor/Familia/Categoría/Marca) ─── */}
+      <div style={{ ...PANEL, borderColor: 'var(--violet)', background: 'var(--panel2)', marginTop: 8 }}>
+        <div style={{ fontSize: 12, color: 'var(--violet)', fontWeight: 500, marginBottom: 6 }}>
+          ↑ Carga del maestro de artículos
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--mut)', lineHeight: 1.6 }}>
+          Subí acá el reporte <strong style={{color:'var(--txt)'}}>Stock Disponible</strong> (trae Familia/Categoría/Marca) y el
+          reporte de <strong style={{color:'var(--txt)'}}>Órdenes de Compra</strong> (trae Proveedor) — se detecta solo cuál es cuál
+          por las columnas. Sin esto, el dashboard de ventas no puede agrupar por Proveedor/Familia/Categoría/Marca.
+          Se puede cargar en cualquier orden y las veces que haga falta — nunca se pisa un dato bueno con uno vacío del otro archivo.
+        </div>
+      </div>
+
+      <div
+        onDrop={(e) => { e.preventDefault(); setDraggingMaestro(false); const f = e.dataTransfer.files[0]; if (f) processFileMaestro(f) }}
+        onDragOver={e => { e.preventDefault(); setDraggingMaestro(true) }}
+        onDragLeave={() => setDraggingMaestro(false)}
+        style={{
+          border: `2px dashed ${draggingMaestro ? 'var(--violet)' : 'var(--border2)'}`,
+          borderRadius: 8, padding: '24px 20px', textAlign: 'center',
+          background: draggingMaestro ? 'rgba(192,132,252,0.05)' : 'transparent',
+          cursor: 'pointer', transition: 'all 0.2s'
+        }}
+        onClick={() => document.getElementById('file-input-maestro').click()}
+      >
+        <input
+          id="file-input-maestro" type="file" accept=".xlsx,.xls"
+          style={{ display: 'none' }}
+          onChange={e => processFileMaestro(e.target.files[0])}
+        />
+        {uploadingMaestro ? (
+          <div style={{ color: 'var(--violet)', fontSize: 13 }}>⟳ Procesando maestro...</div>
+        ) : (
+          <div style={{ fontSize: 12, color: 'var(--mut)' }}>Arrastrá Stock Disponible u Órdenes de Compra acá, o hacé click</div>
+        )}
+      </div>
+
+      {resultMaestro && (
+        <div style={{ ...PANEL, borderColor: 'var(--green)' }}>
+          <div style={{ fontSize: 12, color: 'var(--green)', marginBottom: 8 }}>
+            ✓ Detectado como: <strong>{resultMaestro.fuente === 'oc' ? 'Órdenes de Compra' : 'Stock Disponible'}</strong>
+          </div>
+          <div style={{ display: 'flex', gap: 20 }}>
+            {[['Filas', resultMaestro.filas], ['Insertados', resultMaestro.insertados], ['Actualizados', resultMaestro.actualizados]].map(([k,v]) => (
+              <div key={k}>
+                <div style={{ fontSize: 9, color: 'var(--mut)', letterSpacing: 1 }}>{k.toUpperCase()}</div>
+                <div style={{ fontSize: 14, fontFamily: 'Syne, sans-serif', fontWeight: 700, color: 'var(--txt)' }}>{v}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {errorMaestro && (
+        <div style={{ ...PANEL, borderColor: 'var(--red)' }}>
+          <div style={{ fontSize: 12, color: 'var(--red)' }}>✗ Error: {errorMaestro}</div>
+        </div>
+      )}
+
+      {/* Cobertura del join — validar antes de confiar en cualquier gráfico por clasificación */}
+      {cobertura && (
+        <div style={PANEL}>
+          <div style={TITLE}>Cobertura del maestro sobre las ventas cargadas</div>
+          <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'center' }}>
+            <div>
+              <div style={{ fontSize: 9, color: 'var(--mut)', letterSpacing: 1 }}>CÓDIGOS VENDIDOS CON MAESTRO</div>
+              <div style={{ fontSize: 22, fontFamily: 'Syne, sans-serif', fontWeight: 800, color: cobertura.cobertura_pct >= 90 ? 'var(--green)' : cobertura.cobertura_pct >= 70 ? 'var(--amber)' : 'var(--red)' }}>
+                {cobertura.cobertura_pct}%
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--mut)' }}>{fmt(cobertura.codigos_con_maestro)} de {fmt(cobertura.codigos_vendidos)}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 9, color: 'var(--mut)', letterSpacing: 1 }}>SIN MAESTRO</div>
+              <div style={{ fontSize: 22, fontFamily: 'Syne, sans-serif', fontWeight: 800, color: 'var(--red)' }}>{fmt(cobertura.sin_maestro)}</div>
+            </div>
+            {cobertura.completitud_maestro && (
+              <div style={{ fontSize: 10, color: 'var(--mut)' }}>
+                Del maestro cargado ({fmt(cobertura.completitud_maestro.total_maestro)} artículos):
+                sin proveedor {fmt(cobertura.completitud_maestro.sin_proveedor)} ·
+                sin familia {fmt(cobertura.completitud_maestro.sin_familia)} ·
+                sin categoría {fmt(cobertura.completitud_maestro.sin_categoria)} ·
+                sin marca {fmt(cobertura.completitud_maestro.sin_marca)}
+              </div>
+            )}
+          </div>
+          {cobertura.cobertura_pct < 90 && (
+            <div style={{ marginTop: 10, fontSize: 11, color: 'var(--amber)' }}>
+              ⚠ Con esta cobertura, cualquier gráfico por Proveedor/Familia/Categoría/Marca va a dejar afuera
+              {' '}{fmt(cobertura.sin_maestro)} códigos vendidos sin clasificar. Cargá más históricos de OC/Stock
+              Disponible para mejorar esto antes de sacar conclusiones de los rankings.
+            </div>
+          )}
         </div>
       )}
 

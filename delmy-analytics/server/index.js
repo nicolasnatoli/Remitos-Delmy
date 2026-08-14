@@ -81,6 +81,25 @@ async function initDB() {
         status         TEXT
       )
     `)
+    // Maestro código → proveedor/familia/categoría/marca. Se arma con merge:
+    // el reporte "Stock Disponible" trae familia/categoría/marca, el reporte
+    // de "Órdenes de Compra" trae proveedor (y también familia/categoría/marca,
+    // sirve de refuerzo). Ningún reporte solo alcanza — se van completando
+    // entre sí. Nunca se pisa un campo bueno con uno vacío del otro archivo.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS articulos_maestro (
+        codigo       TEXT PRIMARY KEY,
+        descripcion  TEXT,
+        proveedor    TEXT,
+        familia      TEXT,
+        categoria    TEXT,
+        marca        TEXT,
+        fuente       TEXT,          -- 'stock_disponible' | 'oc' | 'stock_disponible+oc'
+        actualizado  TIMESTAMP DEFAULT NOW()
+      )
+    `)
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_am_proveedor ON articulos_maestro(proveedor)`)
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_am_familia   ON articulos_maestro(familia)`)
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vl_fecha     ON ventas_lineas(fecha)`)
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vl_sucursal  ON ventas_lineas(sucursal)`)
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vl_codigo    ON ventas_lineas(codigo)`)
@@ -168,6 +187,59 @@ function parsePlanillaVentas(buffer) {
     }
   }
   return { encabezados, detalles }
+}
+
+// ─── Parser — maestro de artículos (Stock Disponible / Órdenes de Compra) ─────
+// Reconoce el archivo por sus encabezados, no por el nombre — así no importa
+// cómo lo hayan renombrado al descargarlo. Devuelve filas normalizadas
+// {codigo, descripcion, proveedor, familia, categoria, marca} — cada campo
+// puede venir null si ese reporte puntual no lo trae (el upsert después se
+// encarga de no pisar un dato bueno con uno vacío del otro archivo).
+function parseMaestroArticulos(buffer) {
+  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: false, dense: true, sheetRows: 0 })
+  const ws = wb.Sheets[wb.SheetNames[0]]
+  const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true })
+
+  const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim()
+
+  // Buscar la fila de encabezados en las primeras filas (puede no ser la 0)
+  let headerRow = -1, headers = []
+  for (let i = 0; i < Math.min(raw.length, 6); i++) {
+    const row = raw[i]
+    if (!row) continue
+    const normed = row.map(norm)
+    if (normed.includes('codigo') || normed.includes('código')) { headerRow = i; headers = normed; break }
+  }
+  if (headerRow === -1) throw new Error('No se encontró columna "Código" en las primeras filas')
+
+  const iCod = headers.findIndex(h => h === 'codigo' || h === 'código')
+  const iDesc = headers.findIndex(h => h.includes('descripcion'))
+  const iMarca = headers.findIndex(h => h === 'marca')
+  const iFamilia = headers.findIndex(h => h.includes('familia'))
+  const iCategoria = headers.findIndex(h => h.includes('categoria'))
+  const iProveedor = headers.findIndex(h => h.includes('proveedor'))
+
+  // Reporte de OC trae una línea por cada OC (mismo código puede repetirse
+  // muchas veces) — nos quedamos con la última aparición, que suele ser la
+  // más reciente. Reporte de Stock Disponible trae 1 fila por código.
+  const esOC = iProveedor !== -1
+
+  const filas = new Map()
+  for (let r = headerRow + 1; r < raw.length; r++) {
+    const row = raw[r]
+    if (!row) continue
+    const codigo = row[iCod] != null ? String(row[iCod]).trim() : ''
+    if (!codigo) continue
+    filas.set(codigo, {
+      codigo,
+      descripcion: iDesc !== -1 && row[iDesc] != null ? String(row[iDesc]).trim() : null,
+      proveedor:   iProveedor !== -1 && row[iProveedor] != null ? String(row[iProveedor]).trim() : null,
+      familia:     iFamilia !== -1 && row[iFamilia] != null ? String(row[iFamilia]).trim() : null,
+      categoria:   iCategoria !== -1 && row[iCategoria] != null ? String(row[iCategoria]).trim() : null,
+      marca:       iMarca !== -1 && row[iMarca] != null ? String(row[iMarca]).trim() : null,
+    })
+  }
+  return { filas: [...filas.values()], fuente: esOC ? 'oc' : 'stock_disponible' }
 }
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
@@ -275,6 +347,104 @@ app.get('/api/upload-status/:id', async (req, res) => {
   try {
     const r = await pool.query('SELECT * FROM uploads_log WHERE id=$1', [req.params.id])
     res.json(r.rows[0] || { status: 'not_found' })
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+// ─── Carga del maestro de artículos (Stock Disponible / Órdenes de Compra) ────
+app.post('/api/upload-maestro', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No se recibió archivo' })
+    const { filas, fuente } = parseMaestroArticulos(req.file.buffer)
+    if (filas.length === 0) return res.status(400).json({ error: 'No se encontraron filas con código' })
+
+    let insertados = 0, actualizados = 0
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN')
+      for (const f of filas) {
+        const r = await client.query(`
+          INSERT INTO articulos_maestro (codigo, descripcion, proveedor, familia, categoria, marca, fuente, actualizado)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+          ON CONFLICT (codigo) DO UPDATE SET
+            descripcion = COALESCE(EXCLUDED.descripcion, articulos_maestro.descripcion),
+            proveedor   = COALESCE(EXCLUDED.proveedor,   articulos_maestro.proveedor),
+            familia     = COALESCE(EXCLUDED.familia,     articulos_maestro.familia),
+            categoria   = COALESCE(EXCLUDED.categoria,   articulos_maestro.categoria),
+            marca       = COALESCE(EXCLUDED.marca,       articulos_maestro.marca),
+            fuente      = CASE WHEN articulos_maestro.fuente = $7 THEN $7
+                               WHEN articulos_maestro.fuente IS NULL THEN $7
+                               ELSE articulos_maestro.fuente || '+' || $7 END,
+            actualizado = NOW()
+          RETURNING (xmax = 0) AS inserted
+        `, [f.codigo, f.descripcion, f.proveedor, f.familia, f.categoria, f.marca, fuente])
+        if (r.rows[0].inserted) insertados++; else actualizados++
+      }
+      await client.query('COMMIT')
+    } catch (e) {
+      await client.query('ROLLBACK')
+      throw e
+    } finally {
+      client.release()
+    }
+
+    res.json({ ok: true, fuente, filas: filas.length, insertados, actualizados })
+  } catch (err) {
+    console.error('Upload maestro error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ─── Cobertura del join código→maestro ─────────────────────────────────────────
+// Antes de construir cualquier gráfico por Proveedor/Familia/Categoría/Marca,
+// hay que saber qué tan completo está el cruce contra las ventas reales — no
+// asumir que el maestro cubre todo. Devuelve el % de cobertura y, si se pide,
+// el listado de códigos vendidos que no matchean contra ningún artículo del maestro.
+app.get('/api/maestro/cobertura', async (req, res) => {
+  try {
+    const { where, params } = buildWhere('1=1', req.query)
+    const { where: whereVl, params: paramsVl } = buildWhere('1=1', req.query, 'vl')
+    const [total, cubiertos, camposVacios] = await Promise.all([
+      pool.query(`SELECT COUNT(DISTINCT codigo) as n FROM ventas_lineas WHERE ${where}`, params),
+      pool.query(`
+        SELECT COUNT(DISTINCT vl.codigo) as n
+        FROM ventas_lineas vl
+        JOIN articulos_maestro am ON am.codigo = vl.codigo
+        WHERE ${whereVl}
+      `, paramsVl),
+      pool.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE proveedor IS NULL) as sin_proveedor,
+          COUNT(*) FILTER (WHERE familia   IS NULL) as sin_familia,
+          COUNT(*) FILTER (WHERE categoria IS NULL) as sin_categoria,
+          COUNT(*) FILTER (WHERE marca     IS NULL) as sin_marca,
+          COUNT(*) as total_maestro
+        FROM articulos_maestro
+      `),
+    ])
+    const totalN = Number(total.rows[0].n), cubiertosN = Number(cubiertos.rows[0].n)
+    res.json({
+      codigos_vendidos: totalN,
+      codigos_con_maestro: cubiertosN,
+      cobertura_pct: totalN > 0 ? Math.round((cubiertosN / totalN) * 1000) / 10 : 0,
+      sin_maestro: totalN - cubiertosN,
+      completitud_maestro: camposVacios.rows[0],
+    })
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+app.get('/api/maestro/sin-clasificar', async (req, res) => {
+  try {
+    const { where: whereVl, params } = buildWhere('1=1', req.query, 'vl')
+    const r = await pool.query(`
+      SELECT vl.codigo, MAX(vl.descripcion) as descripcion, SUM(vl.cantidad) as unidades, COUNT(DISTINCT vl.nro_comprobante) as n_ventas
+      FROM ventas_lineas vl
+      LEFT JOIN articulos_maestro am ON am.codigo = vl.codigo
+      WHERE ${whereVl} AND am.codigo IS NULL
+      GROUP BY vl.codigo
+      ORDER BY unidades DESC
+      LIMIT 500
+    `, params)
+    res.json(r.rows)
   } catch (err) { res.status(500).json({ error: err.message }) }
 })
 
