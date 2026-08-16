@@ -26,12 +26,14 @@ const TABS = [
 
 export default function App() {
   const [tab, setTab] = useState('dashboard')
-  const [filters, setFilters] = useState({ desde: '', hasta: '', sucursal: 'todas' })
+  const [filters, setFilters] = useState({ desde: '', hasta: '', sucursal: 'todas', proveedores: [] })
   const [sucursales, setSucursales] = useState([])
+  const [proveedores, setProveedores] = useState([])
   const [rangoFechas, setRangoFechas] = useState({ desde: '', hasta: '' })
 
   useEffect(() => {
     fetch('/api/sucursales').then(r => r.json()).then(setSucursales).catch(() => {})
+    fetch('/api/proveedores').then(r => r.json()).then(setProveedores).catch(() => {})
     fetch('/api/fechas-rango').then(r => r.json()).then(d => {
       setRangoFechas(d)
       if (!filters.desde && d.desde) {
@@ -45,7 +47,7 @@ export default function App() {
     }).catch(() => {})
   }, [])
 
-  const pageProps = { filters, T }
+  const pageProps = { filters, setFilters, T }
 
   return (
     <div style={{ display:'flex', flexDirection:'column', minHeight:'100vh', background: T.bg }}>
@@ -87,6 +89,7 @@ export default function App() {
           filters={filters}
           setFilters={setFilters}
           sucursales={sucursales}
+          proveedores={proveedores}
           rangoFechas={rangoFechas}
           T={T}
         />

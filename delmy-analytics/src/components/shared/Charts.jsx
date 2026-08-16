@@ -172,6 +172,63 @@ export function HBarChart({ data, valueKey, labelKey, color = '#f0c040', T, maxR
   )
 }
 
+// ─── Pareto Chart — barras de valor + curva de % acumulado (80/20) ─────────────
+export function ParetoChart({ data, valueKey = 'facturacion', pctAcumKey = 'pct_acum', labelKey, color = '#f0c040', lineColor = '#60a5fa', T, height = 220, maxItems = 20, onBarClick }) {
+  if (!data || data.length === 0) return <Empty T={T} />
+  const rows = data.slice(0, maxItems)
+  const max = Math.max(...rows.map(d => d[valueKey] || 0)) || 1
+  const pad = { l: 55, r: 45, t: 10, b: 46 }
+  const barW = Math.max(14, Math.min(40, 620 / rows.length - 4))
+  const w = rows.length * (barW + 4)
+  const totalW = w + pad.l + pad.r
+  const h = height - pad.t - pad.b
+
+  const linePts = rows.map((d, i) => ({
+    x: pad.l + i * (barW + 4) + barW / 2,
+    y: pad.t + h - ((d[pctAcumKey] || 0) / 100) * h,
+  }))
+  const lineD = linePts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')
+  const y80 = pad.t + h - 0.8 * h
+
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <svg width={totalW} height={height} style={{ display: 'block' }}>
+        {/* Línea de referencia 80% */}
+        <line x1={pad.l} y1={y80} x2={pad.l + w} y2={y80} stroke={T.mut} strokeWidth={1} strokeDasharray="3,3" opacity={0.5} />
+        <text x={pad.l + w + 4} y={y80 + 3} fill={T.mut} fontSize={9} fontFamily="DM Mono">80%</text>
+
+        {/* Eje derecho (0-100%) */}
+        {[0, 25, 50, 75, 100].map(t => (
+          <text key={t} x={pad.l + w + 4} y={pad.t + h - (t / 100) * h + 3} fill={T.mut} fontSize={8} fontFamily="DM Mono">{t}%</text>
+        ))}
+
+        {/* Barras */}
+        {rows.map((d, i) => {
+          const bh = ((d[valueKey] || 0) / max) * h
+          const x = pad.l + i * (barW + 4)
+          const y = pad.t + h - bh
+          return (
+            <g key={i} style={{ cursor: onBarClick ? 'pointer' : 'default' }} onClick={() => onBarClick && onBarClick(d)}>
+              <rect x={x} y={y} width={barW} height={bh} fill={color} opacity={0.85} rx={2} />
+              <text
+                x={x + barW / 2} y={height - pad.b + 12}
+                textAnchor="end" fill={T.mut} fontSize={9} fontFamily="DM Mono"
+                transform={`rotate(-40 ${x + barW / 2} ${height - pad.b + 12})`}
+              >
+                {String(d[labelKey] || '').slice(0, 16)}
+              </text>
+            </g>
+          )
+        })}
+
+        {/* Curva de % acumulado */}
+        <path d={lineD} fill="none" stroke={lineColor} strokeWidth={2} />
+        {linePts.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r={3} fill={lineColor} />)}
+      </svg>
+    </div>
+  )
+}
+
 function Empty({ T }) {
   return <div style={{ padding: 20, color: T.mut, fontSize: 11, textAlign: 'center' }}>Sin datos</div>
 }

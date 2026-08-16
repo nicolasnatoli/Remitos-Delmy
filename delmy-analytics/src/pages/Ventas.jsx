@@ -1,19 +1,21 @@
 import { useState } from 'react'
 import { useFetch, buildQS } from '../hooks/useFetch.js'
 import { KpiCard, fmtPeso, fmt } from '../components/shared/KpiCard.jsx'
-import { LineChart, BarChart } from '../components/shared/Charts.jsx'
+import { LineChart, BarChart, ParetoChart } from '../components/shared/Charts.jsx'
 
 const PANEL = { background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 6, padding: '16px 18px' }
 const TITLE = { fontSize: 10, color: 'var(--mut)', letterSpacing: 2, textTransform: 'uppercase', marginBottom: 12 }
 
-export default function Ventas({ filters, T }) {
+export default function Ventas({ filters, setFilters, T }) {
   const [vista, setVista] = useState('dia') // dia | mes | sucursal
+  const [metricaProveedor, setMetricaProveedor] = useState('facturacion') // facturacion | unidades | n_ventas
   const qs = buildQS(filters)
 
   const { data: porDia } = useFetch(`/api/ventas/por-dia${qs}`, [qs])
   const { data: porMes } = useFetch(`/api/ventas/por-mes${qs}`, [qs])
   const { data: porSuc } = useFetch(`/api/ventas/por-sucursal${qs}`, [qs])
   const { data: kpis } = useFetch(`/api/kpis${qs}`, [qs])
+  const { data: porProveedor } = useFetch(`/api/ventas/por-proveedor${qs}`, [qs])
 
   const exportCSV = (data, filename) => {
     if (!data || data.length === 0) return
@@ -121,6 +123,80 @@ export default function Ventas({ filters, T }) {
           </div>
         </div>
       )}
+
+      {/* Ventas por Proveedor — primer nivel de la jerarquía */}
+      <div style={PANEL}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+          <div style={TITLE}>Ventas por Proveedor</div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {[['facturacion','Ventas $'],['unidades','Unidades'],['n_ventas','N° Pedidos']].map(([v,label]) => (
+              <button
+                key={v}
+                onClick={() => setMetricaProveedor(v)}
+                style={{
+                  padding: '4px 10px', borderRadius: 4, fontSize: 10, letterSpacing: 0.5,
+                  background: metricaProveedor === v ? T.acc : T.panel2,
+                  color: metricaProveedor === v ? T.bg : T.mut,
+                  border: `1px solid ${metricaProveedor === v ? T.acc : T.border2}`
+                }}
+              >{label}</button>
+            ))}
+          </div>
+        </div>
+        <div style={{ fontSize: 10, color: T.mut, marginBottom: 10 }}>
+          Curva de Pareto (80/20) — clic en una barra para filtrar el panel por ese proveedor.
+        </div>
+        {porProveedor && (
+          <ParetoChart
+            data={porProveedor}
+            valueKey={metricaProveedor}
+            labelKey="proveedor"
+            T={T}
+            color={T.violet}
+            onBarClick={(d) => setFilters(f => ({ ...f, proveedores: [d.proveedor] }))}
+          />
+        )}
+
+        {porProveedor && porProveedor.length > 0 && (
+          <div style={{ maxHeight: 320, overflowY: 'auto', marginTop: 16 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+              <thead style={{ position: 'sticky', top: 0, background: T.panel }}>
+                <tr style={{ borderBottom: `1px solid ${T.border}` }}>
+                  {['Proveedor','Unidades','N° Pedidos','Ventas $','%','% Acum.','Artículos'].map(h => (
+                    <th key={h} style={{ padding: '4px 10px', color: T.mut, textAlign: h === 'Proveedor' ? 'left' : 'right', fontWeight: 400, fontSize: 9, letterSpacing: 1 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {porProveedor.map(p => (
+                  <tr
+                    key={p.proveedor}
+                    onClick={() => setFilters(f => ({ ...f, proveedores: [p.proveedor] }))}
+                    style={{ borderBottom: `1px solid ${T.border}`, cursor: 'pointer' }}
+                    onMouseEnter={e => e.currentTarget.style.background = T.panel2}
+                    onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                  >
+                    <td style={{ padding: '5px 10px', color: T.violet }}>{p.proveedor}</td>
+                    <td style={{ padding: '5px 10px', color: T.txt, textAlign: 'right' }}>{fmt(p.unidades)}</td>
+                    <td style={{ padding: '5px 10px', color: T.txt, textAlign: 'right' }}>{fmt(p.n_ventas)}</td>
+                    <td style={{ padding: '5px 10px', color: T.acc, textAlign: 'right' }}>{fmtPeso(p.facturacion)}</td>
+                    <td style={{ padding: '5px 10px', color: T.mut, textAlign: 'right' }}>{p.pct}%</td>
+                    <td style={{ padding: '5px 10px', color: T.mut, textAlign: 'right' }}>{p.pct_acum}%</td>
+                    <td style={{ padding: '5px 10px', color: T.mut, textAlign: 'right' }}>{fmt(p.n_articulos)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <button
+          onClick={() => exportCSV(porProveedor, `ventas_por_proveedor_${filters.desde}_${filters.hasta}.csv`)}
+          style={{
+            marginTop: 10, padding: '6px 14px', borderRadius: 4, fontSize: 11,
+            background: T.panel2, border: `1px solid ${T.border2}`, color: T.teal
+          }}
+        >↓ Exportar CSV</button>
+      </div>
 
       {/* Tabla de datos */}
       {vista === 'dia' && porDia && porDia.length > 0 && (

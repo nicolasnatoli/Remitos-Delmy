@@ -28,5 +28,6 @@ export function buildQS(filters) {
   if (filters.desde) p.set('desde', filters.desde)
   if (filters.hasta) p.set('hasta', filters.hasta)
   if (filters.sucursal && filters.sucursal !== 'todas') p.set('sucursal', filters.sucursal)
+  if (filters.proveedores && filters.proveedores.length > 0) p.set('proveedores', filters.proveedores.join(','))
   return p.toString() ? '?' + p.toString() : ''
 }
