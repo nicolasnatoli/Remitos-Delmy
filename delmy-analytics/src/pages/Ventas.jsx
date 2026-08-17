@@ -1,14 +1,101 @@
 import { useState } from 'react'
 import { useFetch, buildQS } from '../hooks/useFetch.js'
-import { KpiCard, fmtPeso, fmt } from '../components/shared/KpiCard.jsx'
-import { LineChart, BarChart, ParetoChart } from '../components/shared/Charts.jsx'
+import { fmt as fmtBase, fmtPeso as fmtPesoBase } from '../components/shared/KpiCard.jsx'
+import { ParetoChart, LineChart, BarChart } from '../components/shared/Charts.jsx'
 
-const PANEL = { background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 6, padding: '16px 18px' }
-const TITLE = { fontSize: 10, color: 'var(--mut)', letterSpacing: 2, textTransform: 'uppercase', marginBottom: 12 }
+// ─── Sistema de diseño — valores literales del dashboard de referencia ────────
+// Tokens propios de esta página, no tocan el T global (dark) que usa el resto
+// de la app. Cuando se confirme que esto es lo que se quiere, se extiende a
+// App.jsx/todas las páginas — hasta entonces conviven dos estilos.
+const D = {
+  bg: '#F2F4F7', panel: '#FFFFFF', ink: '#182129', inkSoft: '#5B6572', line: '#E4E8ED',
+  navy: '#131B24', navy2: '#1E2A38',
+  orange: '#E8622C', orangeSoft: '#FBE4D8',
+  steel: '#2E6F95', steelSoft: '#DCEAF1',
+  green: '#3A8047', amber: '#D9A441', red: '#C0392B',
+  purple: '#6B4F9E', purpleSoft: '#EAE3F5',
+  radius: 10,
+  shadow: '0 1px 2px rgba(19,27,36,.06), 0 1px 12px rgba(19,27,36,.04)',
+  fontDisplay: "'Barlow Condensed', sans-serif",
+  fontBody: "'Inter', sans-serif",
+}
+
+// Shim para pasarle a los charts compartidos (Charts.jsx espera T.mut / T.border)
+const chartT = { mut: D.inkSoft, border: D.line, bg: D.panel, txt: D.ink }
+
+const fmt = fmtBase
+const fmtPeso = fmtPesoBase
+
+function Panel({ children, style }) {
+  return (
+    <div style={{ background: D.panel, borderRadius: D.radius, boxShadow: D.shadow, padding: '20px 22px', ...style }}>
+      {children}
+    </div>
+  )
+}
+
+function PanelTitle({ children, right }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+      <div style={{ fontFamily: D.fontDisplay, fontSize: 18, fontWeight: 700, color: D.ink, letterSpacing: 0.2 }}>{children}</div>
+      {right}
+    </div>
+  )
+}
+
+function KpiCardLocal({ label, value, foot, stripe }) {
+  return (
+    <div style={{ background: D.panel, borderRadius: D.radius, boxShadow: D.shadow, padding: '16px 16px 14px', borderTop: `3px solid ${stripe || D.orange}` }}>
+      <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: D.inkSoft, fontWeight: 600, fontFamily: D.fontBody }}>{label}</div>
+      <div style={{ fontFamily: D.fontDisplay, fontSize: 26, fontWeight: 800, lineHeight: 1, color: D.ink, marginTop: 6 }}>{value}</div>
+      {foot && <div style={{ fontSize: 11.5, color: D.inkSoft, marginTop: 5, fontFamily: D.fontBody }}>{foot}</div>}
+    </div>
+  )
+}
+
+function ToggleGroup({ options, value, onChange }) {
+  return (
+    <div style={{ display: 'inline-flex', background: '#EEF1F4', borderRadius: 8, padding: 3, gap: 2 }}>
+      {options.map(([v, label]) => (
+        <button
+          key={v}
+          onClick={() => onChange(v)}
+          style={{
+            border: 'none', padding: '6px 13px', borderRadius: 6, fontSize: 12.5, fontWeight: 600,
+            fontFamily: D.fontBody, cursor: 'pointer',
+            background: value === v ? D.navy : 'transparent',
+            color: value === v ? '#fff' : D.inkSoft,
+          }}
+        >{label}</button>
+      ))}
+    </div>
+  )
+}
+
+function PresetBtn({ children, active, onClick }) {
+  return (
+    <button onClick={onClick} style={{
+      border: `1px solid ${D.line}`, background: active ? D.navy : '#F8F9FB', color: active ? '#fff' : D.ink,
+      padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, fontFamily: D.fontBody, cursor: 'pointer',
+    }}>{children}</button>
+  )
+}
+
+function PctBar({ pct }) {
+  return (
+    <span style={{ display: 'inline-block', height: 6, background: D.orangeSoft, borderRadius: 3, width: 70, position: 'relative', verticalAlign: 'middle' }}>
+      <i style={{ position: 'absolute', left: 0, top: 0, bottom: 0, background: D.orange, borderRadius: 3, width: `${Math.min(100, pct)}%` }} />
+    </span>
+  )
+}
+
+const th = { textAlign: 'left', padding: '8px 10px', borderBottom: `2px solid ${D.line}`, color: D.inkSoft, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.4, fontFamily: D.fontBody }
+const td = { padding: '7px 10px', borderBottom: '1px solid #F0F2F5', fontSize: 12.8, fontFamily: D.fontBody, fontVariantNumeric: 'tabular-nums' }
 
 export default function Ventas({ filters, setFilters, T }) {
-  const [vista, setVista] = useState('dia') // dia | mes | sucursal
-  const [metricaProveedor, setMetricaProveedor] = useState('facturacion') // facturacion | unidades | n_ventas
+  const [vista, setVista] = useState('dia')
+  const [metricaProveedor, setMetricaProveedor] = useState('facturacion')
+  const [proveedorHover, setProveedorHover] = useState(null)
   const qs = buildQS(filters)
 
   const { data: porDia } = useFetch(`/api/ventas/por-dia${qs}`, [qs])
@@ -27,7 +114,6 @@ export default function Ventas({ filters, setFilters, T }) {
     a.click()
   }
 
-  // Aggregate porMes by mes (all sucursales)
   const mesTotals = porMes ? Object.values(
     porMes.reduce((acc, r) => {
       if (!acc[r.mes]) acc[r.mes] = { mes: r.mes, total: 0, n_ventas: 0 }
@@ -37,194 +123,205 @@ export default function Ventas({ filters, setFilters, T }) {
     }, {})
   ).sort((a, b) => a.mes.localeCompare(b.mes)) : []
 
-  // Sucursales por mes (stacked data)
-  const sucursalesKey = porMes ? [...new Set(porMes.map(r => r.sucursal))] : []
+  const seleccionado = proveedorHover && porProveedor ? porProveedor.find(p => p.proveedor === proveedorHover) : null
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div style={{ background: D.bg, margin: '-16px -20px', padding: '0 0 40px', minHeight: '100%', fontFamily: D.fontBody }}>
 
-      {/* KPIs */}
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-        <KpiCard T={T} label="Facturación" color={T.acc} value={fmtPeso(kpis?.facturacion_bruta)} size="lg" />
-        <KpiCard T={T} label="Comprobantes" color={T.blue} value={fmt(kpis?.n_comprobantes)} sub={`Ticket prom: ${fmtPeso(kpis?.ticket_promedio)}`} />
-        <KpiCard T={T} label="Días con venta" color={T.teal} value={kpis?.dias_con_venta ?? '—'} sub="en el período" />
-        <KpiCard T={T} label="Facturación/día" color={T.violet}
-          value={fmtPeso(kpis?.dias_con_venta > 0 ? (kpis?.facturacion_bruta / kpis?.dias_con_venta) : 0)}
-          sub="promedio" />
+      {/* ─── Header tipo "topbar" del sistema de referencia ─── */}
+      <div style={{
+        background: `linear-gradient(135deg, ${D.navy} 0%, ${D.navy2} 100%)`,
+        color: '#fff', padding: '26px 24px 34px', position: 'relative', overflow: 'hidden',
+      }}>
+        <div style={{
+          content: '""', position: 'absolute', right: -60, top: -60, width: 280, height: 280, borderRadius: '50%',
+          background: `radial-gradient(circle, rgba(232,98,44,.28), transparent 70%)`, pointerEvents: 'none',
+        }} />
+        <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 2, color: D.orange, fontWeight: 700, fontFamily: D.fontBody, position: 'relative' }}>
+          PANEL DE INDICADORES · VENTAS
+        </div>
+        <h1 style={{ fontFamily: D.fontDisplay, fontSize: 34, fontWeight: 800, margin: '4px 0 0', position: 'relative' }}>
+          Ventas — Delmy Party SRL
+        </h1>
       </div>
 
-      {/* Vista selector */}
-      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-        {[['dia','Por día'],['mes','Por mes'],['sucursal','Por sucursal']].map(([v, label]) => (
+      <div style={{ maxWidth: 1360, margin: '0 auto', padding: '24px 24px 0' }}>
+
+        {/* ─── Filtros de fecha rápidos ─── */}
+        <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap', alignItems: 'center' }}>
+          <PresetBtn onClick={() => {}}>Filtrar fechas</PresetBtn>
+          <div style={{ flex: 1 }} />
           <button
-            key={v}
-            onClick={() => setVista(v)}
+            onClick={() => exportCSV(
+              vista === 'dia' ? porDia : vista === 'mes' ? mesTotals : porSuc,
+              `ventas_${vista}_${filters.desde}_${filters.hasta}.csv`
+            )}
             style={{
-              padding: '6px 14px', borderRadius: 4, fontSize: 11, letterSpacing: 1,
-              background: vista === v ? T.acc : T.panel2,
-              color: vista === v ? T.bg : T.mut,
-              border: `1px solid ${vista === v ? T.acc : T.border2}`
+              padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600, fontFamily: D.fontBody,
+              background: D.steelSoft, border: `1px solid ${D.steel}`, color: D.steel, cursor: 'pointer',
             }}
-          >{label}</button>
-        ))}
-        <div style={{ flex: 1 }} />
-        <button
-          onClick={() => exportCSV(
-            vista === 'dia' ? porDia : vista === 'mes' ? mesTotals : porSuc,
-            `ventas_${vista}_${filters.desde}_${filters.hasta}.csv`
-          )}
-          style={{
-            padding: '6px 14px', borderRadius: 4, fontSize: 11,
-            background: T.panel2, border: `1px solid ${T.border2}`, color: T.teal
-          }}
-        >↓ Exportar CSV</button>
-      </div>
-
-      {/* Chart */}
-      {vista === 'dia' && porDia && (
-        <div style={PANEL}>
-          <div style={TITLE}>Ventas diarias — Facturación</div>
-          <LineChart data={porDia} valueKey="total" labelKey="fecha" color={T.acc} T={T} height={200} />
+          >↓ Exportar CSV</button>
         </div>
-      )}
 
-      {vista === 'mes' && mesTotals.length > 0 && (
-        <div style={PANEL}>
-          <div style={TITLE}>Ventas mensuales — Facturación total</div>
-          <BarChart data={mesTotals} valueKey="total" labelKey="mes" color={T.acc} T={T} height={200} />
+        {/* ─── KPIs ─── */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(148px,1fr))', gap: 14, marginBottom: 34 }}>
+          <KpiCardLocal label="Facturación" value={fmtPeso(kpis?.facturacion_bruta)} stripe={D.orange} foot="bruta del período" />
+          <KpiCardLocal label="Comprobantes" value={fmt(kpis?.n_comprobantes)} stripe={D.steel} foot={`Ticket prom: ${fmtPeso(kpis?.ticket_promedio)}`} />
+          <KpiCardLocal label="Días con venta" value={kpis?.dias_con_venta ?? '—'} stripe={D.green} foot="en el período" />
+          <KpiCardLocal label="Facturación/día" value={fmtPeso(kpis?.dias_con_venta > 0 ? (kpis?.facturacion_bruta / kpis?.dias_con_venta) : 0)} stripe={D.amber} foot="promedio" />
         </div>
-      )}
 
-      {vista === 'sucursal' && porSuc && (
-        <div style={PANEL}>
-          <div style={TITLE}>Ventas por sucursal</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
-            {porSuc.map(s => {
-              const total = porSuc.reduce((a, x) => a + (x.total || 0), 0)
-              const pct = total > 0 ? Math.round((s.total / total) * 100) : 0
-              return (
-                <div key={s.sucursal} style={{
-                  background: T.panel2, borderRadius: 6, padding: '12px 16px',
-                  border: `1px solid ${T.border2}`
-                }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                    <span style={{ fontFamily: 'Syne, sans-serif', fontSize: 14, fontWeight: 700, color: T.txt }}>{s.sucursal}</span>
-                    <span style={{ fontFamily: 'Syne, sans-serif', fontSize: 18, fontWeight: 800, color: T.acc }}>{fmtPeso(s.total)}</span>
+        {/* ─── Tendencia general ─── */}
+        <section style={{ marginTop: 34 }}>
+          <Panel>
+            <PanelTitle right={<ToggleGroup options={[['dia','Por día'],['mes','Por mes'],['sucursal','Por sucursal']]} value={vista} onChange={setVista} />}>
+              Tendencia general de ventas
+            </PanelTitle>
+
+            {vista === 'dia' && porDia && (
+              <LineChart data={porDia} valueKey="total" labelKey="fecha" color={D.orange} T={chartT} height={220} />
+            )}
+            {vista === 'mes' && mesTotals.length > 0 && (
+              <BarChart data={mesTotals} valueKey="total" labelKey="mes" color={D.orange} T={chartT} height={220} />
+            )}
+            {vista === 'sucursal' && porSuc && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 8 }}>
+                {porSuc.map((s, i) => {
+                  const total = porSuc.reduce((a, x) => a + (x.total || 0), 0)
+                  const pct = total > 0 ? Math.round((s.total / total) * 100) : 0
+                  const color = [D.orange, D.steel, D.purple][i % 3]
+                  return (
+                    <div key={s.sucursal} style={{ background: '#FAFBFC', borderRadius: D.radius, padding: '14px 16px', border: `1px solid ${D.line}` }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                        <span style={{ fontFamily: D.fontDisplay, fontSize: 16, fontWeight: 700, color: D.ink }}>{s.sucursal}</span>
+                        <span style={{ fontFamily: D.fontDisplay, fontSize: 20, fontWeight: 800, color }}>{fmtPeso(s.total)}</span>
+                      </div>
+                      <div style={{ fontSize: 11.5, color: D.inkSoft }}>{fmt(s.n_ventas)} tickets · Ticket prom: {fmtPeso(s.ticket_promedio)} · {pct}% del total</div>
+                      <div style={{ marginTop: 8, background: D.line, borderRadius: 3, height: 6 }}>
+                        <div style={{ width: `${pct}%`, background: color, height: '100%', borderRadius: 3 }} />
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </Panel>
+        </section>
+
+        {/* ─── Ventas por Proveedor — con resumen al costado, nunca arriba tapando el gráfico ─── */}
+        <section style={{ marginTop: 34 }}>
+          <Panel>
+            <PanelTitle right={<ToggleGroup options={[['facturacion','Ventas $'],['unidades','Unidades'],['n_ventas','N° Pedidos']]} value={metricaProveedor} onChange={setMetricaProveedor} />}>
+              Ventas por Proveedor
+            </PanelTitle>
+            <div style={{ fontSize: 12, color: D.inkSoft, marginBottom: 14 }}>
+              Curva de Pareto (80/20) — clic en una barra para filtrar el panel por ese proveedor.
+            </div>
+
+            <div style={{ display: 'flex', gap: 16 }}>
+              <div style={{ flex: '1 1 auto', minWidth: 0 }}>
+                {porProveedor && (
+                  <ParetoChart
+                    data={porProveedor}
+                    valueKey={metricaProveedor}
+                    labelKey="proveedor"
+                    T={chartT}
+                    color={D.orange}
+                    lineColor={D.steel}
+                    onBarClick={(d) => { setFilters(f => ({ ...f, proveedores: [d.proveedor] })); setProveedorHover(d.proveedor) }}
+                  />
+                )}
+              </div>
+              {seleccionado && (
+                <div style={{ flex: '0 0 320px', maxWidth: 320, background: D.orangeSoft, borderRadius: D.radius, padding: 16 }}>
+                  <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, color: D.orange, fontWeight: 700, marginBottom: 8 }}>Proveedor seleccionado</div>
+                  <div style={{ fontFamily: D.fontDisplay, fontSize: 20, fontWeight: 800, color: D.ink, marginBottom: 10 }}>{seleccionado.proveedor}</div>
+                  <div style={{ fontSize: 12, color: D.inkSoft, lineHeight: 1.9 }}>
+                    Facturación: <b style={{ color: D.ink }}>{fmtPeso(seleccionado.facturacion)}</b><br/>
+                    Unidades: <b style={{ color: D.ink }}>{fmt(seleccionado.unidades)}</b><br/>
+                    Pedidos: <b style={{ color: D.ink }}>{fmt(seleccionado.n_ventas)}</b><br/>
+                    Artículos: <b style={{ color: D.ink }}>{fmt(seleccionado.n_articulos)}</b><br/>
+                    % del total: <b style={{ color: D.ink }}>{seleccionado.pct}%</b>
                   </div>
-                  <div style={{ display: 'flex', gap: 20 }}>
-                    <span style={{ fontSize: 11, color: T.mut }}>{fmt(s.n_ventas)} tickets · Ticket prom: {fmtPeso(s.ticket_promedio)} · {pct}% del total</span>
-                  </div>
-                  <div style={{ marginTop: 8, background: T.border, borderRadius: 2, height: 4 }}>
-                    <div style={{ width: `${pct}%`, background: T.acc, height: '100%', borderRadius: 2 }} />
-                  </div>
+                  <button
+                    onClick={() => { setFilters(f => ({ ...f, proveedores: [] })); setProveedorHover(null) }}
+                    style={{ marginTop: 12, fontSize: 11, color: D.orange, background: 'transparent', border: 'none', cursor: 'pointer', fontWeight: 600 }}
+                  >✕ Quitar filtro</button>
                 </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
+              )}
+            </div>
 
-      {/* Ventas por Proveedor — primer nivel de la jerarquía */}
-      <div style={PANEL}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-          <div style={TITLE}>Ventas por Proveedor</div>
-          <div style={{ display: 'flex', gap: 6 }}>
-            {[['facturacion','Ventas $'],['unidades','Unidades'],['n_ventas','N° Pedidos']].map(([v,label]) => (
-              <button
-                key={v}
-                onClick={() => setMetricaProveedor(v)}
-                style={{
-                  padding: '4px 10px', borderRadius: 4, fontSize: 10, letterSpacing: 0.5,
-                  background: metricaProveedor === v ? T.acc : T.panel2,
-                  color: metricaProveedor === v ? T.bg : T.mut,
-                  border: `1px solid ${metricaProveedor === v ? T.acc : T.border2}`
-                }}
-              >{label}</button>
-            ))}
-          </div>
-        </div>
-        <div style={{ fontSize: 10, color: T.mut, marginBottom: 10 }}>
-          Curva de Pareto (80/20) — clic en una barra para filtrar el panel por ese proveedor.
-        </div>
-        {porProveedor && (
-          <ParetoChart
-            data={porProveedor}
-            valueKey={metricaProveedor}
-            labelKey="proveedor"
-            T={T}
-            color={T.violet}
-            onBarClick={(d) => setFilters(f => ({ ...f, proveedores: [d.proveedor] }))}
-          />
-        )}
+            {porProveedor && porProveedor.length > 0 && (
+              <div style={{ maxHeight: 340, overflowY: 'auto', marginTop: 18 }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.8 }}>
+                  <thead style={{ position: 'sticky', top: 0, background: D.panel }}>
+                    <tr>
+                      {['Proveedor','Unidades','N° Pedidos','Ventas $','%','% Acum.','Artículos'].map(h => (
+                        <th key={h} style={{ ...th, textAlign: h === 'Proveedor' ? 'left' : 'right' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {porProveedor.map(p => (
+                      <tr
+                        key={p.proveedor}
+                        onClick={() => { setFilters(f => ({ ...f, proveedores: [p.proveedor] })); setProveedorHover(p.proveedor) }}
+                        onMouseEnter={e => e.currentTarget.style.background = D.steelSoft}
+                        onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                        style={{ cursor: 'pointer' }}
+                      >
+                        <td style={{ ...td, color: D.ink, fontWeight: 600 }}>{p.proveedor}</td>
+                        <td style={{ ...td, textAlign: 'right', color: D.ink }}>{fmt(p.unidades)}</td>
+                        <td style={{ ...td, textAlign: 'right', color: D.ink }}>{fmt(p.n_ventas)}</td>
+                        <td style={{ ...td, textAlign: 'right', color: D.orange, fontWeight: 700 }}>{fmtPeso(p.facturacion)}</td>
+                        <td style={{ ...td, textAlign: 'right', color: D.inkSoft }}>{p.pct}%</td>
+                        <td style={{ ...td, textAlign: 'right' }}>
+                          <PctBar pct={p.pct_acum} /> <span style={{ color: D.inkSoft, marginLeft: 6 }}>{p.pct_acum}%</span>
+                        </td>
+                        <td style={{ ...td, textAlign: 'right', color: D.inkSoft }}>{fmt(p.n_articulos)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <button
+              onClick={() => exportCSV(porProveedor, `ventas_por_proveedor_${filters.desde}_${filters.hasta}.csv`)}
+              style={{ marginTop: 14, padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600, fontFamily: D.fontBody, background: D.steelSoft, border: `1px solid ${D.steel}`, color: D.steel, cursor: 'pointer' }}
+            >↓ Exportar CSV</button>
+          </Panel>
+        </section>
 
-        {porProveedor && porProveedor.length > 0 && (
-          <div style={{ maxHeight: 320, overflowY: 'auto', marginTop: 16 }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-              <thead style={{ position: 'sticky', top: 0, background: T.panel }}>
-                <tr style={{ borderBottom: `1px solid ${T.border}` }}>
-                  {['Proveedor','Unidades','N° Pedidos','Ventas $','%','% Acum.','Artículos'].map(h => (
-                    <th key={h} style={{ padding: '4px 10px', color: T.mut, textAlign: h === 'Proveedor' ? 'left' : 'right', fontWeight: 400, fontSize: 9, letterSpacing: 1 }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {porProveedor.map(p => (
-                  <tr
-                    key={p.proveedor}
-                    onClick={() => setFilters(f => ({ ...f, proveedores: [p.proveedor] }))}
-                    style={{ borderBottom: `1px solid ${T.border}`, cursor: 'pointer' }}
-                    onMouseEnter={e => e.currentTarget.style.background = T.panel2}
-                    onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-                  >
-                    <td style={{ padding: '5px 10px', color: T.violet }}>{p.proveedor}</td>
-                    <td style={{ padding: '5px 10px', color: T.txt, textAlign: 'right' }}>{fmt(p.unidades)}</td>
-                    <td style={{ padding: '5px 10px', color: T.txt, textAlign: 'right' }}>{fmt(p.n_ventas)}</td>
-                    <td style={{ padding: '5px 10px', color: T.acc, textAlign: 'right' }}>{fmtPeso(p.facturacion)}</td>
-                    <td style={{ padding: '5px 10px', color: T.mut, textAlign: 'right' }}>{p.pct}%</td>
-                    <td style={{ padding: '5px 10px', color: T.mut, textAlign: 'right' }}>{p.pct_acum}%</td>
-                    <td style={{ padding: '5px 10px', color: T.mut, textAlign: 'right' }}>{fmt(p.n_articulos)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        {/* ─── Detalle diario ─── */}
+        {vista === 'dia' && porDia && porDia.length > 0 && (
+          <section style={{ marginTop: 34 }}>
+            <Panel>
+              <PanelTitle>Detalle diario</PanelTitle>
+              <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.8 }}>
+                  <thead style={{ position: 'sticky', top: 0, background: D.panel }}>
+                    <tr>
+                      {['Fecha','N° Ventas','Facturación','Ticket Promedio'].map(h => (
+                        <th key={h} style={{ ...th, textAlign: h === 'Fecha' ? 'left' : 'right' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...porDia].reverse().map(d => (
+                      <tr key={d.fecha} onMouseEnter={e => e.currentTarget.style.background = '#FAFBFC'} onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                        <td style={{ ...td, color: D.steel, fontWeight: 600 }}>{d.fecha}</td>
+                        <td style={{ ...td, textAlign: 'right', color: D.inkSoft }}>{fmt(d.n_ventas)}</td>
+                        <td style={{ ...td, textAlign: 'right', color: D.orange, fontWeight: 700 }}>{fmtPeso(d.total)}</td>
+                        <td style={{ ...td, textAlign: 'right', color: D.ink }}>{fmtPeso(d.ticket_promedio)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Panel>
+          </section>
         )}
-        <button
-          onClick={() => exportCSV(porProveedor, `ventas_por_proveedor_${filters.desde}_${filters.hasta}.csv`)}
-          style={{
-            marginTop: 10, padding: '6px 14px', borderRadius: 4, fontSize: 11,
-            background: T.panel2, border: `1px solid ${T.border2}`, color: T.teal
-          }}
-        >↓ Exportar CSV</button>
       </div>
-
-      {/* Tabla de datos */}
-      {vista === 'dia' && porDia && porDia.length > 0 && (
-        <div style={PANEL}>
-          <div style={TITLE}>Detalle diario</div>
-          <div style={{ maxHeight: 300, overflowY: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-              <thead style={{ position: 'sticky', top: 0, background: T.panel }}>
-                <tr style={{ borderBottom: `1px solid ${T.border}` }}>
-                  {['Fecha','N° Ventas','Facturación','Ticket Promedio'].map(h => (
-                    <th key={h} style={{ padding: '4px 10px', color: T.mut, textAlign: 'right', fontWeight: 400, fontSize: 9, letterSpacing: 1 }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {[...porDia].reverse().map(d => (
-                  <tr key={d.fecha} style={{ borderBottom: `1px solid ${T.border}` }}>
-                    <td style={{ padding: '5px 10px', color: T.teal }}>{d.fecha}</td>
-                    <td style={{ padding: '5px 10px', color: T.mut, textAlign: 'right' }}>{fmt(d.n_ventas)}</td>
-                    <td style={{ padding: '5px 10px', color: T.acc, textAlign: 'right' }}>{fmtPeso(d.total)}</td>
-                    <td style={{ padding: '5px 10px', color: T.txt, textAlign: 'right' }}>{fmtPeso(d.ticket_promedio)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
