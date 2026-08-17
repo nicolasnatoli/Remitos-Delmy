@@ -456,20 +456,21 @@ function buildWhere(base, q, col = '') {
   if (q?.desde) { parts.push(`${c}fecha >= $${n++}`); params.push(q.desde) }
   if (q?.hasta) { parts.push(`${c}fecha <= $${n++}`); params.push(q.hasta) }
   if (q?.sucursal && q.sucursal !== 'todas') { parts.push(`${c}sucursal = $${n++}`); params.push(q.sucursal) }
-  // Proveedor es el filtro general de arranque (igual que "Clasificación" en el
-  // dashboard de referencia) — afecta TODO el panel. Como tanto `comprobantes`
-  // como `ventas_lineas` tienen nro_comprobante, esta subquery funciona para
-  // cualquiera de las dos sin duplicar la función.
-  if (q?.proveedores) {
-    const provs = String(q.proveedores).split(',').map(s => s.trim()).filter(Boolean)
-    if (provs.length) {
-      parts.push(`${c}nro_comprobante IN (
-        SELECT DISTINCT vl2.nro_comprobante FROM ventas_lineas vl2
-        JOIN articulos_maestro am2 ON am2.codigo = vl2.codigo
-        WHERE am2.proveedor = ANY($${n++})
-      )`)
-      params.push(provs)
-    }
+  // Cascada de clasificación (Proveedor → Familia → Categoría → Marca) — todos
+  // los niveles activos se combinan en UNA sola subquery contra el maestro, no
+  // una por nivel, para no encadenar 4 EXISTS separados innecesariamente.
+  const splitCsv = v => String(v).split(',').map(s => s.trim()).filter(Boolean)
+  const condsMaestro = []
+  if (q?.proveedores) { const v = splitCsv(q.proveedores); if (v.length) { condsMaestro.push(`am2.proveedor = ANY($${n++})`); params.push(v) } }
+  if (q?.familias)    { const v = splitCsv(q.familias);    if (v.length) { condsMaestro.push(`am2.familia = ANY($${n++})`);   params.push(v) } }
+  if (q?.categorias)  { const v = splitCsv(q.categorias);  if (v.length) { condsMaestro.push(`am2.categoria = ANY($${n++})`); params.push(v) } }
+  if (q?.marcas)      { const v = splitCsv(q.marcas);      if (v.length) { condsMaestro.push(`am2.marca = ANY($${n++})`);     params.push(v) } }
+  if (condsMaestro.length) {
+    parts.push(`${c}nro_comprobante IN (
+      SELECT DISTINCT vl2.nro_comprobante FROM ventas_lineas vl2
+      JOIN articulos_maestro am2 ON am2.codigo = vl2.codigo
+      WHERE ${condsMaestro.join(' AND ')}
+    )`)
   }
   return { where: parts.join(' AND '), params }
 }
@@ -551,6 +552,89 @@ app.get('/api/ventas/por-mes', async (req, res) => {
 app.get('/api/proveedores', async (req, res) => {
   try {
     const r = await pool.query(`SELECT DISTINCT proveedor FROM articulos_maestro WHERE proveedor IS NOT NULL ORDER BY proveedor`)
+    res.json(r.rows.map(x => x.proveedor))
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+// ─── Ranking en cascada — Familia / Categoría / Marca / Artículo ───────────────
+// Un solo endpoint para los 4 niveles de abajo de la jerarquía. Cada nivel
+// respeta lo que ya esté filtrado arriba (proveedores/familias/categorias/marcas
+// en la querystring) — así clic en una barra de Familia filtra Categoría, clic
+// en Categoría filtra Marca, etc., sin que el frontend tenga que saber SQL.
+const NIVEL_COLUMNA = { familia: 'am.familia', categoria: 'am.categoria', marca: 'am.marca', articulo: 'vl.codigo' }
+app.get('/api/ventas/ranking-nivel', async (req, res) => {
+  try {
+    const nivel = req.query.nivel
+    const col = NIVEL_COLUMNA[nivel]
+    if (!col) return res.status(400).json({ error: `nivel inválido: ${nivel}. Usar familia|categoria|marca|articulo` })
+    const { where, params } = buildWhere('1=1', req.query, 'vl')
+
+    const selectDesc = nivel === 'articulo' ? ', MAX(vl.descripcion) as descripcion' : ''
+    const r = await pool.query(`
+      SELECT
+        COALESCE(${col}, 'Sin clasificar') as valor_nivel
+        ${selectDesc},
+        SUM(vl.cantidad) as unidades,
+        COUNT(DISTINCT vl.nro_comprobante) as n_ventas,
+        SUM(vl.subtotal_neto) as facturacion
+      FROM ventas_lineas vl
+      LEFT JOIN articulos_maestro am ON am.codigo = vl.codigo
+      WHERE ${where}
+      GROUP BY valor_nivel
+      ORDER BY facturacion DESC
+      LIMIT 300
+    `, params)
+    const total = r.rows.reduce((s, row) => s + Number(row.facturacion || 0), 0)
+    let acum = 0
+    const out = r.rows.map(row => {
+      const pct = total > 0 ? (Number(row.facturacion) / total) * 100 : 0
+      acum += pct
+      return { ...row, pct: Math.round(pct * 10) / 10, pct_acum: Math.round(acum * 10) / 10 }
+    })
+    res.json(out)
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+// ─── Grupos de proveedor por rubro, y recomendación de "compras recientes" ────
+// Un "grupo de proveedor" (ej. "Proveedores de Librería") no existe como dato
+// propio — se infiere: un proveedor pertenece al rubro de la Familia que más
+// vendió de él. Sirve para el filtro de "grupo de proveedor" que pediste.
+app.get('/api/proveedores/grupos', async (req, res) => {
+  try {
+    const r = await pool.query(`
+      SELECT proveedor, familia, COUNT(*) as n
+      FROM articulos_maestro
+      WHERE proveedor IS NOT NULL AND familia IS NOT NULL
+      GROUP BY proveedor, familia
+    `)
+    const porProveedor = {}
+    for (const row of r.rows) {
+      if (!porProveedor[row.proveedor]) porProveedor[row.proveedor] = {}
+      porProveedor[row.proveedor][row.familia] = (porProveedor[row.proveedor][row.familia] || 0) + Number(row.n)
+    }
+    const grupos = {}
+    for (const [prov, familias] of Object.entries(porProveedor)) {
+      const familiaPrincipal = Object.entries(familias).sort((a, b) => b[1] - a[1])[0][0]
+      if (!grupos[familiaPrincipal]) grupos[familiaPrincipal] = []
+      grupos[familiaPrincipal].push(prov)
+    }
+    res.json(grupos)
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+// Proveedores con carga reciente en el maestro (últimos 90 días) — es un proxy
+// de "compras recientes": no tenemos la fecha real de cada OC guardada (hoy el
+// maestro solo guarda proveedor/familia/categoría/marca, no el historial
+// transaccional completo de compras — ver aclaración de la vuelta anterior).
+// Cuando se persista el detalle real de compras, esto se reemplaza por la
+// fecha de última OC real en vez de la fecha de carga del archivo.
+app.get('/api/proveedores/recientes', async (req, res) => {
+  try {
+    const r = await pool.query(`
+      SELECT DISTINCT proveedor FROM articulos_maestro
+      WHERE proveedor IS NOT NULL AND actualizado >= NOW() - INTERVAL '90 days'
+      ORDER BY proveedor
+    `)
     res.json(r.rows.map(x => x.proveedor))
   } catch (err) { res.status(500).json({ error: err.message }) }
 })

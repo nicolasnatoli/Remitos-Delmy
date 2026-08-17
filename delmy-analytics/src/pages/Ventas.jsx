@@ -147,6 +147,125 @@ function ComparativaAnualChart({ data, anioActual, anioAnterior }) {
   )
 }
 
+// ─── Nivel de cascada — reutilizable para Familia / Categoría / Marca / Artículo ─
+// Clic en una barra o fila fija ese valor como filtro (reemplaza, no acumula —
+// cambiar de familia no tiene sentido si se mantenía una categoría de la
+// familia anterior seleccionada) y limpia los niveles de abajo en la cascada.
+function NivelCascada({ nivel, label, filtroKey, filters, setFilters, nivelesAbajo, qs, colorBarra }) {
+  const { data } = useFetch(`/api/ventas/ranking-nivel?nivel=${nivel}${qs}`, [qs])
+  const seleccion = filters[filtroKey] || []
+
+  const seleccionar = (valor) => {
+    setFilters(f => {
+      const next = { ...f, [filtroKey]: [valor] }
+      for (const abajo of nivelesAbajo) next[abajo] = []
+      return next
+    })
+  }
+  const limpiar = () => {
+    setFilters(f => {
+      const next = { ...f, [filtroKey]: [] }
+      for (const abajo of nivelesAbajo) next[abajo] = []
+      return next
+    })
+  }
+
+  if (!data || data.length === 0) return null
+
+  return (
+    <section style={{ marginTop: 34 }}>
+      <Panel>
+        <PanelTitle right={seleccion.length > 0 && (
+          <button onClick={limpiar} style={{ fontSize: 11, color: D.orange, background: 'transparent', border: 'none', cursor: 'pointer', fontWeight: 600 }}>
+            ✕ Quitar filtro de {label.toLowerCase()}
+          </button>
+        )}>
+          Ventas por {label}
+        </PanelTitle>
+        <div style={{ fontSize: 12, color: D.inkSoft, marginBottom: 14 }}>
+          Clic en una barra o fila para filtrar {nivelesAbajo.length > 0 ? 'el siguiente nivel' : 'el detalle'}.
+        </div>
+        <ParetoChart
+          data={data}
+          valueKey="facturacion"
+          labelKey={nivel === 'articulo' ? 'descripcion' : 'valor_nivel'}
+          T={chartT}
+          color={colorBarra}
+          lineColor={D.steel}
+          onBarClick={(d) => seleccionar(d.valor_nivel)}
+        />
+        <div style={{ maxHeight: 300, overflowY: 'auto', marginTop: 16 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.8 }}>
+            <thead style={{ position: 'sticky', top: 0, background: D.panel }}>
+              <tr>
+                {[label, nivel === 'articulo' ? 'Código' : null, 'Unidades', 'N° Pedidos', 'Ventas $', '%', '% Acum.'].filter(Boolean).map(h => (
+                  <th key={h} style={{ ...th, textAlign: h === label || h === 'Código' ? 'left' : 'right' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.map(row => (
+                <tr
+                  key={row.valor_nivel}
+                  onClick={() => seleccionar(row.valor_nivel)}
+                  onMouseEnter={e => e.currentTarget.style.background = D.steelSoft}
+                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                  style={{ cursor: 'pointer', background: seleccion.includes(row.valor_nivel) ? D.orangeSoft : 'transparent' }}
+                >
+                  <td style={{ ...td, color: D.ink, fontWeight: 600 }}>{nivel === 'articulo' ? row.descripcion : row.valor_nivel}</td>
+                  {nivel === 'articulo' && <td style={{ ...td, color: D.inkSoft, fontFamily: 'monospace' }}>{row.valor_nivel}</td>}
+                  <td style={{ ...td, textAlign: 'right', color: D.ink }}>{fmt(row.unidades)}</td>
+                  <td style={{ ...td, textAlign: 'right', color: D.ink }}>{fmt(row.n_ventas)}</td>
+                  <td style={{ ...td, textAlign: 'right', color: D.orange, fontWeight: 700 }}>{fmtPeso(row.facturacion)}</td>
+                  <td style={{ ...td, textAlign: 'right', color: D.inkSoft }}>{row.pct}%</td>
+                  <td style={{ ...td, textAlign: 'right' }}><PctBar pct={row.pct_acum} /> <span style={{ color: D.inkSoft, marginLeft: 6 }}>{row.pct_acum}%</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+    </section>
+  )
+}
+
+// ─── Breadcrumb de la cascada activa ───────────────────────────────────────────
+function BreadcrumbCascada({ filters, setFilters }) {
+  const niveles = [
+    ['proveedores', 'Proveedor'], ['familias', 'Familia'], ['categorias', 'Categoría'], ['marcas', 'Marca'],
+  ]
+  const activos = niveles.filter(([key]) => filters[key] && filters[key].length > 0)
+  if (activos.length === 0) return null
+  return (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 20 }}>
+      <span style={{ fontSize: 11, color: D.inkSoft, fontWeight: 600 }}>Filtrando por:</span>
+      {activos.map(([key, label]) => (
+        <span key={key} style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6, background: D.purpleSoft, color: D.purple,
+          borderRadius: 20, padding: '4px 10px 4px 12px', fontSize: 11.5, fontWeight: 600,
+        }}>
+          {label}: {filters[key].join(', ')}
+          <button
+            onClick={() => {
+              const idx = niveles.findIndex(([k]) => k === key)
+              setFilters(f => {
+                const next = { ...f }
+                for (let i = idx; i < niveles.length; i++) next[niveles[i][0]] = []
+                return next
+              })
+            }}
+            style={{ background: 'transparent', border: 'none', color: D.purple, cursor: 'pointer', fontSize: 13, lineHeight: 1, padding: 0 }}
+          >✕</button>
+        </span>
+      ))}
+      <button
+        onClick={() => setFilters(f => ({ ...f, proveedores: [], familias: [], categorias: [], marcas: [] }))}
+        style={{ fontSize: 11, color: D.red, background: 'transparent', border: 'none', cursor: 'pointer', fontWeight: 600 }}
+      >Limpiar todo</button>
+    </div>
+  )
+}
+
 export default function Ventas({ filters, setFilters, T }) {
   const [vista, setVista] = useState('dia')
   const [vistaComparativa, setVistaComparativa] = useState('trimestre')
@@ -203,6 +322,8 @@ export default function Ventas({ filters, setFilters, T }) {
       </div>
 
       <div style={{ maxWidth: 1360, margin: '0 auto', padding: '24px 24px 0' }}>
+
+        <BreadcrumbCascada filters={filters} setFilters={setFilters} />
 
         {/* ─── Filtros de fecha rápidos ─── */}
         <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -369,6 +490,12 @@ export default function Ventas({ filters, setFilters, T }) {
             >↓ Exportar CSV</button>
           </Panel>
         </section>
+
+        {/* ─── Cascada Familia → Categoría → Marca → Artículo ─── */}
+        <NivelCascada nivel="familia"   label="Familia"   filtroKey="familias"   nivelesAbajo={['categorias','marcas']} filters={filters} setFilters={setFilters} qs={qs} colorBarra={D.steel} />
+        <NivelCascada nivel="categoria" label="Categoría" filtroKey="categorias" nivelesAbajo={['marcas']}              filters={filters} setFilters={setFilters} qs={qs} colorBarra={D.purple} />
+        <NivelCascada nivel="marca"     label="Marca"     filtroKey="marcas"     nivelesAbajo={[]}                      filters={filters} setFilters={setFilters} qs={qs} colorBarra={D.amber} />
+        <NivelCascada nivel="articulo"  label="Artículo"  filtroKey="__articulo_no_filtra__" nivelesAbajo={[]}          filters={filters} setFilters={setFilters} qs={qs} colorBarra={D.orange} />
 
         {/* ─── Detalle diario ─── */}
         {vista === 'dia' && porDia && porDia.length > 0 && (

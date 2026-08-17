@@ -29,5 +29,8 @@ export function buildQS(filters) {
   if (filters.hasta) p.set('hasta', filters.hasta)
   if (filters.sucursal && filters.sucursal !== 'todas') p.set('sucursal', filters.sucursal)
   if (filters.proveedores && filters.proveedores.length > 0) p.set('proveedores', filters.proveedores.join(','))
+  if (filters.familias && filters.familias.length > 0) p.set('familias', filters.familias.join(','))
+  if (filters.categorias && filters.categorias.length > 0) p.set('categorias', filters.categorias.join(','))
+  if (filters.marcas && filters.marcas.length > 0) p.set('marcas', filters.marcas.join(','))
   return p.toString() ? '?' + p.toString() : ''
 }

@@ -26,7 +26,7 @@ const TABS = [
 
 export default function App() {
   const [tab, setTab] = useState('dashboard')
-  const [filters, setFilters] = useState({ desde: '', hasta: '', sucursal: 'todas', proveedores: [] })
+  const [filters, setFilters] = useState({ desde: '', hasta: '', sucursal: 'todas', proveedores: [], familias: [], categorias: [], marcas: [] })
   const [sucursales, setSucursales] = useState([])
   const [proveedores, setProveedores] = useState([])
   const [rangoFechas, setRangoFechas] = useState({ desde: '', hasta: '' })
