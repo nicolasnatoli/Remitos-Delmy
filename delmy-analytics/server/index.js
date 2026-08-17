@@ -475,6 +475,55 @@ function buildWhere(base, q, col = '') {
   return { where: parts.join(' AND '), params }
 }
 
+// ─── Estadísticas por período — promedio/último + variación%, ventanas móviles ─
+// No usa semestre/trimestre/mes/semana calendario (eso rompe con años parciales
+// y meses de distinta duración) — usa ventanas móviles de N días terminando en
+// la fecha más reciente con datos. "Último" = la ventana más reciente,
+// "promedio" = promedio de las ventanas anteriores disponibles (hasta 8).
+// Validado con datos sintéticos antes de usarlo en producción.
+function calcularEstadisticasPeriodo(porFecha) {
+  const fechas = Object.keys(porFecha).sort()
+  if (fechas.length === 0) return null
+  const maxFecha = fechas[fechas.length - 1]
+  const minFecha = fechas[0]
+  const maxDate = new Date(maxFecha + 'T00:00:00')
+  const minDate = new Date(minFecha + 'T00:00:00')
+  const diasConVenta = fechas.filter(f => porFecha[f] > 0).length
+
+  const sumaRango = (desde, hasta) => {
+    let total = 0
+    for (const f of fechas) { if (f >= desde && f <= hasta) total += porFecha[f] }
+    return total
+  }
+  const restarDias = (date, n) => { const d = new Date(date); d.setDate(d.getDate() - n); return d }
+  const fmt = d => d.toISOString().slice(0, 10)
+
+  const diasConVentaUltMes = fechas.filter(f => porFecha[f] > 0 && f >= fmt(restarDias(maxDate, 29)) && f <= maxFecha).length
+
+  function stats(nDias, maxBuckets = 8) {
+    const buckets = []
+    let finBucket = new Date(maxDate)
+    for (let b = 0; b < maxBuckets; b++) {
+      const inicioBucket = restarDias(finBucket, nDias - 1)
+      const total = sumaRango(fmt(inicioBucket), fmt(finBucket))
+      buckets.unshift(total)
+      finBucket = restarDias(inicioBucket, 1)
+      if (finBucket < minDate) break
+    }
+    if (buckets.length === 0) return { promedio: null, ultimo: null, variacionPct: null }
+    const ultimo = buckets[buckets.length - 1]
+    const previos = buckets.slice(0, -1)
+    const promedio = previos.length > 0 ? previos.reduce((a, b) => a + b, 0) / previos.length : null
+    const variacionPct = promedio && promedio > 0 ? Math.round(((ultimo - promedio) / promedio) * 1000) / 10 : null
+    return { promedio: promedio !== null ? Math.round(promedio) : null, ultimo: Math.round(ultimo), variacionPct }
+  }
+
+  return {
+    dias_con_venta: diasConVenta, dias_con_venta_ult_mes: diasConVentaUltMes,
+    semana: stats(7), mes: stats(30), trimestre: stats(90), semestre: stats(180),
+  }
+}
+
 // ─── KPIs ─────────────────────────────────────────────────────────────────────
 app.get('/api/kpis', async (req, res) => {
   try {
@@ -584,12 +633,33 @@ app.get('/api/ventas/ranking-nivel', async (req, res) => {
       ORDER BY facturacion DESC
       LIMIT 300
     `, params)
+
+    const rDiario = await pool.query(`
+      SELECT COALESCE(${col}, 'Sin clasificar') as valor_nivel, vl.fecha::text as fecha, SUM(vl.subtotal_neto) as total
+      FROM ventas_lineas vl
+      LEFT JOIN articulos_maestro am ON am.codigo = vl.codigo
+      WHERE ${where}
+      GROUP BY valor_nivel, vl.fecha
+    `, params)
+    const diarioPorValor = {}
+    for (const d of rDiario.rows) {
+      if (!diarioPorValor[d.valor_nivel]) diarioPorValor[d.valor_nivel] = {}
+      diarioPorValor[d.valor_nivel][d.fecha] = Number(d.total || 0)
+    }
+
     const total = r.rows.reduce((s, row) => s + Number(row.facturacion || 0), 0)
     let acum = 0
     const out = r.rows.map(row => {
       const pct = total > 0 ? (Number(row.facturacion) / total) * 100 : 0
       acum += pct
-      return { ...row, pct: Math.round(pct * 10) / 10, pct_acum: Math.round(acum * 10) / 10 }
+      const est = calcularEstadisticasPeriodo(diarioPorValor[row.valor_nivel] || {})
+      return {
+        ...row,
+        pct: Math.round(pct * 10) / 10,
+        pct_acum: Math.round(acum * 10) / 10,
+        valor_pedido: Number(row.n_ventas) > 0 ? Math.round(Number(row.facturacion) / Number(row.n_ventas)) : 0,
+        ...est,
+      }
     })
     res.json(out)
   } catch (err) { res.status(500).json({ error: err.message }) }
@@ -656,12 +726,34 @@ app.get('/api/ventas/por-proveedor', async (req, res) => {
       GROUP BY proveedor
       ORDER BY facturacion DESC
     `, params)
+
+    // Diario por proveedor, para las ventanas móviles de promedio/último/variación
+    const rDiario = await pool.query(`
+      SELECT COALESCE(am.proveedor, 'Sin clasificar') as proveedor, vl.fecha::text as fecha, SUM(vl.subtotal_neto) as total
+      FROM ventas_lineas vl
+      LEFT JOIN articulos_maestro am ON am.codigo = vl.codigo
+      WHERE ${where}
+      GROUP BY proveedor, vl.fecha
+    `, params)
+    const diarioPorProveedor = {}
+    for (const d of rDiario.rows) {
+      if (!diarioPorProveedor[d.proveedor]) diarioPorProveedor[d.proveedor] = {}
+      diarioPorProveedor[d.proveedor][d.fecha] = Number(d.total || 0)
+    }
+
     const total = r.rows.reduce((s, row) => s + Number(row.facturacion || 0), 0)
     let acum = 0
     const out = r.rows.map(row => {
       const pct = total > 0 ? (Number(row.facturacion) / total) * 100 : 0
       acum += pct
-      return { ...row, pct: Math.round(pct * 10) / 10, pct_acum: Math.round(acum * 10) / 10 }
+      const est = calcularEstadisticasPeriodo(diarioPorProveedor[row.proveedor] || {})
+      return {
+        ...row,
+        pct: Math.round(pct * 10) / 10,
+        pct_acum: Math.round(acum * 10) / 10,
+        valor_pedido: Number(row.n_ventas) > 0 ? Math.round(Number(row.facturacion) / Number(row.n_ventas)) : 0,
+        ...est,
+      }
     })
     res.json(out)
   } catch (err) { res.status(500).json({ error: err.message }) }

@@ -92,6 +92,25 @@ function PctBar({ pct }) {
 const th = { textAlign: 'left', padding: '8px 10px', borderBottom: `2px solid ${D.line}`, color: D.inkSoft, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.4, fontFamily: D.fontBody }
 const td = { padding: '7px 10px', borderBottom: '1px solid #F0F2F5', fontSize: 12.8, fontFamily: D.fontBody, fontVariantNumeric: 'tabular-nums' }
 
+// Celda compacta: valor del período + variación% coloreada — usada en las
+// columnas Prom./Últ. de semana/mes/trimestre/semestre en las tablas de ranking.
+function CeldaPeriodo({ periodo }) {
+  if (!periodo || periodo.ultimo === null) return <td style={{ ...td, textAlign: 'right', color: D.inkSoft }}>—</td>
+  return (
+    <td style={{ ...td, textAlign: 'right' }}>
+      <div style={{ color: D.ink, fontWeight: 600 }}>{fmtPeso(periodo.ultimo)}</div>
+      <div style={{ fontSize: 10, color: D.inkSoft }}>
+        prom {fmtPeso(periodo.promedio)}
+        {periodo.variacionPct !== null && (
+          <span style={{ marginLeft: 4, fontWeight: 700, color: periodo.variacionPct >= 0 ? D.green : D.red }}>
+            {periodo.variacionPct >= 0 ? '▲' : '▼'}{Math.abs(periodo.variacionPct)}%
+          </span>
+        )}
+      </div>
+    </td>
+  )
+}
+
 function ComparativaAnualChart({ data, anioActual, anioAnterior }) {
   if (!data || data.length === 0) return <div style={{ padding: 20, color: D.inkSoft, fontSize: 11 }}>Sin datos</div>
   const max = Math.max(...data.map(d => {
@@ -198,7 +217,7 @@ function NivelCascada({ nivel, label, filtroKey, filters, setFilters, nivelesAba
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.8 }}>
             <thead style={{ position: 'sticky', top: 0, background: D.panel }}>
               <tr>
-                {[label, nivel === 'articulo' ? 'Código' : null, 'Unidades', 'N° Pedidos', 'Ventas $', '%', '% Acum.'].filter(Boolean).map(h => (
+                {[label, nivel === 'articulo' ? 'Código' : null, 'Unidades', 'N° Pedidos', 'Ventas $', '%', '% Acum.', 'Semana (últ./prom.)', 'Mes (últ./prom.)', 'Trimestre (últ./prom.)', 'Semestre (últ./prom.)', 'Días c/venta', 'Valor/pedido'].filter(Boolean).map(h => (
                   <th key={h} style={{ ...th, textAlign: h === label || h === 'Código' ? 'left' : 'right' }}>{h}</th>
                 ))}
               </tr>
@@ -219,6 +238,12 @@ function NivelCascada({ nivel, label, filtroKey, filters, setFilters, nivelesAba
                   <td style={{ ...td, textAlign: 'right', color: D.orange, fontWeight: 700 }}>{fmtPeso(row.facturacion)}</td>
                   <td style={{ ...td, textAlign: 'right', color: D.inkSoft }}>{row.pct}%</td>
                   <td style={{ ...td, textAlign: 'right' }}><PctBar pct={row.pct_acum} /> <span style={{ color: D.inkSoft, marginLeft: 6 }}>{row.pct_acum}%</span></td>
+                  <CeldaPeriodo periodo={row.semana} />
+                  <CeldaPeriodo periodo={row.mes} />
+                  <CeldaPeriodo periodo={row.trimestre} />
+                  <CeldaPeriodo periodo={row.semestre} />
+                  <td style={{ ...td, textAlign: 'right', color: D.inkSoft }}>{row.dias_con_venta ?? '—'} <span style={{ fontSize: 10 }}>({row.dias_con_venta_ult_mes ?? 0} últ. mes)</span></td>
+                  <td style={{ ...td, textAlign: 'right', color: D.ink }}>{fmtPeso(row.valor_pedido)}</td>
                 </tr>
               ))}
             </tbody>
@@ -279,6 +304,8 @@ export default function Ventas({ filters, setFilters, T }) {
   const { data: kpis } = useFetch(`/api/kpis${qs}`, [qs])
   const { data: porProveedor } = useFetch(`/api/ventas/por-proveedor${qs}`, [qs])
   const { data: comparativa } = useFetch(`/api/ventas/comparativa-anual${qs}`, [qs])
+  const { data: gruposProveedor } = useFetch('/api/proveedores/grupos', [])
+  const { data: proveedoresRecientes } = useFetch('/api/proveedores/recientes', [])
 
   const exportCSV = (data, filename) => {
     if (!data || data.length === 0) return
@@ -417,6 +444,36 @@ export default function Ventas({ filters, setFilters, T }) {
               Curva de Pareto (80/20) — clic en una barra para filtrar el panel por ese proveedor.
             </div>
 
+            {/* Selector rápido: grupo de proveedor (por rubro) y compras recientes */}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+              {gruposProveedor && Object.entries(gruposProveedor).map(([rubro, provs]) => (
+                <button
+                  key={rubro}
+                  onClick={() => setFilters(f => ({ ...f, proveedores: provs }))}
+                  title={provs.join(', ')}
+                  style={{
+                    fontSize: 11, padding: '5px 11px', borderRadius: 20, cursor: 'pointer', fontFamily: D.fontBody,
+                    background: D.steelSoft, border: `1px solid ${D.steel}`, color: D.steel, fontWeight: 600,
+                  }}
+                >Proveedores de {rubro} ({provs.length})</button>
+              ))}
+              {proveedoresRecientes && proveedoresRecientes.length > 0 && (
+                <button
+                  onClick={() => setFilters(f => ({ ...f, proveedores: proveedoresRecientes }))}
+                  title={proveedoresRecientes.join(', ')}
+                  style={{
+                    fontSize: 11, padding: '5px 11px', borderRadius: 20, cursor: 'pointer', fontFamily: D.fontBody,
+                    background: D.orangeSoft, border: `1px solid ${D.orange}`, color: D.orange, fontWeight: 600,
+                  }}
+                >⏱ Compras recientes ({proveedoresRecientes.length})</button>
+              )}
+            </div>
+            {proveedoresRecientes && proveedoresRecientes.length > 0 && (
+              <div style={{ fontSize: 10, color: D.inkSoft, marginTop: -10, marginBottom: 16 }}>
+                "Recientes" hoy se basa en cuándo se cargó el archivo de OC al maestro, no en la fecha real de la orden — es un proxy hasta que se persista el historial completo de compras.
+              </div>
+            )}
+
             <div style={{ display: 'flex', gap: 16 }}>
               <div style={{ flex: '1 1 auto', minWidth: 0 }}>
                 {porProveedor && (
@@ -455,7 +512,7 @@ export default function Ventas({ filters, setFilters, T }) {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.8 }}>
                   <thead style={{ position: 'sticky', top: 0, background: D.panel }}>
                     <tr>
-                      {['Proveedor','Unidades','N° Pedidos','Ventas $','%','% Acum.','Artículos'].map(h => (
+                      {['Proveedor','Unidades','N° Pedidos','Ventas $','%','% Acum.','Artículos','Semana (últ./prom.)','Mes (últ./prom.)','Trimestre (últ./prom.)','Semestre (últ./prom.)','Días c/venta','Valor/pedido'].map(h => (
                         <th key={h} style={{ ...th, textAlign: h === 'Proveedor' ? 'left' : 'right' }}>{h}</th>
                       ))}
                     </tr>
@@ -478,6 +535,12 @@ export default function Ventas({ filters, setFilters, T }) {
                           <PctBar pct={p.pct_acum} /> <span style={{ color: D.inkSoft, marginLeft: 6 }}>{p.pct_acum}%</span>
                         </td>
                         <td style={{ ...td, textAlign: 'right', color: D.inkSoft }}>{fmt(p.n_articulos)}</td>
+                        <CeldaPeriodo periodo={p.semana} />
+                        <CeldaPeriodo periodo={p.mes} />
+                        <CeldaPeriodo periodo={p.trimestre} />
+                        <CeldaPeriodo periodo={p.semestre} />
+                        <td style={{ ...td, textAlign: 'right', color: D.inkSoft }}>{p.dias_con_venta ?? '—'} <span style={{ fontSize: 10 }}>({p.dias_con_venta_ult_mes ?? 0} últ. mes)</span></td>
+                        <td style={{ ...td, textAlign: 'right', color: D.ink }}>{fmtPeso(p.valor_pedido)}</td>
                       </tr>
                     ))}
                   </tbody>
