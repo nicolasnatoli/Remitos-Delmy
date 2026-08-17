@@ -456,6 +456,21 @@ function buildWhere(base, q, col = '') {
   if (q?.desde) { parts.push(`${c}fecha >= $${n++}`); params.push(q.desde) }
   if (q?.hasta) { parts.push(`${c}fecha <= $${n++}`); params.push(q.hasta) }
   if (q?.sucursal && q.sucursal !== 'todas') { parts.push(`${c}sucursal = $${n++}`); params.push(q.sucursal) }
+  // Proveedor es el filtro general de arranque (igual que "Clasificación" en el
+  // dashboard de referencia) — afecta TODO el panel. Como tanto `comprobantes`
+  // como `ventas_lineas` tienen nro_comprobante, esta subquery funciona para
+  // cualquiera de las dos sin duplicar la función.
+  if (q?.proveedores) {
+    const provs = String(q.proveedores).split(',').map(s => s.trim()).filter(Boolean)
+    if (provs.length) {
+      parts.push(`${c}nro_comprobante IN (
+        SELECT DISTINCT vl2.nro_comprobante FROM ventas_lineas vl2
+        JOIN articulos_maestro am2 ON am2.codigo = vl2.codigo
+        WHERE am2.proveedor = ANY($${n++})
+      )`)
+      params.push(provs)
+    }
+  }
   return { where: parts.join(' AND '), params }
 }
 
@@ -518,7 +533,7 @@ app.get('/api/ventas/por-dia', async (req, res) => {
 
 app.get('/api/ventas/por-sucursal', async (req, res) => {
   try {
-    const { where, params } = buildWhere(`tipo_comprob IN ('FCB','FCA','RE')`, { desde: req.query.desde, hasta: req.query.hasta })
+    const { where, params } = buildWhere(`tipo_comprob IN ('FCB','FCA','RE')`, { desde: req.query.desde, hasta: req.query.hasta, proveedores: req.query.proveedores })
     const r = await pool.query(`SELECT sucursal, COUNT(*) as n_ventas, SUM(total) as total, AVG(total) as ticket_promedio FROM comprobantes WHERE ${where} GROUP BY sucursal ORDER BY total DESC`, params)
     res.json(r.rows)
   } catch (err) { res.status(500).json({ error: err.message }) }
@@ -526,9 +541,112 @@ app.get('/api/ventas/por-sucursal', async (req, res) => {
 
 app.get('/api/ventas/por-mes', async (req, res) => {
   try {
-    const { where, params } = buildWhere(`tipo_comprob IN ('FCB','FCA','RE')`, { sucursal: req.query.sucursal })
+    const { where, params } = buildWhere(`tipo_comprob IN ('FCB','FCA','RE')`, { sucursal: req.query.sucursal, proveedores: req.query.proveedores })
     const r = await pool.query(`SELECT TO_CHAR(fecha,'YYYY-MM') as mes, sucursal, COUNT(*) as n_ventas, SUM(total) as total, AVG(total) as ticket_promedio FROM comprobantes WHERE ${where} GROUP BY mes, sucursal ORDER BY mes, sucursal`, params)
     res.json(r.rows)
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+// ─── Proveedores — filtro general de arranque ──────────────────────────────────
+app.get('/api/proveedores', async (req, res) => {
+  try {
+    const r = await pool.query(`SELECT DISTINCT proveedor FROM articulos_maestro WHERE proveedor IS NOT NULL ORDER BY proveedor`)
+    res.json(r.rows.map(x => x.proveedor))
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+// ─── Ranking por proveedor — primer nivel de la jerarquía, con datos de Pareto ─
+app.get('/api/ventas/por-proveedor', async (req, res) => {
+  try {
+    const { where, params } = buildWhere('1=1', req.query, 'vl')
+    const r = await pool.query(`
+      SELECT
+        COALESCE(am.proveedor, 'Sin clasificar') as proveedor,
+        SUM(vl.cantidad) as unidades,
+        COUNT(DISTINCT vl.nro_comprobante) as n_ventas,
+        SUM(vl.subtotal_neto) as facturacion,
+        COUNT(DISTINCT vl.codigo) as n_articulos
+      FROM ventas_lineas vl
+      LEFT JOIN articulos_maestro am ON am.codigo = vl.codigo
+      WHERE ${where}
+      GROUP BY proveedor
+      ORDER BY facturacion DESC
+    `, params)
+    const total = r.rows.reduce((s, row) => s + Number(row.facturacion || 0), 0)
+    let acum = 0
+    const out = r.rows.map(row => {
+      const pct = total > 0 ? (Number(row.facturacion) / total) * 100 : 0
+      acum += pct
+      return { ...row, pct: Math.round(pct * 10) / 10, pct_acum: Math.round(acum * 10) / 10 }
+    })
+    res.json(out)
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+// ─── Comparativa interanual — por trimestre y por mes ──────────────────────────
+// Año actual = año de la última fecha con datos (no necesariamente el año de
+// hoy). El período en curso (trimestre/mes que contiene esa fecha de corte) se
+// divide del lado del año anterior en "comparable" (mismo tramo de días que ya
+// transcurrió este año) + "resto" — para no comparar un mes completo del año
+// pasado contra un mes a medias de este año.
+app.get('/api/ventas/comparativa-anual', async (req, res) => {
+  try {
+    const { where, params } = buildWhere(`tipo_comprob IN ('FCB','FCA','RE')`, { sucursal: req.query.sucursal, proveedores: req.query.proveedores })
+    const r = await pool.query(`SELECT fecha::text as fecha, SUM(total) as total FROM comprobantes WHERE ${where} GROUP BY fecha ORDER BY fecha`, params)
+    if (r.rows.length === 0) return res.json({ anioActual: null, anioAnterior: null, mes: [], trimestre: [] })
+
+    const porDia = {}
+    for (const d of r.rows) porDia[d.fecha] = Number(d.total || 0)
+
+    const maxFecha = r.rows[r.rows.length - 1].fecha
+    const anioActual = Number(maxFecha.slice(0, 4))
+    const anioAnterior = anioActual - 1
+    const corteMes = Number(maxFecha.slice(5, 7))
+    const corteDia = Number(maxFecha.slice(8, 10))
+    const diasEnMes = (anio, mes) => new Date(anio, mes, 0).getDate()
+
+    function sumaRango(anio, mesDesde, diaDesde, mesHasta, diaHasta) {
+      let total = 0
+      for (const [f, v] of Object.entries(porDia)) {
+        const y = Number(f.slice(0, 4)), m = Number(f.slice(5, 7)), dd = Number(f.slice(8, 10))
+        if (y !== anio) continue
+        const enRango = (m > mesDesde || (m === mesDesde && dd >= diaDesde)) && (m < mesHasta || (m === mesHasta && dd <= diaHasta))
+        if (enRango) total += v
+      }
+      return total
+    }
+
+    function armarPeriodo({ periodo, label, mesDesde, mesHasta, esActual }) {
+      const actual = sumaRango(anioActual, mesDesde, 1, esActual ? corteMes : mesHasta, esActual ? corteDia : diasEnMes(anioActual, mesHasta))
+      let anteriorComparable = null, anteriorResto = null, anteriorCompleto = null
+      if (esActual) {
+        anteriorComparable = sumaRango(anioAnterior, mesDesde, 1, corteMes, corteDia)
+        anteriorResto = sumaRango(anioAnterior, corteMes, corteDia + 1, mesHasta, diasEnMes(anioAnterior, mesHasta))
+      } else {
+        anteriorCompleto = sumaRango(anioAnterior, mesDesde, 1, mesHasta, diasEnMes(anioAnterior, mesHasta))
+      }
+      const anteriorParaVariacion = esActual ? anteriorComparable : anteriorCompleto
+      const variacionPct = anteriorParaVariacion && anteriorParaVariacion > 0
+        ? Math.round(((actual - anteriorParaVariacion) / anteriorParaVariacion) * 1000) / 10
+        : null
+      return { periodo, label, actual, anteriorComparable, anteriorResto, anteriorCompleto, esParcial: esActual, variacionPct }
+    }
+
+    const mes = []
+    const nombresMes = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']
+    for (let m = 1; m <= corteMes; m++) {
+      mes.push(armarPeriodo({ periodo: m, label: nombresMes[m - 1], mesDesde: m, mesHasta: m, esActual: m === corteMes }))
+    }
+
+    const trimQ = [[1,3],[4,6],[7,9],[10,12]]
+    const corteTrimIdx = Math.floor((corteMes - 1) / 3)
+    const trimestre = []
+    for (let qi = 0; qi <= corteTrimIdx; qi++) {
+      const [mDesde, mHasta] = trimQ[qi]
+      trimestre.push(armarPeriodo({ periodo: qi + 1, label: `T${qi + 1}`, mesDesde: mDesde, mesHasta: mHasta, esActual: qi === corteTrimIdx }))
+    }
+
+    res.json({ anioActual, anioAnterior, corte: maxFecha, mes, trimestre })
   } catch (err) { res.status(500).json({ error: err.message }) }
 })
 

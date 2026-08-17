@@ -92,8 +92,64 @@ function PctBar({ pct }) {
 const th = { textAlign: 'left', padding: '8px 10px', borderBottom: `2px solid ${D.line}`, color: D.inkSoft, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.4, fontFamily: D.fontBody }
 const td = { padding: '7px 10px', borderBottom: '1px solid #F0F2F5', fontSize: 12.8, fontFamily: D.fontBody, fontVariantNumeric: 'tabular-nums' }
 
+function ComparativaAnualChart({ data, anioActual, anioAnterior }) {
+  if (!data || data.length === 0) return <div style={{ padding: 20, color: D.inkSoft, fontSize: 11 }}>Sin datos</div>
+  const max = Math.max(...data.map(d => {
+    const anteriorTotal = d.anteriorCompleto ?? ((d.anteriorComparable || 0) + (d.anteriorResto || 0))
+    return Math.max(d.actual || 0, anteriorTotal || 0)
+  })) || 1
+  const barW = 26, gap = 8, groupW = barW * 2 + gap + 22
+  const pad = { l: 10, r: 10, t: 14, b: 50 }
+  const chartH = 200
+  const w = data.length * groupW
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 18, marginBottom: 10, fontSize: 11, color: D.inkSoft }}>
+        <span><i style={{ display: 'inline-block', width: 10, height: 10, background: D.orange, borderRadius: 2, marginRight: 5 }} />{anioActual}</span>
+        <span><i style={{ display: 'inline-block', width: 10, height: 10, background: D.steel, borderRadius: 2, marginRight: 5 }} />{anioAnterior} (comparable)</span>
+        <span><i style={{ display: 'inline-block', width: 10, height: 10, background: D.steelSoft, border: `1px dashed ${D.steel}`, borderRadius: 2, marginRight: 5 }} />{anioAnterior} (resto del período — contexto)</span>
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <svg width={w + pad.l + pad.r} height={chartH + pad.t + pad.b}>
+          <defs>
+            <pattern id="stripeAnterior" width="6" height="6" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+              <rect width="6" height="6" fill={D.steelSoft} />
+              <line x1="0" y1="0" x2="0" y2="6" stroke={D.steel} strokeWidth="1.5" />
+            </pattern>
+          </defs>
+          {data.map((d, i) => {
+            const x0 = pad.l + i * groupW
+            const anteriorTotal = d.anteriorCompleto ?? ((d.anteriorComparable || 0) + (d.anteriorResto || 0))
+            const hActual = ((d.actual || 0) / max) * chartH
+            const hComp = d.esParcial ? ((d.anteriorComparable || 0) / max) * chartH : ((anteriorTotal || 0) / max) * chartH
+            const hResto = d.esParcial ? ((d.anteriorResto || 0) / max) * chartH : 0
+            const yActual = pad.t + chartH - hActual
+            const yCompTop = pad.t + chartH - hComp
+            const yRestoTop = pad.t + chartH - hComp - hResto
+            return (
+              <g key={i}>
+                <rect x={x0} y={yActual} width={barW} height={hActual} fill={D.orange} rx={2} />
+                {d.esParcial && <rect x={x0 + barW + gap} y={yRestoTop} width={barW} height={hResto} fill="url(#stripeAnterior)" />}
+                <rect x={x0 + barW + gap} y={yCompTop} width={barW} height={hComp} fill={D.steel} rx={2} />
+                <text x={x0 + barW + gap / 2} y={pad.t + chartH + 16} textAnchor="middle" fontSize={11} fontWeight={600} fill={D.ink} fontFamily={D.fontBody}>{d.label}</text>
+                {d.variacionPct !== null && (
+                  <text x={x0 + barW + gap / 2} y={pad.t + chartH + 32} textAnchor="middle" fontSize={10} fontWeight={700} fontFamily={D.fontBody} fill={d.variacionPct >= 0 ? D.green : D.red}>
+                    {d.variacionPct >= 0 ? '▲' : '▼'}{Math.abs(d.variacionPct)}%{d.esParcial ? ' (parc.)' : ''}
+                  </text>
+                )}
+              </g>
+            )
+          })}
+        </svg>
+      </div>
+    </div>
+  )
+}
+
 export default function Ventas({ filters, setFilters, T }) {
   const [vista, setVista] = useState('dia')
+  const [vistaComparativa, setVistaComparativa] = useState('trimestre')
   const [metricaProveedor, setMetricaProveedor] = useState('facturacion')
   const [proveedorHover, setProveedorHover] = useState(null)
   const qs = buildQS(filters)
@@ -103,6 +159,7 @@ export default function Ventas({ filters, setFilters, T }) {
   const { data: porSuc } = useFetch(`/api/ventas/por-sucursal${qs}`, [qs])
   const { data: kpis } = useFetch(`/api/kpis${qs}`, [qs])
   const { data: porProveedor } = useFetch(`/api/ventas/por-proveedor${qs}`, [qs])
+  const { data: comparativa } = useFetch(`/api/ventas/comparativa-anual${qs}`, [qs])
 
   const exportCSV = (data, filename) => {
     if (!data || data.length === 0) return
@@ -207,6 +264,27 @@ export default function Ventas({ filters, setFilters, T }) {
             )}
           </Panel>
         </section>
+
+        {/* ─── Comparativa interanual ─── */}
+        {comparativa && comparativa.anioActual && (
+          <section style={{ marginTop: 34 }}>
+            <Panel>
+              <PanelTitle right={<ToggleGroup options={[['trimestre','Por trimestre'],['mes','Por mes']]} value={vistaComparativa} onChange={setVistaComparativa} />}>
+                Comparativa interanual
+              </PanelTitle>
+              <div style={{ fontSize: 12, color: D.inkSoft, marginBottom: 14 }}>
+                {comparativa.anioActual} vs. {comparativa.anioAnterior} — el período en curso divide el año anterior en
+                "mismo tramo que hoy" (comparable) + "resto del período" (rayado, de contexto), para comparar
+                manzanas con manzanas. Corte de datos: {comparativa.corte}.
+              </div>
+              <ComparativaAnualChart
+                data={vistaComparativa === 'trimestre' ? comparativa.trimestre : comparativa.mes}
+                anioActual={comparativa.anioActual}
+                anioAnterior={comparativa.anioAnterior}
+              />
+            </Panel>
+          </section>
+        )}
 
         {/* ─── Ventas por Proveedor — con resumen al costado, nunca arriba tapando el gráfico ─── */}
         <section style={{ marginTop: 34 }}>
