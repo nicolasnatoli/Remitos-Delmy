@@ -1089,15 +1089,27 @@ renderAll();
 async function bootstrap() {
   const loadingEl = document.getElementById('loading-screen');
   try {
-    const resp = await fetch('/api/ventas/raw-dataset');
+    // Arranca acotado desde el 1° de enero del año anterior — es lo mínimo
+    // que necesita la comparativa interanual para tener los 12 meses de
+    // ambos años completos. Traer TODO el historial (2024 en adelante) hizo
+    // que el render inicial tardara ~20s con 1M+ filas reales; esto acota
+    // bastante sin resignar la comparación año contra año.
+    const hoy = new Date();
+    const desdeStr = `${hoy.getFullYear()-1}-01-01`;
+    const resp = await fetch(`/api/ventas/raw-dataset?desde=${desdeStr}`);
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const t0 = performance.now();
     RAW = await resp.json();
     const t1 = performance.now();
-    console.log(`[Estadísticas] Dataset cargado: ${RAW.rows.length} filas, ${RAW.articles.length} artículos, ${RAW.dates.length} fechas — fetch+parse: ${Math.round(t1-t0)}ms`);
+    console.log(`[Estadísticas] Dataset cargado (desde ${desdeStr}): ${RAW.rows.length} filas, ${RAW.articles.length} artículos, ${RAW.dates.length} fechas — fetch+parse: ${Math.round(t1-t0)}ms`);
     if (loadingEl) loadingEl.remove();
     const t2 = performance.now();
     initApp();
+    // Reflejar el acotado inicial en el filtro de fecha activo, para que quede
+    // claro que no está mostrando "todo" — y para que renderAll() posterior
+    // (si el usuario cambia otro filtro) no vuelva a intentar procesar de más.
+    selectedRanges = [{ from: desdeStr, to: null }];
+    renderAll();
     const t3 = performance.now();
     console.log(`[Estadísticas] Render inicial: ${Math.round(t3-t2)}ms`);
   } catch (err) {

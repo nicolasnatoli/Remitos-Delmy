@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, Fragment } from 'react'
 import { useFetch } from '../hooks/useFetch.js'
 import { fmt } from '../components/shared/KpiCard.jsx'
 
@@ -293,6 +293,12 @@ export default function Cargas({ T }) {
         </div>
       )}
 
+      {/* Lista de artículos sin clasificar — con fecha de última venta para */}
+      {/* distinguir descontinuados (venta vieja) de activos que faltan clasificar */}
+      {cobertura && cobertura.sin_maestro > 0 && (
+        <SinClasificarTable />
+      )}
+
       {/* Upload history */}
       {uploads && uploads.length > 0 && (
         <div style={PANEL}>
@@ -346,6 +352,139 @@ export default function Cargas({ T }) {
           <div style={{ color: 'var(--mut)', fontSize: 12 }}>No hay cargas registradas todavía.</div>
         </div>
       )}
+    </div>
+  )
+}
+
+function SinClasificarTable() {
+  const [orden, setOrden] = useState('ultima_venta')
+  const [editando, setEditando] = useState(null)
+  const { data: lista, reload } = useFetch('/api/maestro/sin-clasificar')
+  const { data: opciones } = useFetch('/api/maestro/opciones')
+
+  if (!lista) return null
+  const ordenada = [...lista].sort((a, b) => {
+    if (orden === 'ultima_venta') return new Date(b.ultima_venta) - new Date(a.ultima_venta)
+    if (orden === 'mas_vieja') return new Date(a.ultima_venta) - new Date(b.ultima_venta)
+    return Number(b.unidades) - Number(a.unidades)
+  })
+  const posiblesDescontinuados = lista.filter(r => Number(r.dias_desde_ultima_venta) > 365).length
+
+  return (
+    <div style={PANEL}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+        <div style={TITLE}>Artículos sin clasificar ({lista.length}{lista.length === 500 ? '+' : ''})</div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {[['ultima_venta','Venta más reciente'],['mas_vieja','Venta más vieja'],['unidades','Más vendidos']].map(([v,l]) => (
+            <button key={v} onClick={() => setOrden(v)} style={{
+              fontSize: 10, padding: '4px 9px', borderRadius: 12,
+              background: orden === v ? 'var(--accent)' : 'transparent',
+              color: orden === v ? 'var(--bg)' : 'var(--mut)',
+              border: `1px solid ${orden === v ? 'var(--accent)' : 'var(--border)'}`,
+            }}>{l}</button>
+          ))}
+        </div>
+      </div>
+      <div style={{ fontSize: 10.5, color: 'var(--mut)', marginBottom: 8 }}>
+        Clasificación manual: Familia/Categoría/Marca sin Proveedor — a propósito, para los que no importa o no se sabe quién los proveyó.
+      </div>
+      {posiblesDescontinuados > 0 && (
+        <div style={{ fontSize: 11, color: 'var(--amber)', marginBottom: 10 }}>
+          ⚠ {posiblesDescontinuados} de estos códigos no se venden hace más de un año — buenos candidatos a
+          "descontinuado" antes de invertir tiempo en clasificarlos.
+        </div>
+      )}
+      <div style={{ maxHeight: 420, overflowY: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+          <thead style={{ position: 'sticky', top: 0, background: 'var(--panel)' }}>
+            <tr style={{ borderBottom: '1px solid var(--border)' }}>
+              {['Código','Descripción','Unidades','Última venta','Días sin vender',''].map(h => (
+                <th key={h} style={{ padding: '4px 8px', color: 'var(--mut)', textAlign: h==='Código'||h==='Descripción' ? 'left' : 'right', fontWeight: 400, fontSize: 9 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {ordenada.map(r => {
+              const dias = Number(r.dias_desde_ultima_venta)
+              const abierto = editando === r.codigo
+              return (
+                <Fragment key={r.codigo}>
+                  <tr style={{ borderBottom: abierto ? 'none' : '1px solid var(--border)' }}>
+                    <td style={{ padding: '4px 8px', fontFamily: 'monospace', color: 'var(--txt)' }}>{r.codigo}</td>
+                    <td style={{ padding: '4px 8px', color: 'var(--txt)' }}>{r.descripcion}</td>
+                    <td style={{ padding: '4px 8px', textAlign: 'right', color: 'var(--txt)' }}>{fmt(r.unidades)}</td>
+                    <td style={{ padding: '4px 8px', textAlign: 'right', color: dias > 365 ? 'var(--amber)' : 'var(--mut)' }}>{r.ultima_venta}</td>
+                    <td style={{ padding: '4px 8px', textAlign: 'right', color: dias > 365 ? 'var(--amber)' : 'var(--mut)', fontWeight: dias > 365 ? 600 : 400 }}>{dias}</td>
+                    <td style={{ padding: '4px 8px', textAlign: 'right' }}>
+                      <button onClick={() => setEditando(abierto ? null : r.codigo)} style={{
+                        fontSize: 10, padding: '3px 10px', borderRadius: 4, cursor: 'pointer',
+                        background: abierto ? 'var(--accent)' : 'transparent', color: abierto ? 'var(--bg)' : 'var(--accent)',
+                        border: '1px solid var(--accent)',
+                      }}>{abierto ? 'Cerrar' : 'Clasificar'}</button>
+                    </td>
+                  </tr>
+                  {abierto && (
+                    <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                      <td colSpan={6} style={{ padding: '10px 8px', background: 'var(--panel2)' }}>
+                        <ClasificarForm
+                          codigo={r.codigo} descripcion={r.descripcion} opciones={opciones}
+                          onGuardado={() => { setEditando(null); reload() }}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function ClasificarForm({ codigo, descripcion, opciones, onGuardado }) {
+  const [familia, setFamilia] = useState('')
+  const [categoria, setCategoria] = useState('')
+  const [marca, setMarca] = useState('')
+  const [guardando, setGuardando] = useState(false)
+
+  const inputStyle = { padding: '5px 8px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--panel)', color: 'var(--txt)', width: 180 }
+
+  const guardar = async () => {
+    if (!familia && !categoria && !marca) return
+    setGuardando(true)
+    try {
+      await fetch('/api/maestro/clasificar-manual', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ codigo, descripcion, familia: familia || null, categoria: categoria || null, marca: marca || null }),
+      })
+      onGuardado()
+    } finally { setGuardando(false) }
+  }
+
+  return (
+    <div style={{ display: 'flex', gap: 10, alignItems: 'end', flexWrap: 'wrap' }}>
+      <div>
+        <div style={{ fontSize: 9, color: 'var(--mut)', marginBottom: 3 }}>FAMILIA</div>
+        <input list="dl-familias" value={familia} onChange={e => setFamilia(e.target.value)} style={inputStyle} />
+        <datalist id="dl-familias">{opciones?.familias.map(f => <option key={f} value={f} />)}</datalist>
+      </div>
+      <div>
+        <div style={{ fontSize: 9, color: 'var(--mut)', marginBottom: 3 }}>CATEGORÍA</div>
+        <input list="dl-categorias" value={categoria} onChange={e => setCategoria(e.target.value)} style={inputStyle} />
+        <datalist id="dl-categorias">{opciones?.categorias.map(c => <option key={c} value={c} />)}</datalist>
+      </div>
+      <div>
+        <div style={{ fontSize: 9, color: 'var(--mut)', marginBottom: 3 }}>MARCA</div>
+        <input list="dl-marcas" value={marca} onChange={e => setMarca(e.target.value)} style={inputStyle} />
+        <datalist id="dl-marcas">{opciones?.marcas.map(m => <option key={m} value={m} />)}</datalist>
+      </div>
+      <button onClick={guardar} disabled={guardando} style={{
+        padding: '6px 14px', borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: 'pointer',
+        background: 'var(--green)', color: '#0c0e14', border: 'none', opacity: guardando ? 0.6 : 1,
+      }}>{guardando ? 'Guardando...' : 'Guardar'}</button>
+      <div style={{ fontSize: 9.5, color: 'var(--mut)' }}>Empezá a tipear — te sugiere valores ya existentes, o escribí uno nuevo.</div>
     </div>
   )
 }

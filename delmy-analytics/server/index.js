@@ -436,12 +436,15 @@ app.get('/api/maestro/sin-clasificar', async (req, res) => {
   try {
     const { where: whereVl, params } = buildWhere('1=1', req.query, 'vl')
     const r = await pool.query(`
-      SELECT vl.codigo, MAX(vl.descripcion) as descripcion, SUM(vl.cantidad) as unidades, COUNT(DISTINCT vl.nro_comprobante) as n_ventas
+      SELECT vl.codigo, MAX(vl.descripcion) as descripcion, SUM(vl.cantidad) as unidades,
+        COUNT(DISTINCT vl.nro_comprobante) as n_ventas,
+        MIN(vl.fecha)::text as primera_venta, MAX(vl.fecha)::text as ultima_venta,
+        (CURRENT_DATE - MAX(vl.fecha)) as dias_desde_ultima_venta
       FROM ventas_lineas vl
       LEFT JOIN articulos_maestro am ON am.codigo = vl.codigo
       WHERE ${whereVl} AND am.codigo IS NULL
       GROUP BY vl.codigo
-      ORDER BY unidades DESC
+      ORDER BY ultima_venta DESC
       LIMIT 500
     `, params)
     res.json(r.rows)
@@ -598,6 +601,51 @@ app.get('/api/ventas/por-mes', async (req, res) => {
 })
 
 // ─── Proveedores — filtro general de arranque ──────────────────────────────────
+// ─── Opciones existentes de Familia/Categoría/Marca (para autocompletar al
+// clasificar manualmente, y no generar variantes de escritura del mismo valor)
+app.get('/api/maestro/opciones', async (req, res) => {
+  try {
+    const r = await pool.query(`
+      SELECT
+        array_agg(DISTINCT familia)  FILTER (WHERE familia  IS NOT NULL) as familias,
+        array_agg(DISTINCT categoria) FILTER (WHERE categoria IS NOT NULL) as categorias,
+        array_agg(DISTINCT marca)    FILTER (WHERE marca    IS NOT NULL) as marcas
+      FROM articulos_maestro
+    `)
+    const row = r.rows[0]
+    res.json({
+      familias: (row.familias || []).sort(),
+      categorias: (row.categorias || []).sort(),
+      marcas: (row.marcas || []).sort(),
+    })
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+// ─── Clasificación manual — código a código, SIN proveedor a propósito ────────
+// Para los códigos huérfanos (sin match en ningún reporte de OC/Stock
+// Disponible) donde no se conoce o no importa el proveedor, pero sí se puede
+// decidir a mano Familia/Categoría/Marca para que dejen de contar como
+// "sin clasificar". Mismo upsert que la carga automática — nunca pisa un
+// proveedor que ya exista (podría haber quedado de una carga previa parcial).
+app.post('/api/maestro/clasificar-manual', async (req, res) => {
+  try {
+    const { codigo, descripcion, familia, categoria, marca } = req.body
+    if (!codigo) return res.status(400).json({ error: 'Falta código' })
+    await pool.query(`
+      INSERT INTO articulos_maestro (codigo, descripcion, familia, categoria, marca, fuente, actualizado)
+      VALUES ($1,$2,$3,$4,$5,'manual',NOW())
+      ON CONFLICT (codigo) DO UPDATE SET
+        descripcion = COALESCE(articulos_maestro.descripcion, EXCLUDED.descripcion),
+        familia     = COALESCE(EXCLUDED.familia,   articulos_maestro.familia),
+        categoria   = COALESCE(EXCLUDED.categoria, articulos_maestro.categoria),
+        marca       = COALESCE(EXCLUDED.marca,     articulos_maestro.marca),
+        fuente      = CASE WHEN articulos_maestro.fuente IS NULL THEN 'manual' ELSE articulos_maestro.fuente || '+manual' END,
+        actualizado = NOW()
+    `, [codigo, descripcion || null, familia || null, categoria || null, marca || null])
+    res.json({ ok: true })
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
 app.get('/api/proveedores', async (req, res) => {
   try {
     const r = await pool.query(`SELECT DISTINCT proveedor FROM articulos_maestro WHERE proveedor IS NOT NULL ORDER BY proveedor`)
