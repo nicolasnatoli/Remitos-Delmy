@@ -698,6 +698,80 @@ app.get('/api/proveedores/grupos', async (req, res) => {
 // transaccional completo de compras — ver aclaración de la vuelta anterior).
 // Cuando se persista el detalle real de compras, esto se reemplaza por la
 // fecha de última OC real en vez de la fecha de carga del archivo.
+// ─── Dataset crudo para el dashboard de Estadísticas (formato RAW columnar) ───
+// Trae TODAS las filas de venta (respetando fecha/sucursal si se pasan como
+// query params, para no traer más de lo necesario) más los diccionarios de
+// dimensión, en el mismo formato posicional que usa el motor de agregación
+// portado del dashboard de referencia — la agregación (Pareto, promedios,
+// % acumulado, comparativa interanual) se calcula toda en el navegador,
+// igual que en el original. Esto es justo lo que se está probando: si esto
+// escala bien con el volumen real de Delmy o hay que migrar a agregación
+// en el servidor.
+app.get('/api/ventas/raw-dataset', async (req, res) => {
+  try {
+    const { where, params } = buildWhere(`tipo_comprob IN ('FCB','FCA','RE')`, { desde: req.query.desde, hasta: req.query.hasta })
+
+    const [maestroR, sucR, fechasR, filasR] = await Promise.all([
+      pool.query(`SELECT codigo, descripcion, proveedor, familia, categoria, marca FROM articulos_maestro`),
+      pool.query(`SELECT DISTINCT sucursal FROM ventas_lineas WHERE ${where} ORDER BY sucursal`, params),
+      pool.query(`SELECT DISTINCT fecha::text as fecha FROM ventas_lineas WHERE ${where} ORDER BY fecha`, params),
+      pool.query(`SELECT codigo, fecha::text as fecha, cantidad, nro_comprobante, subtotal_neto, sucursal, descripcion FROM ventas_lineas WHERE ${where}`, params),
+    ])
+
+    const proveedores = [...new Set(maestroR.rows.map(r => r.proveedor).filter(Boolean))].sort()
+    const familias = [...new Set(maestroR.rows.map(r => r.familia).filter(Boolean))].sort()
+    const categorias = [...new Set(maestroR.rows.map(r => r.categoria).filter(Boolean))].sort()
+    const marcas = [...new Set(maestroR.rows.map(r => r.marca).filter(Boolean))].sort()
+    const provIdx = new Map(proveedores.map((p,i)=>[p,i]))
+    const famIdx = new Map(familias.map((f,i)=>[f,i]))
+    const catIdx = new Map(categorias.map((c,i)=>[c,i]))
+    const marcaIdx = new Map(marcas.map((m,i)=>[m,i]))
+
+    // Maestro código -> {proveedor,familia,categoria,marca} para resolver rápido por línea de venta
+    const maestroByCodigo = new Map(maestroR.rows.map(r => [r.codigo, r]))
+
+    // Un artículo = un código de venta distinto que aparece en las filas (no
+    // todo articulos_maestro, para no listar códigos que nunca se vendieron)
+    const articleCodes = [...new Set(filasR.rows.map(r => r.codigo))]
+    const articleIdxMap = new Map(articleCodes.map((c,i)=>[c,i]))
+    const articles = articleCodes
+    const articleDesc = []
+    const articleProveedor = [], articleFamilia = [], articleCategoria = [], articleMarca = []
+    for (const cod of articleCodes) {
+      const m = maestroByCodigo.get(cod)
+      const lineaEjemplo = filasR.rows.find(r => r.codigo === cod)
+      articleDesc.push((m && m.descripcion) || (lineaEjemplo && lineaEjemplo.descripcion) || cod)
+      articleProveedor.push(m && m.proveedor ? provIdx.get(m.proveedor) : -1)
+      articleFamilia.push(m && m.familia ? famIdx.get(m.familia) : -1)
+      articleCategoria.push(m && m.categoria ? catIdx.get(m.categoria) : -1)
+      articleMarca.push(m && m.marca ? marcaIdx.get(m.marca) : -1)
+    }
+
+    const sucursales = sucR.rows.map(r => r.sucursal)
+    const sucIdxMap = new Map(sucursales.map((s,i)=>[s,i]))
+    const dates = fechasR.rows.map(r => r.fecha)
+    const dateIdxMap = new Map(dates.map((d,i)=>[d,i]))
+
+    const rows = []
+    for (const r of filasR.rows) {
+      const artI = articleIdxMap.get(r.codigo)
+      const dateI = dateIdxMap.get(r.fecha)
+      const sucI = sucIdxMap.get(r.sucursal)
+      if (artI === undefined || dateI === undefined || sucI === undefined) continue
+      rows.push([artI, dateI, Number(r.cantidad || 0), r.nro_comprobante, Number(r.subtotal_neto || 0), sucI])
+    }
+
+    res.json({
+      proveedores, familias, categorias, marcas,
+      articles, articleDesc, articleProveedor, articleFamilia, articleCategoria, articleMarca,
+      sucursales, dates, rows,
+    })
+  } catch (err) {
+    console.error('raw-dataset error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
 app.get('/api/proveedores/recientes', async (req, res) => {
   try {
     const r = await pool.query(`

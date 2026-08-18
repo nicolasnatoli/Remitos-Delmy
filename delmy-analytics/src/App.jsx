@@ -83,6 +83,14 @@ export default function App() {
               }}
             >{t.label}</button>
           ))}
+          <a
+            href="/estadisticas.html"
+            style={{
+              padding: '6px 14px', borderRadius: 4, fontSize: 11, letterSpacing: 1, fontWeight: 500,
+              color: T.violet, border: `1px solid ${T.violet}`, textDecoration: 'none',
+              display: 'inline-flex', alignItems: 'center',
+            }}
+          >⬡ ESTADÍSTICAS</a>
         </div>
 
         <FilterBar
