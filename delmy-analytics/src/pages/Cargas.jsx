@@ -7,6 +7,7 @@ const TITLE = { fontSize: 10, color: 'var(--mut)', letterSpacing: 2, textTransfo
 
 export default function Cargas({ T }) {
   const [uploading, setUploading] = useState(false)
+  const [colisionAbierta, setColisionAbierta] = useState(null)
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
   const [dragging, setDragging] = useState(false)
@@ -306,14 +307,15 @@ export default function Cargas({ T }) {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
             <thead>
               <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                {['Archivo','Desde','Hasta','Sucursales','Encab.','Detalles','Insert.','Actualiz.','Cargado','Estado',''].map(h => (
+                {['Archivo','Desde','Hasta','Sucursales','Encab.','Detalles','Insert.','Actualiz.','Colisiones','Cargado','Estado',''].map(h => (
                   <th key={h} style={{ padding: '4px 8px', color: 'var(--mut)', textAlign: 'left', fontWeight: 400, fontSize: 9, letterSpacing: 1 }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {uploads.map(u => (
-                <tr key={u.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                <Fragment key={u.id}>
+                <tr style={{ borderBottom: '1px solid var(--border)' }}>
                   <td style={{ padding: '5px 8px', color: 'var(--txt)', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {u.filename}
                   </td>
@@ -324,6 +326,13 @@ export default function Cargas({ T }) {
                   <td style={{ padding: '5px 8px', color: 'var(--txt)', textAlign: 'right' }}>{fmt(u.n_detalles)}</td>
                   <td style={{ padding: '5px 8px', color: 'var(--green)', textAlign: 'right' }}>{fmt(u.n_insertados)}</td>
                   <td style={{ padding: '5px 8px', color: 'var(--amber)', textAlign: 'right' }}>{fmt(u.n_actualizados)}</td>
+                  <td style={{ padding: '5px 8px', textAlign: 'right' }}>
+                    {u.n_colisiones > 0 ? (
+                      <span style={{ color: 'var(--red)', fontWeight: 700, cursor: 'pointer', textDecoration: 'underline dotted' }}
+                        onClick={() => setColisionAbierta(colisionAbierta === u.id ? null : u.id)}
+                        title="Click para ver el detalle">⚠ {fmt(u.n_colisiones)}</span>
+                    ) : <span style={{ color: 'var(--mut)' }}>0</span>}
+                  </td>
                   <td style={{ padding: '5px 8px', color: 'var(--mut)', fontSize: 10 }}>{u.uploaded_at?.slice(0,16)}</td>
                   <td style={{ padding: '5px 8px' }}>
                     <span style={{
@@ -341,6 +350,17 @@ export default function Cargas({ T }) {
                     >✕</button>
                   </td>
                 </tr>
+                {colisionAbierta === u.id && u.colisiones_detalle && (
+                  <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                    <td colSpan={11} style={{ padding: '8px 12px', background: 'rgba(248,113,113,.06)' }}>
+                      <div style={{ fontSize: 10, color: 'var(--red)', marginBottom: 4, fontWeight: 600 }}>
+                        Comprobantes cuyo número ya existía con fecha/tipo/sucursal DISTINTOS a los del archivo (muestra hasta 30):
+                      </div>
+                      <pre style={{ fontSize: 9.5, color: 'var(--mut)', margin: 0, whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>{u.colisiones_detalle}</pre>
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>
