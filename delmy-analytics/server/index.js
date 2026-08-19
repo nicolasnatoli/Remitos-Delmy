@@ -77,10 +77,14 @@ async function initDB() {
         n_detalles     INTEGER DEFAULT 0,
         n_insertados   INTEGER DEFAULT 0,
         n_actualizados INTEGER DEFAULT 0,
+        n_colisiones   INTEGER DEFAULT 0,
+        colisiones_detalle TEXT,
         uploaded_at    TIMESTAMP DEFAULT NOW(),
         status         TEXT
       )
     `)
+    await client.query(`ALTER TABLE uploads_log ADD COLUMN IF NOT EXISTS n_colisiones INTEGER DEFAULT 0`)
+    await client.query(`ALTER TABLE uploads_log ADD COLUMN IF NOT EXISTS colisiones_detalle TEXT`)
     // Maestro código → proveedor/familia/categoría/marca. Se arma con merge:
     // el reporte "Stock Disponible" trae familia/categoría/marca, el reporte
     // de "Órdenes de Compra" trae proveedor (y también familia/categoría/marca,
@@ -259,12 +263,36 @@ async function processUpload(uploadId, encabezados, detalles) {
   try {
     await client.query('BEGIN')
     let insertados = 0, actualizados = 0
+    let colisiones = 0
+    const colisionesDetalle = []
+
+    // Antes de tocar nada: traer lo que YA existe en la base para los
+    // comprobantes de este archivo, y comparar identidad real (fecha, tipo,
+    // sucursal) contra lo que trae el archivo nuevo. Si nro_comprobante
+    // coincide pero fecha/tipo/sucursal NO, es sospechoso de ser un
+    // documento distinto que casualmente comparte número — no una
+    // actualización benigna del mismo comprobante. Se detecta y se loguea,
+    // no se bloquea la carga (para no trabar el flujo), pero queda visible
+    // en el historial para investigar.
+    const nrosArchivo = [...new Set(encabezados.map(e => e.nro_comprobante))]
+    const existentesR = await client.query(
+      `SELECT nro_comprobante, fecha::text as fecha, tipo_comprob, sucursal FROM comprobantes WHERE nro_comprobante = ANY($1)`,
+      [nrosArchivo]
+    )
+    const existentesMap = new Map(existentesR.rows.map(r => [r.nro_comprobante, r]))
 
     // Upsert comprobantes in chunks of 100
     const compChunk = 100
     for (let i = 0; i < encabezados.length; i += compChunk) {
       const chunk = encabezados.slice(i, i + compChunk)
       for (const enc of chunk) {
+        const prev = existentesMap.get(enc.nro_comprobante)
+        if (prev && (prev.fecha !== enc.fecha || prev.tipo_comprob !== enc.tipo_comprob || prev.sucursal !== enc.sucursal)) {
+          colisiones++
+          if (colisionesDetalle.length < 30) {
+            colisionesDetalle.push(`${enc.nro_comprobante}: guardado(${prev.fecha}/${prev.tipo_comprob}/${prev.sucursal}) vs archivo(${enc.fecha}/${enc.tipo_comprob}/${enc.sucursal})`)
+          }
+        }
         const r = await client.query(
           `INSERT INTO comprobantes (nro_comprobante,id_transaccion,id_operacion,id_sucursal,sucursal,fecha,fecha_carga,tipo_comprob,tipo_cliente,razon_social,cond_iva,cond_venta,lista_precios,subtotal,neto_gravado,iva_105,iva_21,total,moneda,usuario,upload_id)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
@@ -300,8 +328,12 @@ async function processUpload(uploadId, encabezados, detalles) {
     }
 
     await client.query('COMMIT')
-    await pool.query(`UPDATE uploads_log SET n_insertados=$1,n_actualizados=$2,status='ok' WHERE id=$3`, [insertados, actualizados, uploadId])
-    console.log(`Upload ${uploadId} done: ${insertados} new, ${actualizados} updated`)
+    await pool.query(
+      `UPDATE uploads_log SET n_insertados=$1,n_actualizados=$2,n_colisiones=$3,colisiones_detalle=$4,status='ok' WHERE id=$5`,
+      [insertados, actualizados, colisiones, colisionesDetalle.join('\n') || null, uploadId]
+    )
+    console.log(`Upload ${uploadId} done: ${insertados} new, ${actualizados} updated${colisiones > 0 ? `, ⚠ ${colisiones} COLISIONES SOSPECHOSAS (mismo nro_comprobante, distinta fecha/tipo/sucursal)` : ''}`)
+    if (colisiones > 0) console.warn(`Upload ${uploadId} colisiones:`, colisionesDetalle)
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {})
     await pool.query(`UPDATE uploads_log SET status='error' WHERE id=$1`, [uploadId])
