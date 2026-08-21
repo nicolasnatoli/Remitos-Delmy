@@ -108,6 +108,20 @@ async function initDB() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vl_sucursal  ON ventas_lineas(sucursal)`)
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vl_codigo    ON ventas_lineas(codigo)`)
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vl_comp      ON ventas_lineas(nro_comprobante)`)
+    // nro_comprobante YA NO puede ser la clave única — se repite entre tipos
+    // de documento distintos (confirmado con datos reales: una Factura B y
+    // un Remito comparten número dentro de la misma sucursal). Si sigue
+    // siendo PRIMARY KEY, insertar un comprobante distinto con el mismo
+    // número tira error antes de llegar a comparar id_operacion.
+    await client.query(`ALTER TABLE comprobantes DROP CONSTRAINT IF EXISTS comprobantes_pkey`)
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_comprobantes_nro ON comprobantes(nro_comprobante)`)
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_vl_idop      ON ventas_lineas(id_operacion)`)
+    // ID operación es la clave REAL de un comprobante — nro_comprobante se
+    // repite entre tipos de documento distintos (una Factura B y un Remito
+    // pueden compartir número dentro de la misma sucursal). Único parcial
+    // (no PRIMARY KEY) porque puede haber filas viejas con id_operacion nulo
+    // y no queremos que la migración falle por eso.
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS ux_comprobantes_idop ON comprobantes(id_operacion) WHERE id_operacion IS NOT NULL`)
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vl_tipo      ON ventas_lineas(tipo_comprob)`)
     await client.query(`CREATE INDEX IF NOT EXISTS idx_comp_fecha   ON comprobantes(fecha)`)
     await client.query(`CREATE INDEX IF NOT EXISTS idx_comp_tipo    ON comprobantes(tipo_comprob)`)
@@ -263,40 +277,64 @@ async function processUpload(uploadId, encabezados, detalles) {
   try {
     await client.query('BEGIN')
     let insertados = 0, actualizados = 0
-    let colisiones = 0
+    let colisiones = 0, sinIdOperacion = 0
     const colisionesDetalle = []
 
-    // Antes de tocar nada: traer lo que YA existe en la base para los
-    // comprobantes de este archivo, y comparar identidad real (fecha, tipo,
-    // sucursal) contra lo que trae el archivo nuevo. Si nro_comprobante
-    // coincide pero fecha/tipo/sucursal NO, es sospechoso de ser un
-    // documento distinto que casualmente comparte número — no una
-    // actualización benigna del mismo comprobante. Se detecta y se loguea,
-    // no se bloquea la carga (para no trabar el flujo), pero queda visible
-    // en el historial para investigar.
-    const nrosArchivo = [...new Set(encabezados.map(e => e.nro_comprobante))]
-    const existentesR = await client.query(
-      `SELECT nro_comprobante, fecha::text as fecha, tipo_comprob, sucursal FROM comprobantes WHERE nro_comprobante = ANY($1)`,
-      [nrosArchivo]
-    )
-    const existentesMap = new Map(existentesR.rows.map(r => [r.nro_comprobante, r]))
+    // Traer lo que ya existe, indexado por id_operacion (la clave real).
+    // Si un id_operacion ya guardado tiene nro_comprobante/fecha/tipo/sucursal
+    // DISTINTOS a los que trae el archivo, es una anomalía real de datos (el
+    // mismo ID de operación no debería cambiar de identidad) — se loguea para
+    // investigar, ya no debería pasar salvo error de carga en el ERP mismo.
+    const idOpsArchivo = [...new Set(encabezados.map(e => e.id_operacion).filter(v => v != null))]
+    const existentesR = idOpsArchivo.length > 0 ? await client.query(
+      `SELECT id_operacion, nro_comprobante, fecha::text as fecha, tipo_comprob, sucursal FROM comprobantes WHERE id_operacion = ANY($1)`,
+      [idOpsArchivo]
+    ) : { rows: [] }
+    const existentesMap = new Map(existentesR.rows.map(r => [r.id_operacion, r]))
 
-    // Upsert comprobantes in chunks of 100
     const compChunk = 100
     for (let i = 0; i < encabezados.length; i += compChunk) {
       const chunk = encabezados.slice(i, i + compChunk)
       for (const enc of chunk) {
-        const prev = existentesMap.get(enc.nro_comprobante)
-        if (prev && (prev.fecha !== enc.fecha || prev.tipo_comprob !== enc.tipo_comprob || prev.sucursal !== enc.sucursal)) {
+        if (enc.id_operacion == null) {
+          // Caso raro — sin ID operación no hay clave confiable. Respaldo
+          // manual por nro_comprobante+fecha+tipo+sucursal (no perfecto, pero
+          // mejor que asumir que nro_comprobante solo alcanza).
+          sinIdOperacion++
+          const prevR = await client.query(
+            `SELECT 1 FROM comprobantes WHERE nro_comprobante=$1 AND fecha=$2 AND tipo_comprob=$3 AND sucursal=$4`,
+            [enc.nro_comprobante, enc.fecha, enc.tipo_comprob, enc.sucursal]
+          )
+          if (prevR.rows.length > 0) {
+            await client.query(
+              `UPDATE comprobantes SET subtotal=$1,neto_gravado=$2,iva_105=$3,iva_21=$4,total=$5,upload_id=$6
+               WHERE nro_comprobante=$7 AND fecha=$8 AND tipo_comprob=$9 AND sucursal=$10`,
+              [enc.subtotal,enc.neto_gravado,enc.iva_105,enc.iva_21,enc.total,uploadId,enc.nro_comprobante,enc.fecha,enc.tipo_comprob,enc.sucursal]
+            )
+            actualizados++
+          } else {
+            await client.query(
+              `INSERT INTO comprobantes (nro_comprobante,id_transaccion,id_operacion,id_sucursal,sucursal,fecha,fecha_carga,tipo_comprob,tipo_cliente,razon_social,cond_iva,cond_venta,lista_precios,subtotal,neto_gravado,iva_105,iva_21,total,moneda,usuario,upload_id)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+              [enc.nro_comprobante,enc.id_transaccion,enc.id_operacion,enc.id_sucursal,enc.sucursal,enc.fecha,enc.fecha_carga,enc.tipo_comprob,enc.tipo_cliente,enc.razon_social,enc.cond_iva,enc.cond_venta,enc.lista_precios,enc.subtotal,enc.neto_gravado,enc.iva_105,enc.iva_21,enc.total,enc.moneda,enc.usuario,uploadId]
+            )
+            insertados++
+          }
+          continue
+        }
+        const prev = existentesMap.get(enc.id_operacion)
+        if (prev && (prev.nro_comprobante !== enc.nro_comprobante || prev.fecha !== enc.fecha || prev.tipo_comprob !== enc.tipo_comprob || prev.sucursal !== enc.sucursal)) {
           colisiones++
           if (colisionesDetalle.length < 30) {
-            colisionesDetalle.push(`${enc.nro_comprobante}: guardado(${prev.fecha}/${prev.tipo_comprob}/${prev.sucursal}) vs archivo(${enc.fecha}/${enc.tipo_comprob}/${enc.sucursal})`)
+            colisionesDetalle.push(`id_operacion ${enc.id_operacion}: guardado(${prev.nro_comprobante}/${prev.fecha}/${prev.tipo_comprob}/${prev.sucursal}) vs archivo(${enc.nro_comprobante}/${enc.fecha}/${enc.tipo_comprob}/${enc.sucursal})`)
           }
         }
         const r = await client.query(
           `INSERT INTO comprobantes (nro_comprobante,id_transaccion,id_operacion,id_sucursal,sucursal,fecha,fecha_carga,tipo_comprob,tipo_cliente,razon_social,cond_iva,cond_venta,lista_precios,subtotal,neto_gravado,iva_105,iva_21,total,moneda,usuario,upload_id)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
-           ON CONFLICT (nro_comprobante) DO UPDATE SET subtotal=EXCLUDED.subtotal,neto_gravado=EXCLUDED.neto_gravado,iva_105=EXCLUDED.iva_105,iva_21=EXCLUDED.iva_21,total=EXCLUDED.total,upload_id=EXCLUDED.upload_id
+           ON CONFLICT (id_operacion) WHERE id_operacion IS NOT NULL DO UPDATE SET
+             nro_comprobante=EXCLUDED.nro_comprobante,fecha=EXCLUDED.fecha,tipo_comprob=EXCLUDED.tipo_comprob,sucursal=EXCLUDED.sucursal,
+             subtotal=EXCLUDED.subtotal,neto_gravado=EXCLUDED.neto_gravado,iva_105=EXCLUDED.iva_105,iva_21=EXCLUDED.iva_21,total=EXCLUDED.total,upload_id=EXCLUDED.upload_id
            RETURNING (xmax = 0) AS inserted`,
           [enc.nro_comprobante,enc.id_transaccion,enc.id_operacion,enc.id_sucursal,enc.sucursal,enc.fecha,enc.fecha_carga,enc.tipo_comprob,enc.tipo_cliente,enc.razon_social,enc.cond_iva,enc.cond_venta,enc.lista_precios,enc.subtotal,enc.neto_gravado,enc.iva_105,enc.iva_21,enc.total,enc.moneda,enc.usuario,uploadId]
         )
@@ -304,10 +342,18 @@ async function processUpload(uploadId, encabezados, detalles) {
       }
     }
 
-    // Delete+reinsert detalles
-    const compNros = [...new Set(detalles.map(d => d.nro_comprobante))]
-    if (compNros.length > 0) {
-      await client.query(`DELETE FROM ventas_lineas WHERE nro_comprobante = ANY($1)`, [compNros])
+    // Borrar+reinsertar detalles — usando id_operacion como clave real. Antes
+    // borraba por nro_comprobante, lo que podía eliminar las líneas de un
+    // comprobante real y distinto que compartía número por casualidad.
+    const idOpsDetalle = [...new Set(detalles.map(d => d.id_operacion).filter(v => v != null))]
+    const nrosSinIdOp = [...new Set(detalles.filter(d => d.id_operacion == null).map(d => d.nro_comprobante))]
+    if (idOpsDetalle.length > 0) {
+      await client.query(`DELETE FROM ventas_lineas WHERE id_operacion = ANY($1)`, [idOpsDetalle])
+    }
+    if (nrosSinIdOp.length > 0) {
+      // Respaldo para líneas sin id_operacion — mismo riesgo que antes, pero
+      // acotado solo a este subconjunto raro en vez de a todo.
+      await client.query(`DELETE FROM ventas_lineas WHERE id_operacion IS NULL AND nro_comprobante = ANY($1)`, [nrosSinIdOp])
     }
 
     // Batch insert detalles in chunks of 200
@@ -330,9 +376,9 @@ async function processUpload(uploadId, encabezados, detalles) {
     await client.query('COMMIT')
     await pool.query(
       `UPDATE uploads_log SET n_insertados=$1,n_actualizados=$2,n_colisiones=$3,colisiones_detalle=$4,status='ok' WHERE id=$5`,
-      [insertados, actualizados, colisiones, colisionesDetalle.join('\n') || null, uploadId]
+      [insertados, actualizados, colisiones, colisionesDetalle.join('\n') + (sinIdOperacion > 0 ? `\n\n(${sinIdOperacion} comprobantes sin ID operación — usaron respaldo por nro_comprobante+fecha+tipo+sucursal)` : '') || null, uploadId]
     )
-    console.log(`Upload ${uploadId} done: ${insertados} new, ${actualizados} updated${colisiones > 0 ? `, ⚠ ${colisiones} COLISIONES SOSPECHOSAS (mismo nro_comprobante, distinta fecha/tipo/sucursal)` : ''}`)
+    console.log(`Upload ${uploadId} done: ${insertados} new, ${actualizados} updated${colisiones > 0 ? `, ⚠ ${colisiones} anomalías (mismo id_operacion, distinta identidad)` : ''}${sinIdOperacion > 0 ? `, ${sinIdOperacion} sin id_operacion (respaldo)` : ''}`)
     if (colisiones > 0) console.warn(`Upload ${uploadId} colisiones:`, colisionesDetalle)
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {})
@@ -675,6 +721,53 @@ app.post('/api/maestro/clasificar-manual', async (req, res) => {
         actualizado = NOW()
     `, [codigo, descripcion || null, familia || null, categoria || null, marca || null])
     res.json({ ok: true })
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+// ─── Diagnóstico — verificar colisiones reales de nro_comprobante ─────────────
+// Solo lectura, no cambia nada. Busca en ventas_lineas (que retiene todas las
+// líneas cargadas) casos donde el mismo nro_comprobante tenga más de un
+// id_operacion distinto entre sus líneas — eso es prueba directa de que dos
+// documentos reales distintos comparten número, no una sospecha.
+// Todo el historial de colisiones detectadas (de todas las cargas, no solo la
+// última) — sirve para armar la lista concreta de qué períodos/documentos
+// conviene re-cargar para reparar lo que se pisó antes del fix.
+app.get('/api/debug/todas-las-colisiones', async (req, res) => {
+  try {
+    const r = await pool.query(`SELECT id, filename, fecha_desde, fecha_hasta, uploaded_at, n_colisiones, colisiones_detalle FROM uploads_log WHERE n_colisiones > 0 ORDER BY id`)
+    res.json(r.rows)
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+app.get('/api/debug/verificar-comprobantes', async (req, res) => {
+  try {
+    const colision = await pool.query(`
+      SELECT nro_comprobante,
+        COUNT(DISTINCT id_operacion) as distintos_id_operacion,
+        array_agg(DISTINCT id_operacion) as ids_operacion_encontrados,
+        array_agg(DISTINCT fecha::text) as fechas_encontradas,
+        array_agg(DISTINCT tipo_comprob) as tipos_encontrados,
+        array_agg(DISTINCT sucursal) as sucursales_encontradas,
+        COUNT(*) as n_lineas_totales
+      FROM ventas_lineas
+      WHERE id_operacion IS NOT NULL
+      GROUP BY nro_comprobante
+      HAVING COUNT(DISTINCT id_operacion) > 1
+      ORDER BY distintos_id_operacion DESC, n_lineas_totales DESC
+      LIMIT 200
+    `)
+    const totalNros = await pool.query(`SELECT COUNT(DISTINCT nro_comprobante) as n FROM ventas_lineas`)
+    const totalIdOp = await pool.query(`SELECT COUNT(DISTINCT id_operacion) as n FROM ventas_lineas WHERE id_operacion IS NOT NULL`)
+
+    res.json({
+      resumen: colision.rows.length > 0
+        ? `⚠ CONFIRMADO: ${colision.rows.length} números de comprobante distintos tienen más de un ID de operación entre sus líneas actuales en la base — son documentos reales distintos compartiendo número.`
+        : `No se encontraron colisiones en las líneas actualmente guardadas (puede ser que ya se hayan pisado sin dejar rastro en cargas previas — esto solo detecta lo que sobrevive hoy).`,
+      nro_comprobante_distintos: Number(totalNros.rows[0].n),
+      id_operacion_distintos: Number(totalIdOp.rows[0].n),
+      diferencia: Number(totalIdOp.rows[0].n) - Number(totalNros.rows[0].n),
+      casos_de_colision: colision.rows,
+    })
   } catch (err) { res.status(500).json({ error: err.message }) }
 })
 
