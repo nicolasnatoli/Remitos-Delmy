@@ -739,6 +739,67 @@ app.get('/api/debug/todas-las-colisiones', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }) }
 })
 
+// ─── Comparar línea por línea los 2 documentos detrás de una colisión ─────────
+// Para responder "¿tienen los mismos artículos y montos?" con datos reales,
+// no con una suposición. Por default toma una muestra de 5 colisiones reales
+// (las de más líneas, para que la comparación sea representativa); también
+// se puede pedir un nro_comprobante puntual con ?nro=0028-00009494
+app.get('/api/debug/comparar-colisiones', async (req, res) => {
+  try {
+    let nros
+    if (req.query.nro) {
+      nros = [req.query.nro]
+    } else {
+      const colision = await pool.query(`
+        SELECT nro_comprobante
+        FROM ventas_lineas
+        WHERE id_operacion IS NOT NULL
+        GROUP BY nro_comprobante
+        HAVING COUNT(DISTINCT id_operacion) > 1
+        ORDER BY COUNT(*) DESC
+        LIMIT 5
+      `)
+      nros = colision.rows.map(r => r.nro_comprobante)
+    }
+
+    const resultados = []
+    for (const nro of nros) {
+      const idsR = await pool.query(
+        `SELECT DISTINCT id_operacion, fecha::text as fecha, tipo_comprob FROM ventas_lineas WHERE nro_comprobante=$1 AND id_operacion IS NOT NULL ORDER BY id_operacion`,
+        [nro]
+      )
+      if (idsR.rows.length < 2) continue
+      const [docA, docB] = idsR.rows
+
+      const [lineasAR, lineasBR] = await Promise.all([
+        pool.query(`SELECT codigo, descripcion, cantidad, precio_unitario, subtotal_det FROM ventas_lineas WHERE id_operacion=$1 ORDER BY id_fila`, [docA.id_operacion]),
+        pool.query(`SELECT codigo, descripcion, cantidad, precio_unitario, subtotal_det FROM ventas_lineas WHERE id_operacion=$1 ORDER BY id_fila`, [docB.id_operacion]),
+      ])
+      const lineasA = lineasAR.rows, lineasB = lineasBR.rows
+      const totalA = lineasA.reduce((s, l) => s + Number(l.subtotal_det || 0), 0)
+      const totalB = lineasB.reduce((s, l) => s + Number(l.subtotal_det || 0), 0)
+      const codigosA = new Set(lineasA.map(l => l.codigo))
+      const codigosB = new Set(lineasB.map(l => l.codigo))
+      const enComun = [...codigosA].filter(c => codigosB.has(c)).length
+
+      resultados.push({
+        nro_comprobante: nro,
+        documento_A: { id_operacion: docA.id_operacion, fecha: docA.fecha, tipo: docA.tipo_comprob, n_lineas: lineasA.length, total: Math.round(totalA) },
+        documento_B: { id_operacion: docB.id_operacion, fecha: docB.fecha, tipo: docB.tipo_comprob, n_lineas: lineasB.length, total: Math.round(totalB) },
+        articulos_en_comun: enComun,
+        mismos_articulos_exacto: enComun === codigosA.size && enComun === codigosB.size && codigosA.size === codigosB.size,
+        diferencia_de_monto: Math.round(Math.abs(totalA - totalB)),
+        lineas_documento_A: lineasA,
+        lineas_documento_B: lineasB,
+      })
+    }
+    res.json({
+      resumen: `Comparación de ${resultados.length} colisiones reales, línea por línea.`,
+      resultados,
+    })
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
 app.get('/api/debug/verificar-comprobantes', async (req, res) => {
   try {
     const colision = await pool.query(`
