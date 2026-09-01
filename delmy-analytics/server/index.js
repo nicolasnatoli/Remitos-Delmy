@@ -414,25 +414,39 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No se recibió archivo' })
 
-    const { encabezados, detalles } = await parsePlanillaVentas(req.file.buffer)
-    if (encabezados.length === 0) return res.status(400).json({ error: 'No se encontraron encabezados' })
-
-    const fechas = encabezados.map(e => e.fecha).filter(Boolean).sort()
-    const sucursales = [...new Set(encabezados.map(e => e.sucursal).filter(Boolean))]
-    const fechaDesde = fechas[0] || null
-    const fechaHasta = fechas[fechas.length - 1] || null
-
+    // Crear el registro de carga ANTES de parsear (con datos provisorios) y
+    // responder ya mismo — el parseo con exceljs streaming puede tardar
+    // 20-35s en archivos grandes, y si el navegador espera esa respuesta se
+    // corta la conexión (eso causaba la pantalla en negro). Parseo + guardado
+    // corren enteros en segundo plano, como ya hacía el guardado antes.
     const logRes = await pool.query(
-      `INSERT INTO uploads_log (filename, fecha_desde, fecha_hasta, sucursales, n_encabezados, n_detalles, status) VALUES ($1,$2,$3,$4,$5,$6,'procesando') RETURNING id`,
-      [req.file.originalname, fechaDesde, fechaHasta, sucursales.join(', '), encabezados.length, detalles.length]
+      `INSERT INTO uploads_log (filename, status) VALUES ($1,'parseando') RETURNING id`,
+      [req.file.originalname]
     )
     const uploadId = logRes.rows[0].id
 
-    // Respond immediately, process in background
-    res.json({ ok: true, uploadId, encabezados: encabezados.length, detalles: detalles.length, fechaDesde, fechaHasta, sucursales, procesando: true })
+    res.json({ ok: true, uploadId, procesando: true })
 
-    // Process in background (non-blocking)
-    setImmediate(() => processUpload(uploadId, encabezados, detalles))
+    setImmediate(async () => {
+      try {
+        const { encabezados, detalles } = await parsePlanillaVentas(req.file.buffer)
+        if (encabezados.length === 0) {
+          await pool.query(`UPDATE uploads_log SET status='error' WHERE id=$1`, [uploadId])
+          console.error(`Upload ${uploadId} error: No se encontraron encabezados`)
+          return
+        }
+        const fechas = encabezados.map(e => e.fecha).filter(Boolean).sort()
+        const sucursales = [...new Set(encabezados.map(e => e.sucursal).filter(Boolean))]
+        await pool.query(
+          `UPDATE uploads_log SET fecha_desde=$1, fecha_hasta=$2, sucursales=$3, n_encabezados=$4, n_detalles=$5, status='procesando' WHERE id=$6`,
+          [fechas[0] || null, fechas[fechas.length - 1] || null, sucursales.join(', '), encabezados.length, detalles.length, uploadId]
+        )
+        await processUpload(uploadId, encabezados, detalles)
+      } catch (err) {
+        console.error(`Upload ${uploadId} parse error:`, err)
+        await pool.query(`UPDATE uploads_log SET status='error' WHERE id=$1`, [uploadId]).catch(() => {})
+      }
+    })
 
   } catch (err) {
     console.error('Upload error:', err)
@@ -444,7 +458,15 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
 app.get('/api/upload-status/:id', async (req, res) => {
   try {
     const r = await pool.query('SELECT * FROM uploads_log WHERE id=$1', [req.params.id])
-    res.json(r.rows[0] || { status: 'not_found' })
+    const row = r.rows[0]
+    if (!row) return res.json({ status: 'not_found' })
+    res.json({
+      ...row,
+      encabezados: row.n_encabezados, detalles: row.n_detalles,
+      insertados: row.n_insertados, actualizados: row.n_actualizados,
+      fechaDesde: row.fecha_desde, fechaHasta: row.fecha_hasta,
+      sucursales: row.sucursales ? row.sucursales.split(', ').filter(Boolean) : [],
+    })
   } catch (err) { res.status(500).json({ error: err.message }) }
 })
 

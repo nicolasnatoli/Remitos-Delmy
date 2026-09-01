@@ -11,6 +11,7 @@ export default function Cargas({ T }) {
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
   const [dragging, setDragging] = useState(false)
+  const [colaEstado, setColaEstado] = useState(null) // { total, actual, nombreActual }
 
   const [uploadingMaestro, setUploadingMaestro] = useState(false)
   const [resultMaestro, setResultMaestro] = useState(null)
@@ -44,57 +45,72 @@ export default function Cargas({ T }) {
     }
   }, [reloadCobertura])
 
-  const processFile = useCallback(async (file) => {
-    if (!file) return
-    if (!file.name.match(/\.(xlsx|xls|csv)$/i)) {
-      setError('Solo se aceptan archivos .xlsx, .xls o .csv')
-      return
-    }
+  // Sube UN archivo y espera hasta que termine de procesarse en el servidor
+  // (resuelve la promesa recién cuando el polling confirma 'ok' o 'error') —
+  // así la cola nunca manda dos archivos pesados al mismo tiempo al servidor.
+  const subirUnArchivo = useCallback((file) => {
+    return new Promise(async (resolve) => {
+      const form = new FormData()
+      form.append('file', file)
+      try {
+        const resp = await fetch('/api/upload', { method: 'POST', body: form })
+        const data = await resp.json()
+        if (!resp.ok) throw new Error(data.error || 'Error desconocido')
+
+        if (data.procesando) {
+          setResult({ ...data, status: 'procesando' })
+          reload()
+          const poll = setInterval(async () => {
+            try {
+              const sr = await fetch(`/api/upload-status/${data.uploadId}`)
+              const s = await sr.json()
+              if (s.status === 'ok' || s.status === 'error') {
+                clearInterval(poll)
+                setResult(s)
+                reload()
+                resolve(s.status)
+              }
+            } catch {}
+          }, 3000)
+        } else {
+          setResult(data)
+          reload()
+          resolve('ok')
+        }
+      } catch (e) {
+        setError(e.message)
+        resolve('error')
+      }
+    })
+  }, [reload])
+
+  // Cola: procesa varios archivos en fila, uno atrás del otro (no en
+  // paralelo) — se puede seleccionar todos juntos y dejar que trabaje solo.
+  const processFile = useCallback(async (fileOrFiles) => {
+    const files = Array.isArray(fileOrFiles) || fileOrFiles instanceof FileList
+      ? Array.from(fileOrFiles) : [fileOrFiles]
+    if (files.length === 0) return
+
+    const validos = files.filter(f => f.name.match(/\.(xlsx|xls|csv)$/i))
+    if (validos.length === 0) { setError('Solo se aceptan archivos .xlsx, .xls o .csv'); return }
+    if (validos.length < files.length) setError(`Se ignoraron ${files.length - validos.length} archivo(s) con formato no soportado.`)
 
     setUploading(true)
-    setError(null)
     setResult(null)
+    if (validos.length === 1) setError(null)
 
-    const form = new FormData()
-    form.append('file', file)
-
-    try {
-      const resp = await fetch('/api/upload', { method: 'POST', body: form })
-      const data = await resp.json()
-      if (!resp.ok) throw new Error(data.error || 'Error desconocido')
-
-      // If processing in background, poll for status
-      if (data.procesando) {
-        setResult({ ...data, status: 'procesando' })
-        reload()
-        const poll = setInterval(async () => {
-          try {
-            const sr = await fetch(`/api/upload-status/${data.uploadId}`)
-            const s = await sr.json()
-            if (s.status === 'ok' || s.status === 'error') {
-              clearInterval(poll)
-              setResult(s)
-              setUploading(false)
-              reload()
-            }
-          } catch {}
-        }, 3000)
-      } else {
-        setResult(data)
-        setUploading(false)
-        reload()
-      }
-    } catch (e) {
-      setError(e.message)
-      setUploading(false)
+    for (let i = 0; i < validos.length; i++) {
+      setColaEstado({ total: validos.length, actual: i + 1, nombreActual: validos[i].name })
+      await subirUnArchivo(validos[i])
     }
-  }, [reload])
+    setColaEstado(null)
+    setUploading(false)
+  }, [subirUnArchivo])
 
   const onDrop = useCallback((e) => {
     e.preventDefault()
     setDragging(false)
-    const file = e.dataTransfer.files[0]
-    if (file) processFile(file)
+    if (e.dataTransfer.files.length > 0) processFile(e.dataTransfer.files)
   }, [processFile])
 
   const deleteUpload = async (id) => {
@@ -134,12 +150,17 @@ export default function Cargas({ T }) {
         <input
           id="file-input" type="file" accept=".xlsx,.xls,.csv"
           style={{ display: 'none' }}
-          onChange={e => processFile(e.target.files[0])}
+          onChange={e => processFile(e.target.files)}
           multiple
         />
         {uploading ? (
           <div>
             <div style={{ fontSize: 24, marginBottom: 8 }}>⟳</div>
+            {colaEstado && colaEstado.total > 1 && (
+              <div style={{ fontSize: 12, color: 'var(--violet)', fontWeight: 600, marginBottom: 6 }}>
+                Archivo {colaEstado.actual} de {colaEstado.total} — {colaEstado.nombreActual}
+              </div>
+            )}
             <div style={{ color: 'var(--acc)', fontSize: 13 }}>
               {result?.status === 'procesando'
                 ? `Insertando datos... ${result?.encabezados || 0} comprobantes · ${result?.detalles || 0} líneas`
@@ -155,7 +176,10 @@ export default function Cargas({ T }) {
           <div>
             <div style={{ fontSize: 32, marginBottom: 8, color: 'var(--mut)' }}>↑</div>
             <div style={{ fontSize: 14, color: 'var(--txt)', marginBottom: 4 }}>
-              Arrastrá la planilla acá o hacé click para seleccionar
+              Arrastrá una o varias planillas acá o hacé click para seleccionar
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--mut)' }}>
+              Podés elegir varios archivos juntos — se procesan uno atrás del otro, en el orden que los selecciones.
             </div>
             <div style={{ fontSize: 11, color: 'var(--mut)' }}>
               Formato: *.xlsx o *.csv (CSV es más rápido para archivos grandes)
