@@ -1053,6 +1053,20 @@ app.get('/api/ventas/raw-dataset', async (req, res) => {
   try {
     const { where, params } = buildWhere(`tipo_comprob IN ('FCB','FCA','RE')`, { desde: req.query.desde, hasta: req.query.hasta })
 
+    // Chequeo de seguridad ANTES de traer nada — con datos reales, un rango
+    // de fechas amplio puede superar el millón de filas y tumbar el proceso
+    // entero (502) en vez de solo tardar. Mejor fallar rápido con un mensaje
+    // claro que dejar que el servidor se caiga a mitad de camino.
+    const LIMITE_FILAS = 400000
+    const conteoR = await pool.query(`SELECT COUNT(*) as n FROM ventas_lineas WHERE ${where}`, params)
+    const totalFilas = Number(conteoR.rows[0].n)
+    if (totalFilas > LIMITE_FILAS) {
+      return res.status(413).json({
+        error: `El rango pedido tiene ${totalFilas.toLocaleString('es-AR')} líneas — supera el límite de ${LIMITE_FILAS.toLocaleString('es-AR')} que este endpoint puede traer de forma segura sin arriesgar caerse. Achicá el rango de fechas (desde "Filtrar fechas") e intentá de nuevo.`,
+        totalFilas, limite: LIMITE_FILAS,
+      })
+    }
+
     const [maestroR, sucR, fechasR, filasR] = await Promise.all([
       pool.query(`SELECT codigo, descripcion, proveedor, familia, categoria, marca FROM articulos_maestro`),
       pool.query(`SELECT DISTINCT sucursal FROM ventas_lineas WHERE ${where} ORDER BY sucursal`, params),
@@ -1181,6 +1195,68 @@ app.get('/api/ventas/por-proveedor', async (req, res) => {
 // divide del lado del año anterior en "comparable" (mismo tramo de días que ya
 // transcurrió este año) + "resto" — para no comparar un mes completo del año
 // pasado contra un mes a medias de este año.
+// ─── Comparativa día a día — agregada en SQL, liviana sin importar volumen ────
+// A diferencia de traer filas crudas al navegador, esto agrupa por fecha en
+// la base — el resultado son ~730 filas (2 años x 365 días) sin importar si
+// hay 10.000 o 10 millones de líneas de venta detrás. Soporta los mismos
+// filtros de clasificación en cascada que el resto de los endpoints.
+app.get('/api/ventas/comparativa-dia', async (req, res) => {
+  try {
+    const { where, params } = buildWhere(`vl.tipo_comprob IN ('FCB','FCA','RE')`, {
+      sucursal: req.query.sucursal, proveedores: req.query.proveedores,
+      familias: req.query.familias, categorias: req.query.categorias, marcas: req.query.marcas,
+    }, 'vl')
+    const r = await pool.query(`
+      SELECT vl.fecha::text as fecha, SUM(vl.cantidad) as unidades,
+        COUNT(DISTINCT vl.nro_comprobante) as pedidos, SUM(vl.subtotal_neto) as ventas
+      FROM ventas_lineas vl
+      LEFT JOIN articulos_maestro am ON am.codigo = vl.codigo
+      WHERE ${where}
+      GROUP BY vl.fecha ORDER BY vl.fecha
+    `, params)
+    res.json(r.rows)
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+// ─── Detalle de día(s) seleccionados — solo para lo que se clickea, liviano ───
+// Se llama recién cuando el usuario hace clic/ctrl+clic/shift+clic sobre uno
+// o varios días en el gráfico — nunca trae más que eso, por eso es seguro
+// aunque el total histórico sea grande.
+app.get('/api/ventas/detalle-dias', async (req, res) => {
+  try {
+    const fechas = (req.query.fechas || '').split(',').filter(Boolean)
+    if (fechas.length === 0) return res.json({ porFamilia: [], porArticulo: [], resumen: null })
+
+    const { where, params } = buildWhere(`vl.tipo_comprob IN ('FCB','FCA','RE')`, {
+      sucursal: req.query.sucursal, proveedores: req.query.proveedores,
+      familias: req.query.familias, categorias: req.query.categorias, marcas: req.query.marcas,
+    }, 'vl')
+    const fechaIdx = params.length + 1
+    const whereFinal = `${where} AND vl.fecha = ANY($${fechaIdx})`
+    const paramsFinal = [...params, fechas]
+
+    const [porFamiliaR, porArticuloR, resumenR] = await Promise.all([
+      pool.query(`
+        SELECT COALESCE(am.familia,'Sin clasificar') as familia, SUM(vl.cantidad) as unidades, SUM(vl.subtotal_neto) as ventas
+        FROM ventas_lineas vl LEFT JOIN articulos_maestro am ON am.codigo=vl.codigo
+        WHERE ${whereFinal} GROUP BY familia ORDER BY ventas DESC LIMIT 15
+      `, paramsFinal),
+      pool.query(`
+        SELECT vl.codigo, MAX(vl.descripcion) as descripcion, SUM(vl.cantidad) as unidades, SUM(vl.subtotal_neto) as ventas
+        FROM ventas_lineas vl LEFT JOIN articulos_maestro am ON am.codigo=vl.codigo
+        WHERE ${whereFinal} GROUP BY vl.codigo ORDER BY ventas DESC LIMIT 20
+      `, paramsFinal),
+      pool.query(`
+        SELECT SUM(vl.cantidad) as unidades, SUM(vl.subtotal_neto) as ventas,
+          COUNT(DISTINCT vl.nro_comprobante) as pedidos, COUNT(DISTINCT vl.codigo) as articulos
+        FROM ventas_lineas vl LEFT JOIN articulos_maestro am ON am.codigo=vl.codigo
+        WHERE ${whereFinal}
+      `, paramsFinal),
+    ])
+    res.json({ porFamilia: porFamiliaR.rows, porArticulo: porArticuloR.rows, resumen: resumenR.rows[0] })
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
 app.get('/api/ventas/comparativa-anual', async (req, res) => {
   try {
     const { where, params } = buildWhere(`tipo_comprob IN ('FCB','FCA','RE')`, { sucursal: req.query.sucursal, proveedores: req.query.proveedores })

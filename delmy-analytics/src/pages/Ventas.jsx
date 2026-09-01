@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { useFetch, buildQS } from '../hooks/useFetch.js'
 import { fmt as fmtBase, fmtPeso as fmtPesoBase } from '../components/shared/KpiCard.jsx'
 import { ParetoChart, LineChart, BarChart } from '../components/shared/Charts.jsx'
@@ -108,6 +108,179 @@ function CeldaPeriodo({ periodo }) {
         )}
       </div>
     </td>
+  )
+}
+
+// ─── Comparativa día a día — clic/ctrl+clic/shift+clic/alt+clic ───────────────
+// Alt+clic "apaga" un día (lo excluye visualmente, útil para un día atípico
+// tipo inventario o error de carga que distorsiona la lectura). Ctrl+clic
+// suma días sueltos a la selección. Shift+clic selecciona un rango. Clic
+// simple reemplaza la selección por un solo día.
+function ComparativaDiaChart({ data, seleccionados, anclaDia, deshabilitados, onDayClick }) {
+  const CHART_W = 900
+  const [vista, setVista] = useState(null) // { start, count } — índices dentro de mds
+  const arrastreRef = useRef(null) // { startX, viewStartInicial }
+  const svgRef = useRef(null)
+
+  // Alinear por mes-día para poder comparar año actual vs anterior en la misma posición X
+  const { anioAct, anioAnt, mds, porAnio } = useMemo(() => {
+    const porAnio = {}
+    for (const d of (data || [])) {
+      const anio = d.fecha.slice(0, 4)
+      const md = d.fecha.slice(5)
+      if (!porAnio[anio]) porAnio[anio] = {}
+      porAnio[anio][md] = Number(d.ventas || 0)
+    }
+    const anios = Object.keys(porAnio).sort()
+    const mdsSet = new Set()
+    for (const a of anios) for (const md of Object.keys(porAnio[a])) mdsSet.add(md)
+    return { anioAct: anios[anios.length - 1], anioAnt: anios[anios.length - 2], mds: [...mdsSet].sort(), porAnio }
+  }, [data])
+
+  // Vista completa por default — se resetea si cambia el dataset (nuevo filtro)
+  useEffect(() => { setVista({ start: 0, count: mds.length }) }, [mds.length])
+
+  if (!data || data.length === 0) return <div style={{ padding: 20, color: D.inkSoft, fontSize: 11 }}>Sin datos para este rango.</div>
+  if (!vista || mds.length === 0) return null
+
+  const visibles = mds.slice(vista.start, vista.start + vista.count)
+  const max = Math.max(1, ...visibles.map(md => Math.max(porAnio[anioAct]?.[md] || 0, porAnio[anioAnt]?.[md] || 0)))
+  const pad = { l: 10, r: 10, t: 14, b: 50 }
+  const chartH = 220
+  const anchoUtil = CHART_W - pad.l - pad.r
+  const barSlot = anchoUtil / visibles.length
+  const barW = Math.max(1, barSlot - 1)
+
+  const onWheel = (e) => {
+    e.preventDefault()
+    const rect = svgRef.current.getBoundingClientRect()
+    const mouseXRatio = Math.min(1, Math.max(0, (e.clientX - rect.left - pad.l) / anchoUtil))
+    const factor = e.deltaY < 0 ? 0.85 : 1.18
+    let nuevoCount = Math.round(vista.count * factor)
+    nuevoCount = Math.max(7, Math.min(mds.length, nuevoCount))
+    const diaBajoCursor = vista.start + vista.count * mouseXRatio
+    let nuevoStart = Math.round(diaBajoCursor - nuevoCount * mouseXRatio)
+    nuevoStart = Math.max(0, Math.min(mds.length - nuevoCount, nuevoStart))
+    setVista({ start: nuevoStart, count: nuevoCount })
+  }
+
+  const onMouseDown = (e) => {
+    if (e.button !== 0) return
+    arrastreRef.current = { startX: e.clientX, viewStartInicial: vista.start }
+  }
+  const onMouseMove = (e) => {
+    if (!arrastreRef.current) return
+    const deltaX = e.clientX - arrastreRef.current.startX
+    const deltaDias = Math.round(deltaX / barSlot)
+    let nuevoStart = arrastreRef.current.viewStartInicial - deltaDias
+    nuevoStart = Math.max(0, Math.min(mds.length - vista.count, nuevoStart))
+    if (nuevoStart !== vista.start) setVista(v => ({ ...v, start: nuevoStart }))
+  }
+  const onMouseUp = () => { arrastreRef.current = null }
+
+  const zoomedIn = vista.count < mds.length
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 18, marginBottom: 10, fontSize: 11, color: D.inkSoft, flexWrap: 'wrap', alignItems: 'center' }}>
+        <span><i style={{ display: 'inline-block', width: 10, height: 10, background: D.orange, borderRadius: 2, marginRight: 5 }} />{anioAct}</span>
+        <span><i style={{ display: 'inline-block', width: 10, height: 2, background: D.steel, marginRight: 5, verticalAlign: 'middle' }} />{anioAnt}</span>
+        <span>Rueda: zoom · Arrastrar: mover · Clic: elegir día · Ctrl+clic: sumar · Shift+clic: rango · Alt+clic: apagar
+          {deshabilitados.length > 0 && <b style={{ color: D.orange }}> · {deshabilitados.length} apagado(s)</b>}
+        </span>
+        {zoomedIn && (
+          <button onClick={() => setVista({ start: 0, count: mds.length })} style={{ marginLeft: 'auto', fontSize: 10, padding: '3px 10px', borderRadius: 12, background: D.steelSoft, border: `1px solid ${D.steel}`, color: D.steel, cursor: 'pointer' }}>
+            Ver todo
+          </button>
+        )}
+      </div>
+      <svg
+        ref={svgRef} width={CHART_W} height={chartH + pad.t + pad.b}
+        onWheel={onWheel} onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}
+        style={{ cursor: arrastreRef.current ? 'grabbing' : 'grab', display: 'block', userSelect: 'none' }}
+      >
+        {visibles.map((md, i) => {
+          const fechaAct = `${anioAct}-${md}`
+          const apagado = deshabilitados.includes(fechaAct)
+          const valActual = apagado ? 0 : (porAnio[anioAct]?.[md] || 0)
+          const hBar = (valActual / max) * chartH
+          const x = pad.l + i * barSlot
+          const yBar = pad.t + chartH - hBar
+          const seleccionado = seleccionados.includes(fechaAct)
+          return (
+            <rect
+              key={md} x={x} y={yBar} width={barW} height={Math.max(hBar, 0.5)}
+              fill={apagado ? D.line : (seleccionado ? D.navy : D.orange)}
+              opacity={apagado ? 1 : (seleccionado ? 1 : 0.75)}
+              style={{ cursor: 'pointer' }}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => { e.stopPropagation(); onDayClick(fechaAct, i, e) }}
+            />
+          )
+        })}
+        <polyline
+          fill="none" stroke={D.steel} strokeWidth={1.3}
+          points={visibles.map((md, i) => {
+            const x = pad.l + i * barSlot + barW / 2
+            const v = porAnio[anioAnt]?.[md]
+            if (v === undefined) return null
+            const y = pad.t + chartH - (v / max) * chartH
+            return `${x},${y}`
+          }).filter(Boolean).join(' ')}
+        />
+        {visibles.map((md, i) => {
+          if (!md.endsWith('-01') && visibles.length > 45) return null
+          if (visibles.length <= 45 && Number(md.slice(3)) % 5 !== 1) return null
+          const x = pad.l + i * barSlot
+          const label = visibles.length > 45 ? MESES_CORTOS[Number(md.slice(0,2))-1] : md.slice(3)
+          return <text key={md} x={x} y={chartH + pad.t + 16} fontSize={9} fill={D.inkSoft} fontFamily={D.fontBody}>{label}</text>
+        })}
+      </svg>
+    </div>
+  )
+}
+const MESES_CORTOS = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']
+
+// ─── Panel de detalle — se llena solo con lo que corresponde a los días clickeados ─
+function DetalleDiasPanel({ dias, detalle, onLimpiar }) {
+  if (!detalle) return null
+  const r = detalle.resumen || {}
+  return (
+    <div style={{ marginTop: 18, background: D.orangeSoft, borderRadius: D.radius, padding: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+        <div style={{ fontFamily: D.fontDisplay, fontSize: 16, fontWeight: 700, color: D.ink }}>
+          {dias.length === 1 ? dias[0] : `${dias.length} días seleccionados`}
+        </div>
+        <button onClick={onLimpiar} style={{ fontSize: 11, color: D.orange, background: 'transparent', border: 'none', cursor: 'pointer', fontWeight: 600 }}>✕ Limpiar selección</button>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10, marginBottom: 16 }}>
+        {[['Ventas $', fmtPeso(r.ventas)], ['Unidades', fmt(r.unidades)], ['Pedidos', fmt(r.pedidos)], ['Artículos distintos', fmt(r.articulos)]].map(([l,v]) => (
+          <div key={l}>
+            <div style={{ fontSize: 9, color: D.inkSoft, textTransform: 'uppercase' }}>{l}</div>
+            <div style={{ fontFamily: D.fontDisplay, fontSize: 18, fontWeight: 800, color: D.ink }}>{v}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <div>
+          <div style={{ fontSize: 10, color: D.inkSoft, fontWeight: 700, marginBottom: 6 }}>POR FAMILIA</div>
+          {(detalle.porFamilia || []).slice(0,8).map(f => (
+            <div key={f.familia} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '3px 0', borderBottom: `1px solid ${D.line}` }}>
+              <span style={{ color: D.ink }}>{f.familia}</span><span style={{ color: D.orange, fontWeight: 600 }}>{fmtPeso(f.ventas)}</span>
+            </div>
+          ))}
+        </div>
+        <div>
+          <div style={{ fontSize: 10, color: D.inkSoft, fontWeight: 700, marginBottom: 6 }}>TOP ARTÍCULOS</div>
+          {(detalle.porArticulo || []).slice(0,8).map(a => (
+            <div key={a.codigo} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '3px 0', borderBottom: `1px solid ${D.line}` }}>
+              <span style={{ color: D.ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 200 }}>{a.descripcion}</span>
+              <span style={{ color: D.orange, fontWeight: 600, flexShrink: 0 }}>{fmtPeso(a.ventas)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -296,6 +469,9 @@ export default function Ventas({ filters, setFilters, T }) {
   const [vistaComparativa, setVistaComparativa] = useState('trimestre')
   const [metricaProveedor, setMetricaProveedor] = useState('facturacion')
   const [proveedorHover, setProveedorHover] = useState(null)
+  const [diasSeleccionados, setDiasSeleccionados] = useState([]) // array de fechas 'YYYY-MM-DD'
+  const [anclaDia, setAnclaDia] = useState(null)
+  const [diasDeshabilitados, setDiasDeshabilitados] = useState([])
   const qs = buildQS(filters)
 
   const { data: porDia } = useFetch(`/api/ventas/por-dia${qs}`, [qs])
@@ -304,6 +480,9 @@ export default function Ventas({ filters, setFilters, T }) {
   const { data: kpis } = useFetch(`/api/kpis${qs}`, [qs])
   const { data: porProveedor } = useFetch(`/api/ventas/por-proveedor${qs}`, [qs])
   const { data: comparativa } = useFetch(`/api/ventas/comparativa-anual${qs}`, [qs])
+  const { data: comparativaDia } = useFetch(vistaComparativa === 'dia' ? `/api/ventas/comparativa-dia${qs}` : null, [qs, vistaComparativa])
+  const qsFechas = diasSeleccionados.length > 0 ? `${qs}${qs ? '&' : '?'}fechas=${diasSeleccionados.join(',')}` : null
+  const { data: detalleDias } = useFetch(qsFechas ? `/api/ventas/detalle-dias${qsFechas}` : null, [qsFechas])
   const { data: gruposProveedor } = useFetch('/api/proveedores/grupos', [])
   const { data: proveedoresRecientes } = useFetch('/api/proveedores/recientes', [])
 
@@ -417,7 +596,7 @@ export default function Ventas({ filters, setFilters, T }) {
         {comparativa && comparativa.anioActual && (
           <section style={{ marginTop: 34 }}>
             <Panel>
-              <PanelTitle right={<ToggleGroup options={[['trimestre','Por trimestre'],['mes','Por mes']]} value={vistaComparativa} onChange={setVistaComparativa} />}>
+              <PanelTitle right={<ToggleGroup options={[['trimestre','Por trimestre'],['mes','Por mes'],['dia','Por día']]} value={vistaComparativa} onChange={setVistaComparativa} />}>
                 Comparativa interanual
               </PanelTitle>
               <div style={{ fontSize: 12, color: D.inkSoft, marginBottom: 14 }}>
@@ -425,11 +604,41 @@ export default function Ventas({ filters, setFilters, T }) {
                 "mismo tramo que hoy" (comparable) + "resto del período" (rayado, de contexto), para comparar
                 manzanas con manzanas. Corte de datos: {comparativa.corte}.
               </div>
-              <ComparativaAnualChart
-                data={vistaComparativa === 'trimestre' ? comparativa.trimestre : comparativa.mes}
-                anioActual={comparativa.anioActual}
-                anioAnterior={comparativa.anioAnterior}
-              />
+              {vistaComparativa !== 'dia' ? (
+                <ComparativaAnualChart
+                  data={vistaComparativa === 'trimestre' ? comparativa.trimestre : comparativa.mes}
+                  anioActual={comparativa.anioActual}
+                  anioAnterior={comparativa.anioAnterior}
+                />
+              ) : (
+                <>
+                  <ComparativaDiaChart
+                    data={comparativaDia}
+                    seleccionados={diasSeleccionados}
+                    anclaDia={anclaDia}
+                    deshabilitados={diasDeshabilitados}
+                    onDayClick={(fecha, idx, e) => {
+                      if (e.altKey) {
+                        setDiasDeshabilitados(prev => prev.includes(fecha) ? prev.filter(f => f !== fecha) : [...prev, fecha])
+                        return
+                      }
+                      if (e.shiftKey && anclaDia !== null) {
+                        const [desde, hasta] = [anclaDia, fecha].sort()
+                        setDiasSeleccionados(comparativaDia.filter(d => d.fecha >= desde && d.fecha <= hasta && !diasDeshabilitados.includes(d.fecha)).map(d => d.fecha))
+                      } else if (e.ctrlKey || e.metaKey) {
+                        setDiasSeleccionados(prev => prev.includes(fecha) ? prev.filter(f => f !== fecha) : [...prev, fecha])
+                        setAnclaDia(fecha)
+                      } else {
+                        setDiasSeleccionados([fecha])
+                        setAnclaDia(fecha)
+                      }
+                    }}
+                  />
+                  {diasSeleccionados.length > 0 && (
+                    <DetalleDiasPanel dias={diasSeleccionados} detalle={detalleDias} onLimpiar={() => { setDiasSeleccionados([]); setAnclaDia(null) }} />
+                  )}
+                </>
+              )}
             </Panel>
           </section>
         )}
