@@ -5,6 +5,8 @@ const multer = require('multer')
 const path = require('path')
 const fs = require('fs')
 const XLSX = require('xlsx')
+const ExcelJS = require('exceljs')
+const { Readable } = require('stream')
 const { Pool } = require('pg')
 
 const app = express()
@@ -132,78 +134,96 @@ async function initDB() {
 }
 
 // ─── Parser ───────────────────────────────────────────────────────────────────
-function parsePlanillaVentas(buffer) {
-  // Use dense mode + sheet_to_json for memory efficiency
-  const wb = XLSX.read(buffer, {
-    type: 'buffer',
-    cellDates: false,
-    dense: true,
-    sheetRows: 0
+// Usa exceljs en modo streaming (fila por fila), no XLSX.read()+sheet_to_json.
+// Motivo: SheetJS arma un string único con todo el XML de la hoja antes de
+// parsearlo — con archivos de ventas grandes (Febrero/Marzo 2026 superan los
+// 595 MB descomprimidos) ese string supera el límite duro de V8
+// (~536.870.888 caracteres) y la hoja queda vacía en silencio, dando
+// "No se encontró fila de encabezados" aunque el archivo esté perfecto.
+// exceljs streaming nunca arma ese string — lee y descarta fila por fila.
+async function parsePlanillaVentas(buffer) {
+  const stream = Readable.from(buffer)
+  const workbookReader = new ExcelJS.stream.xlsx.WorkbookReader(stream, {
+    entries: 'emit', sharedStrings: 'cache', hyperlinks: 'ignore', styles: 'ignore', worksheets: 'emit',
   })
-  const ws = wb.Sheets[wb.SheetNames[0]]
-  const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true })
 
+  let idx = null
   let headerRow = -1
-  for (let i = 0; i < Math.min(raw.length, 10); i++) {
-    if (raw[i] && raw[i].some(c => c === 'Referencia')) { headerRow = i; break }
-  }
-  if (headerRow === -1) throw new Error('No se encontró fila de encabezados')
-
-  const headers = raw[headerRow]
-  const idx = {}
-  headers.forEach((h, i) => { if (h) idx[h] = i })
-
+  let rowNum = 0
   const encabezados = [], detalles = []
 
-  for (let r = headerRow + 1; r < raw.length; r++) {
-    const row = raw[r]
-    if (!row || !row[idx['Referencia']]) continue
-    const tipo = String(row[idx['Referencia']]).trim()
-
-    const get = (col) => { const v = idx[col] !== undefined ? row[idx[col]] : null; return (v === null || v === undefined || v === '-') ? null : v }
-    const getNum = (col) => { const v = get(col); if (v === null) return 0; const n = parseFloat(String(v).replace(',', '.')); return isNaN(n) ? 0 : n }
-    const getStr = (col) => { const v = get(col); return v === null ? null : String(v).trim() }
-    const parseDate = (v) => {
-      if (!v) return null
-      const s = String(v).trim()
-      const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})/)
-      if (m) return `${m[3]}-${m[2]}-${m[1]}`
-      // Handle Excel serial date numbers
-      if (typeof v === 'number') {
-        const d = new Date(Math.round((v - 25569) * 86400 * 1000))
-        return d.toISOString().slice(0, 10)
-      }
-      return s.substring(0, 10)
+  const parseDate = (v) => {
+    if (!v) return null
+    if (v instanceof Date) return v.toISOString().slice(0, 10)
+    const s = String(v).trim()
+    const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})/)
+    if (m) return `${m[3]}-${m[2]}-${m[1]}`
+    if (typeof v === 'number') {
+      const d = new Date(Math.round((v - 25569) * 86400 * 1000))
+      return d.toISOString().slice(0, 10)
     }
+    return s.substring(0, 10)
+  }
 
-    if (tipo === 'Encabezado') {
-      encabezados.push({
-        nro_comprobante: getStr('Nro. comprobante'), id_transaccion: getNum('ID transacción'),
-        id_operacion: getNum('ID operación'), id_sucursal: getNum('ID sucursal'),
-        sucursal: getStr('Sucursal'), fecha: parseDate(get('Fecha de comprobante')),
-        fecha_carga: getStr('Fecha de carga'), tipo_comprob: getStr('Tipo comprob.'),
-        tipo_cliente: getStr('Tipo de cliente'), razon_social: getStr('Razón social'),
-        cond_iva: getStr('Cond. IVA'), cond_venta: getStr('Condición de venta'),
-        lista_precios: getStr('Lista de precios'), subtotal: getNum('Subtotal comprobante'),
-        neto_gravado: getNum('Neto gravado comprobante'), iva_105: getNum('IVA 10.5'),
-        iva_21: getNum('IVA 21'), total: getNum('Total comprobante'),
-        moneda: getStr('Moneda'), usuario: getStr('Usuario'),
-      })
-    } else if (tipo === 'Detalle') {
-      const codigo = getStr('Código')
-      if (!codigo) continue
-      detalles.push({
-        nro_comprobante: getStr('Nro. comprobante'), id_operacion: getNum('ID operación'),
-        id_fila: getNum('ID de fila'), sucursal: getStr('Sucursal'),
-        fecha: parseDate(get('Fecha de comprobante')), tipo_comprob: getStr('Tipo comprob.'),
-        id_articulo: getNum('ID artículo'), codigo, descripcion: getStr('Descripción'),
-        costo: getNum('Costo'), cantidad: getNum('Cantidad'),
-        precio_unitario: getNum('Precio unitario'), descuento: getNum('Descuento unitario'),
-        subtotal_neto: getNum('Subtotal neto gravado'), alicuota_iva: getNum('Alicuota IVA'),
-        subtotal_det: getNum('Subtotal detalles'),
-      })
+  let hojaDeDatosEncontrada = false
+  for await (const worksheetReader of workbookReader) {
+    if (hojaDeDatosEncontrada) break // ya procesamos "Detalle de ventas realizadas", no seguir a "Filtros aplicados"
+    rowNum = 0
+    idx = null
+    headerRow = -1
+    for await (const row of worksheetReader) {
+      rowNum++
+      const values = row.values // array 1-indexed; values[0] es undefined
+
+      if (headerRow === -1) {
+        if (rowNum > 10) break // esta hoja no tiene el encabezado esperado en las primeras filas
+        if (values.some(c => c === 'Referencia')) {
+          headerRow = rowNum
+          idx = {}
+          values.forEach((h, i) => { if (h) idx[h] = i })
+          hojaDeDatosEncontrada = true
+        }
+        continue
+      }
+
+      const get = (col) => { const v = idx[col] !== undefined ? values[idx[col]] : null; return (v === null || v === undefined || v === '-') ? null : v }
+      const getNum = (col) => { const v = get(col); if (v === null) return 0; const n = parseFloat(String(v).replace(',', '.')); return isNaN(n) ? 0 : n }
+      const getStr = (col) => { const v = get(col); return v === null ? null : String(v).trim() }
+
+      const tipoRaw = get('Referencia')
+      if (!tipoRaw) continue
+      const tipo = String(tipoRaw).trim()
+
+      if (tipo === 'Encabezado') {
+        encabezados.push({
+          nro_comprobante: getStr('Nro. comprobante'), id_transaccion: getNum('ID transacción'),
+          id_operacion: getNum('ID operación'), id_sucursal: getNum('ID sucursal'),
+          sucursal: getStr('Sucursal'), fecha: parseDate(get('Fecha de comprobante')),
+          fecha_carga: getStr('Fecha de carga'), tipo_comprob: getStr('Tipo comprob.'),
+          tipo_cliente: getStr('Tipo de cliente'), razon_social: getStr('Razón social'),
+          cond_iva: getStr('Cond. IVA'), cond_venta: getStr('Condición de venta'),
+          lista_precios: getStr('Lista de precios'), subtotal: getNum('Subtotal comprobante'),
+          neto_gravado: getNum('Neto gravado comprobante'), iva_105: getNum('IVA 10.5'),
+          iva_21: getNum('IVA 21'), total: getNum('Total comprobante'),
+          moneda: getStr('Moneda'), usuario: getStr('Usuario'),
+        })
+      } else if (tipo === 'Detalle') {
+        const codigo = getStr('Código')
+        if (!codigo) continue
+        detalles.push({
+          nro_comprobante: getStr('Nro. comprobante'), id_operacion: getNum('ID operación'),
+          id_fila: getNum('ID de fila'), sucursal: getStr('Sucursal'),
+          fecha: parseDate(get('Fecha de comprobante')), tipo_comprob: getStr('Tipo comprob.'),
+          id_articulo: getNum('ID artículo'), codigo, descripcion: getStr('Descripción'),
+          costo: getNum('Costo'), cantidad: getNum('Cantidad'),
+          precio_unitario: getNum('Precio unitario'), descuento: getNum('Descuento unitario'),
+          subtotal_neto: getNum('Subtotal neto gravado'), alicuota_iva: getNum('Alicuota IVA'),
+          subtotal_det: getNum('Subtotal detalles'),
+        })
+      }
     }
   }
+  if (headerRow === -1) throw new Error('No se encontró fila de encabezados')
   return { encabezados, detalles }
 }
 
@@ -394,7 +414,7 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No se recibió archivo' })
 
-    const { encabezados, detalles } = parsePlanillaVentas(req.file.buffer)
+    const { encabezados, detalles } = await parsePlanillaVentas(req.file.buffer)
     if (encabezados.length === 0) return res.status(400).json({ error: 'No se encontraron encabezados' })
 
     const fechas = encabezados.map(e => e.fecha).filter(Boolean).sort()
@@ -744,6 +764,72 @@ app.get('/api/debug/todas-las-colisiones', async (req, res) => {
 // no con una suposición. Por default toma una muestra de 5 colisiones reales
 // (las de más líneas, para que la comparación sea representativa); también
 // se puede pedir un nro_comprobante puntual con ?nro=0028-00009494
+// ─── Cargas atascadas en PROCESANDO — nunca terminaron ────────────────────────
+// processUpload() corre en segundo plano (setImmediate) — si el servidor se
+// reinicia mientras está procesando (ej. un redeploy), el proceso muere a
+// mitad de camino: los datos que ya se habían insertado ANTES del corte
+// quedan guardados (la transacción hace COMMIT por lotes), pero el registro
+// de la carga se queda para siempre en 'procesando', sin avisar que quedó
+// incompleta. Esto lista todas las que llevan más de 1 hora así — período
+// que casi seguro necesita recargarse para completarse.
+app.get('/api/debug/cargas-atascadas', async (req, res) => {
+  try {
+    const r = await pool.query(`
+      SELECT id, filename, fecha_desde, fecha_hasta, sucursales, n_encabezados, n_detalles,
+        uploaded_at, EXTRACT(EPOCH FROM (NOW() - uploaded_at))/3600 as horas_atascada
+      FROM uploads_log
+      WHERE status = 'procesando' AND uploaded_at < NOW() - INTERVAL '1 hour'
+      ORDER BY uploaded_at
+    `)
+    res.json({
+      resumen: r.rows.length > 0
+        ? `⚠ ${r.rows.length} carga(s) quedaron atascadas en "procesando" y nunca terminaron — probablemente por un redeploy del servidor a mitad de camino. Conviene recargar esos mismos archivos de nuevo (es seguro, no duplica nada).`
+        : 'No hay cargas atascadas en este momento.',
+      cargas_atascadas: r.rows.map(row => ({ ...row, horas_atascada: Math.round(row.horas_atascada) })),
+    })
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+// ─── Qué meses recargar — sin el límite de 30 muestras por carga ──────────────
+// El log de cada carga guarda solo una muestra de hasta 30 colisiones, no
+// alcanza para saber el panorama completo. Esto recorre TODAS las colisiones
+// reales que sobreviven hoy en ventas_lineas y las agrupa por mes — tanto del
+// lado del documento más viejo (el que probablemente perdió su encabezado en
+// `comprobantes`) como del más nuevo, para priorizar qué recargar primero.
+app.get('/api/debug/meses-afectados', async (req, res) => {
+  try {
+    const colision = await pool.query(`
+      SELECT nro_comprobante, id_operacion, MIN(fecha)::text as fecha, MAX(tipo_comprob) as tipo
+      FROM ventas_lineas
+      WHERE id_operacion IS NOT NULL
+        AND nro_comprobante IN (
+          SELECT nro_comprobante FROM ventas_lineas
+          WHERE id_operacion IS NOT NULL
+          GROUP BY nro_comprobante
+          HAVING COUNT(DISTINCT id_operacion) > 1
+        )
+      GROUP BY nro_comprobante, id_operacion
+    `)
+
+    const porMes = {}
+    for (const row of colision.rows) {
+      const mes = row.fecha.slice(0, 7)
+      if (!porMes[mes]) porMes[mes] = { mes, documentos_afectados: 0, comprobantes: new Set() }
+      porMes[mes].documentos_afectados++
+      porMes[mes].comprobantes.add(row.nro_comprobante)
+    }
+    const resumenPorMes = Object.values(porMes)
+      .map(m => ({ mes: m.mes, documentos_afectados: m.documentos_afectados, comprobantes_involucrados: m.comprobantes.size }))
+      .sort((a, b) => a.mes.localeCompare(b.mes))
+
+    res.json({
+      resumen: `${colision.rows.length} documentos (de ${new Set(colision.rows.map(r=>r.nro_comprobante)).size} números de comprobante) están involucrados en alguna colisión — agrupados por mes para priorizar qué recargar.`,
+      total_documentos_afectados: colision.rows.length,
+      por_mes: resumenPorMes,
+    })
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
 app.get('/api/debug/comparar-colisiones', async (req, res) => {
   try {
     let nros
