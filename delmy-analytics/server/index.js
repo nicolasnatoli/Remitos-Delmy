@@ -106,6 +106,24 @@ async function initDB() {
     `)
     await client.query(`CREATE INDEX IF NOT EXISTS idx_am_proveedor ON articulos_maestro(proveedor)`)
     await client.query(`CREATE INDEX IF NOT EXISTS idx_am_familia   ON articulos_maestro(familia)`)
+    // Combo → componente(s). Un combo puede tener 1 solo tipo de artículo
+    // adentro (el caso más común, "pack de N") o varios distintos mezclados.
+    // codigo_combo es el mismo código que aparece en ventas_lineas cuando se
+    // vende el combo — sirve para "explotar" esas ventas a nivel del artículo
+    // unitario real.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS combos_componentes (
+        id                  SERIAL PRIMARY KEY,
+        codigo_combo        TEXT NOT NULL,
+        descripcion_combo   TEXT,
+        codigo_componente   TEXT NOT NULL,
+        cantidad            NUMERIC NOT NULL,
+        actualizado         TIMESTAMP DEFAULT NOW(),
+        UNIQUE(codigo_combo, codigo_componente)
+      )
+    `)
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_combos_codigo ON combos_componentes(codigo_combo)`)
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_combos_componente ON combos_componentes(codigo_componente)`)
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vl_fecha     ON ventas_lineas(fecha)`)
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vl_sucursal  ON ventas_lineas(sucursal)`)
     await client.query(`CREATE INDEX IF NOT EXISTS idx_vl_codigo    ON ventas_lineas(codigo)`)
@@ -278,6 +296,64 @@ function parseMaestroArticulos(buffer) {
     })
   }
   return { filas: [...filas.values()], fuente: esOC ? 'oc' : 'stock_disponible' }
+}
+
+// ─── Parser — combos y componentes ─────────────────────────────────────────────
+// Formato real del export: filas alternadas Tipo='Combo' (define el código y
+// descripción del combo) seguidas de una o más filas Tipo='Artículo' (cada una
+// es un componente: código + cantidad de unidades unitarias adentro de ESE
+// combo). codigo_combo es el mismo código que aparece en ventas_lineas cuando
+// se vende el combo — sirve para "explotar" esas ventas al artículo real.
+function parseCombos(buffer) {
+  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: false, dense: true, sheetRows: 0 })
+  const ws = wb.Sheets[wb.SheetNames[0]]
+  const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true })
+
+  let headerRow = -1
+  for (let i = 0; i < Math.min(raw.length, 6); i++) {
+    if (raw[i] && raw[i].some(c => c === 'Código combo')) { headerRow = i; break }
+  }
+  if (headerRow === -1) throw new Error('No se encontró la columna "Código combo" en las primeras filas')
+
+  const componentes = []
+  let comboActual = null, descActual = null
+  for (let r = headerRow + 1; r < raw.length; r++) {
+    const row = raw[r]
+    if (!row) continue
+    const tipo = row[0]
+    if (tipo === 'Combo') {
+      comboActual = String(row[1] || '').trim()
+      descActual = String(row[2] || '').trim()
+    } else if (tipo === 'Artículo' && comboActual) {
+      const codArt = String(row[5] || '').trim()
+      const cant = parseFloat(String(row[7]).replace(',', '.'))
+      if (codArt && codArt !== '-' && !isNaN(cant) && cant > 0) {
+        componentes.push({ codigo_combo: comboActual, descripcion_combo: descActual, codigo_componente: codArt, cantidad: cant })
+      }
+    }
+  }
+  return componentes
+}
+
+// ─── Parser + generador — archivo de actualización segura para el ERP ─────────
+// Recibe el export COMPLETO de "Importación Masiva" del ERP (38 columnas) tal
+// cual, corrige SOLO Familia/Categoría/Marca/Proveedor donde el maestro tiene
+// un dato mejor, y devuelve el mismo archivo con las 38 columnas intactas —
+// nunca deja nada en blanco, así no hay riesgo de borrar precio/peso/etc. al
+// reimportarlo.
+function parseImportacionMasiva(buffer) {
+  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: false, dense: true, sheetRows: 0 })
+  const ws = wb.Sheets[wb.SheetNames[0]]
+  const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true })
+  if (raw.length === 0) throw new Error('Archivo vacío')
+  const headers = raw[0]
+  const iCod = headers.findIndex(h => String(h || '').trim() === 'Código interno')
+  const iFamilia = headers.findIndex(h => String(h || '').trim() === 'Familia')
+  const iCategoria = headers.findIndex(h => String(h || '').trim() === 'Categoría')
+  const iMarca = headers.findIndex(h => String(h || '').trim() === 'Marca')
+  const iProveedor = headers.findIndex(h => String(h || '').trim() === 'Proveedor')
+  if (iCod === -1) throw new Error('No se encontró la columna "Código interno" — ¿es el archivo de Importación Masiva correcto?')
+  return { headers, filas: raw.slice(1), iCod, iFamilia, iCategoria, iMarca, iProveedor }
 }
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
@@ -723,6 +799,111 @@ app.get('/api/ventas/por-mes', async (req, res) => {
 // ─── Proveedores — filtro general de arranque ──────────────────────────────────
 // ─── Opciones existentes de Familia/Categoría/Marca (para autocompletar al
 // clasificar manualmente, y no generar variantes de escritura del mismo valor)
+// ─── Carga de combos y componentes ─────────────────────────────────────────────
+app.post('/api/upload-combos', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No se recibió archivo' })
+    const componentes = parseCombos(req.file.buffer)
+    if (componentes.length === 0) return res.status(400).json({ error: 'No se encontraron componentes de combo' })
+
+    let insertados = 0
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN')
+      // Reemplazo completo: un combo puede haber cambiado de componentes
+      // entre una carga y otra (se agregó/sacó un artículo del combo) — para
+      // no arrastrar componentes viejos, se borra y se reinserta entero.
+      const combosDelArchivo = [...new Set(componentes.map(c => c.codigo_combo))]
+      await client.query(`DELETE FROM combos_componentes WHERE codigo_combo = ANY($1)`, [combosDelArchivo])
+      for (const c of componentes) {
+        await client.query(`
+          INSERT INTO combos_componentes (codigo_combo, descripcion_combo, codigo_componente, cantidad, actualizado)
+          VALUES ($1,$2,$3,$4,NOW())
+        `, [c.codigo_combo, c.descripcion_combo, c.codigo_componente, c.cantidad])
+        insertados++
+      }
+      await client.query('COMMIT')
+    } catch (e) { await client.query('ROLLBACK'); throw e } finally { client.release() }
+
+    res.json({ ok: true, combos: new Set(componentes.map(c => c.codigo_combo)).size, componentes: insertados })
+  } catch (err) {
+    console.error('Upload combos error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ─── Generar archivo de actualización segura para reimportar al ERP ───────────
+// Sube el export "Importación Masiva" completo del ERP, corrige Familia/
+// Categoría/Marca/Proveedor SOLO donde el maestro tiene un dato, y devuelve
+// las 38 columnas originales intactas — nada queda en blanco.
+app.post('/api/maestro/generar-actualizacion-erp', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No se recibió archivo' })
+    const { headers, filas, iCod, iFamilia, iCategoria, iMarca, iProveedor } = parseImportacionMasiva(req.file.buffer)
+
+    const codigos = filas.map(f => f[iCod]).filter(Boolean).map(String)
+    const maestroR = await pool.query(
+      `SELECT codigo, familia, categoria, marca, proveedor FROM articulos_maestro WHERE codigo = ANY($1)`,
+      [codigos]
+    )
+    const maestroMap = new Map(maestroR.rows.map(r => [r.codigo, r]))
+
+    let corregidas = 0
+    const filasFinal = filas.map(fila => {
+      const codigo = String(fila[iCod] || '')
+      const m = maestroMap.get(codigo)
+      if (!m) return fila
+      const nueva = [...fila]
+      let cambio = false
+      if (m.familia && iFamilia !== -1 && nueva[iFamilia] !== m.familia) { nueva[iFamilia] = m.familia; cambio = true }
+      if (m.categoria && iCategoria !== -1 && nueva[iCategoria] !== m.categoria) { nueva[iCategoria] = m.categoria; cambio = true }
+      if (m.marca && iMarca !== -1 && nueva[iMarca] !== m.marca) { nueva[iMarca] = m.marca; cambio = true }
+      if (m.proveedor && iProveedor !== -1 && nueva[iProveedor] !== m.proveedor) { nueva[iProveedor] = m.proveedor; cambio = true }
+      if (cambio) corregidas++
+      return nueva
+    })
+
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...filasFinal])
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'Importación Masiva')
+    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
+
+    res.setHeader('X-Filas-Corregidas', String(corregidas))
+    res.setHeader('Access-Control-Expose-Headers', 'X-Filas-Corregidas')
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader('Content-Disposition', `attachment; filename="actualizacion_articulos_${new Date().toISOString().slice(0,10)}.xlsx"`)
+    res.send(buffer)
+  } catch (err) {
+    console.error('Generar actualización ERP error:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ─── Exportar el maestro a Excel — vista simple (código + clasificación) ──────
+app.get('/api/maestro/exportar', async (req, res) => {
+  try {
+    const soloManual = req.query.soloManual === '1'
+    const r = await pool.query(`
+      SELECT codigo as "Código", descripcion as "Descripción", proveedor as "Proveedor",
+        familia as "Familia", categoria as "Categoría", marca as "Marca",
+        fuente as "Fuente", actualizado::text as "Actualizado"
+      FROM articulos_maestro
+      ${soloManual ? `WHERE fuente LIKE '%manual%'` : ''}
+      ORDER BY codigo
+    `)
+    if (r.rows.length === 0) return res.status(404).json({ error: 'No hay artículos para exportar' })
+    const ws = XLSX.utils.json_to_sheet(r.rows)
+    ws['!cols'] = [{ wch: 16 }, { wch: 45 }, { wch: 22 }, { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 20 }, { wch: 20 }]
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'Maestro')
+    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
+    const nombre = soloManual ? 'maestro_clasificado_manual.xlsx' : 'maestro_completo.xlsx'
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader('Content-Disposition', `attachment; filename="${nombre}"`)
+    res.send(buffer)
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
 app.get('/api/maestro/opciones', async (req, res) => {
   try {
     const r = await pool.query(`
@@ -1315,6 +1496,80 @@ app.get('/api/ventas/comparativa-anual', async (req, res) => {
     }
 
     res.json({ anioActual, anioAnterior, corte: maxFecha, mes, trimestre })
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+// ─── % de ventas en combo vs. unitario ─────────────────────────────────────────
+app.get('/api/ventas/pct-combo', async (req, res) => {
+  try {
+    const { where, params } = buildWhere(`vl.tipo_comprob IN ('FCB','FCA','RE')`, req.query, 'vl')
+    const r = await pool.query(`
+      SELECT
+        SUM(CASE WHEN cc.codigo_combo IS NOT NULL THEN vl.subtotal_neto ELSE 0 END) as ventas_combo,
+        SUM(CASE WHEN cc.codigo_combo IS NULL THEN vl.subtotal_neto ELSE 0 END) as ventas_unitaria,
+        SUM(vl.subtotal_neto) as ventas_total,
+        COUNT(DISTINCT CASE WHEN cc.codigo_combo IS NOT NULL THEN vl.codigo END) as combos_distintos_vendidos
+      FROM ventas_lineas vl
+      LEFT JOIN (SELECT DISTINCT codigo_combo FROM combos_componentes) cc ON cc.codigo_combo = vl.codigo
+      WHERE ${where}
+    `, params)
+    const row = r.rows[0]
+    const total = Number(row.ventas_total || 0)
+    res.json({
+      ventas_combo: Number(row.ventas_combo || 0),
+      ventas_unitaria: Number(row.ventas_unitaria || 0),
+      ventas_total: total,
+      pct_combo: total > 0 ? Math.round((Number(row.ventas_combo || 0) / total) * 1000) / 10 : 0,
+      combos_distintos_vendidos: Number(row.combos_distintos_vendidos || 0),
+    })
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+// ─── Ranking de artículos con ventas EXPLOTADAS — combo repartido al unitario ─
+// Un artículo que se vende suelto Y también adentro de combos aparece acá con
+// la suma de ambos. El reparto de $ entre componentes de un combo mixto (más
+// de un artículo distinto adentro) es proporcional a la CANTIDAD de cada
+// componente — no al precio real de catálogo de cada uno, porque no hay un
+// precio unitario confiable para cada componente por separado. Es una
+// aproximación razonable, no un cálculo exacto — la cantidad de unidades sí
+// es exacta (esa no depende de ningún supuesto de precio).
+app.get('/api/articulos/ventas-explotadas', async (req, res) => {
+  try {
+    const { where, params } = buildWhere(`vl.tipo_comprob IN ('FCB','FCA','RE')`, req.query, 'vl')
+    const r = await pool.query(`
+      WITH ventas_directas AS (
+        SELECT vl.codigo, vl.cantidad as unidades, vl.subtotal_neto as ventas, vl.nro_comprobante
+        FROM ventas_lineas vl
+        WHERE ${where}
+          AND vl.codigo NOT IN (SELECT DISTINCT codigo_combo FROM combos_componentes)
+      ),
+      ventas_via_combo AS (
+        SELECT
+          cc.codigo_componente as codigo,
+          vl.cantidad * cc.cantidad as unidades,
+          vl.subtotal_neto * (cc.cantidad / SUM(cc.cantidad) OVER (PARTITION BY vl.id)) as ventas,
+          vl.nro_comprobante
+        FROM ventas_lineas vl
+        JOIN combos_componentes cc ON cc.codigo_combo = vl.codigo
+        WHERE ${where}
+      ),
+      todo AS (
+        SELECT * FROM ventas_directas UNION ALL SELECT * FROM ventas_via_combo
+      )
+      SELECT
+        t.codigo,
+        MAX(COALESCE(am.descripcion, vld.descripcion)) as descripcion,
+        SUM(t.unidades) as unidades,
+        SUM(t.ventas) as ventas,
+        COUNT(DISTINCT t.nro_comprobante) as n_ventas
+      FROM todo t
+      LEFT JOIN articulos_maestro am ON am.codigo = t.codigo
+      LEFT JOIN (SELECT codigo, MAX(descripcion) as descripcion FROM ventas_lineas GROUP BY codigo) vld ON vld.codigo = t.codigo
+      GROUP BY t.codigo
+      ORDER BY ventas DESC
+      LIMIT 500
+    `, params)
+    res.json(r.rows)
   } catch (err) { res.status(500).json({ error: err.message }) }
 })
 

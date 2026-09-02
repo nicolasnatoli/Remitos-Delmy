@@ -230,9 +230,10 @@ export default function Cargas({ T }) {
           ↑ Carga del maestro de artículos
         </div>
         <div style={{ fontSize: 11, color: 'var(--mut)', lineHeight: 1.6 }}>
-          Subí acá el reporte <strong style={{color:'var(--txt)'}}>Stock Disponible</strong> (trae Familia/Categoría/Marca) y el
-          reporte de <strong style={{color:'var(--txt)'}}>Órdenes de Compra</strong> (trae Proveedor) — se detecta solo cuál es cuál
-          por las columnas. Sin esto, el dashboard de ventas no puede agrupar por Proveedor/Familia/Categoría/Marca.
+          Subí acá cualquiera de estos reportes de tu ERP — se detecta solo cuál es cuál por las columnas:
+          <strong style={{color:'var(--txt)'}}> Stock Disponible</strong>, <strong style={{color:'var(--txt)'}}>Órdenes de Compra</strong>,
+          <strong style={{color:'var(--txt)'}}> Listado de artículos</strong> o <strong style={{color:'var(--txt)'}}>Listado de artículos con Proveedor</strong> —
+          estos 2 últimos suelen traer la cobertura más completa porque no dependen de qué se compró/vendió recientemente.
           Se puede cargar en cualquier orden y las veces que haga falta — nunca se pisa un dato bueno con uno vacío del otro archivo.
         </div>
       </div>
@@ -257,7 +258,7 @@ export default function Cargas({ T }) {
         {uploadingMaestro ? (
           <div style={{ color: 'var(--violet)', fontSize: 13 }}>⟳ Procesando maestro...</div>
         ) : (
-          <div style={{ fontSize: 12, color: 'var(--mut)' }}>Arrastrá Stock Disponible u Órdenes de Compra acá, o hacé click</div>
+          <div style={{ fontSize: 12, color: 'var(--mut)' }}>Arrastrá cualquiera de los 4 reportes acá, o hacé click</div>
         )}
       </div>
 
@@ -317,6 +318,12 @@ export default function Cargas({ T }) {
           )}
         </div>
       )}
+
+      {/* ─── Combos y componentes ─── */}
+      <ComboUploadPanel />
+
+      {/* ─── Generador seguro de archivo para reimportar al ERP ─── */}
+      <ActualizacionErpPanel />
 
       {/* Lista de artículos sin clasificar — con fecha de última venta para */}
       {/* distinguir descontinuados (venta vieja) de activos que faltan clasificar */}
@@ -529,6 +536,121 @@ function ClasificarForm({ codigo, descripcion, opciones, onGuardado }) {
         background: 'var(--green)', color: '#0c0e14', border: 'none', opacity: guardando ? 0.6 : 1,
       }}>{guardando ? 'Guardando...' : 'Guardar'}</button>
       <div style={{ fontSize: 9.5, color: 'var(--mut)' }}>Empezá a tipear — te sugiere valores ya existentes, o escribí uno nuevo.</div>
+    </div>
+  )
+}
+
+function ComboUploadPanel() {
+  const [uploading, setUploading] = useState(false)
+  const [result, setResult] = useState(null)
+  const [error, setError] = useState(null)
+  const [dragging, setDragging] = useState(false)
+  const { data: pctCombo } = useFetch('/api/ventas/pct-combo')
+
+  const subir = async (file) => {
+    if (!file) return
+    setUploading(true); setError(null); setResult(null)
+    const form = new FormData(); form.append('file', file)
+    try {
+      const resp = await fetch('/api/upload-combos', { method: 'POST', body: form })
+      const data = await resp.json()
+      if (!resp.ok) throw new Error(data.error || 'Error desconocido')
+      setResult(data)
+    } catch (e) { setError(e.message) } finally { setUploading(false) }
+  }
+
+  return (
+    <div style={PANEL}>
+      <div style={TITLE}>Combos y componentes</div>
+      <div style={{ fontSize: 11, color: 'var(--mut)', marginBottom: 10, lineHeight: 1.6 }}>
+        Subí el reporte <strong style={{color:'var(--txt)'}}>Listado de combos y componentes</strong> de tu ERP.
+        Con esto, las estadísticas por artículo pueden sumar las ventas que un artículo tuvo "adentro" de un combo
+        a sus ventas directas — y calculamos qué % de tu facturación es en combo vs. unitario.
+      </div>
+      {pctCombo && pctCombo.ventas_total > 0 && (
+        <div style={{ display: 'flex', gap: 24, marginBottom: 14, padding: '10px 14px', background: 'var(--panel2)', borderRadius: 6 }}>
+          <div>
+            <div style={{ fontSize: 9, color: 'var(--mut)' }}>% VENTAS EN COMBO</div>
+            <div style={{ fontSize: 18, fontFamily: 'Syne, sans-serif', fontWeight: 800, color: 'var(--violet)' }}>{pctCombo.pct_combo}%</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 9, color: 'var(--mut)' }}>COMBOS DISTINTOS VENDIDOS</div>
+            <div style={{ fontSize: 18, fontFamily: 'Syne, sans-serif', fontWeight: 800, color: 'var(--txt)' }}>{fmt(pctCombo.combos_distintos_vendidos)}</div>
+          </div>
+        </div>
+      )}
+      <div
+        onDrop={(e) => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if (f) subir(f) }}
+        onDragOver={e => { e.preventDefault(); setDragging(true) }}
+        onDragLeave={() => setDragging(false)}
+        onClick={() => document.getElementById('file-input-combos').click()}
+        style={{
+          border: `2px dashed ${dragging ? 'var(--violet)' : 'var(--border2)'}`, borderRadius: 8, padding: '18px 20px',
+          textAlign: 'center', cursor: 'pointer', background: dragging ? 'rgba(192,132,252,0.05)' : 'transparent',
+        }}
+      >
+        <input id="file-input-combos" type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={e => subir(e.target.files[0])} />
+        {uploading ? <div style={{ color: 'var(--violet)', fontSize: 12 }}>⟳ Procesando combos...</div> :
+          <div style={{ fontSize: 11, color: 'var(--mut)' }}>Arrastrá el listado de combos acá, o hacé click</div>}
+      </div>
+      {result && (
+        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--green)' }}>
+          ✓ {result.combos} combos cargados, {result.componentes} relaciones combo→componente
+        </div>
+      )}
+      {error && <div style={{ marginTop: 10, fontSize: 11, color: 'var(--red)' }}>✗ {error}</div>}
+    </div>
+  )
+}
+
+function ActualizacionErpPanel() {
+  const [uploading, setUploading] = useState(false)
+  const [corregidas, setCorregidas] = useState(null)
+  const [error, setError] = useState(null)
+
+  const generar = async (file) => {
+    if (!file) return
+    setUploading(true); setError(null); setCorregidas(null)
+    const form = new FormData(); form.append('file', file)
+    try {
+      const resp = await fetch('/api/maestro/generar-actualizacion-erp', { method: 'POST', body: form })
+      if (!resp.ok) { const data = await resp.json(); throw new Error(data.error || 'Error desconocido') }
+      const n = resp.headers.get('X-Filas-Corregidas')
+      const blob = await resp.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = `actualizacion_articulos_${new Date().toISOString().slice(0,10)}.xlsx`
+      a.click(); URL.revokeObjectURL(url)
+      setCorregidas(n)
+    } catch (e) { setError(e.message) } finally { setUploading(false) }
+  }
+
+  return (
+    <div style={{ ...PANEL, borderColor: 'var(--green)' }}>
+      <div style={{ ...TITLE, color: 'var(--green)' }}>Generar actualización segura para el ERP</div>
+      <div style={{ fontSize: 11, color: 'var(--mut)', marginBottom: 10, lineHeight: 1.6 }}>
+        Subí el export <strong style={{color:'var(--txt)'}}>"Importación Masiva"</strong> completo de tu ERP (las 39 columnas).
+        Te devolvemos el mismo archivo, con Familia/Categoría/Marca/Proveedor corregidos donde tengamos un dato mejor —
+        <strong style={{color:'var(--txt)'}}> todas las demás columnas quedan exactamente como estaban</strong>, nada se borra.
+        Listo para reimportar a tu ERP.
+      </div>
+      <div
+        onClick={() => document.getElementById('file-input-erp').click()}
+        style={{
+          border: '2px dashed var(--border2)', borderRadius: 8, padding: '18px 20px',
+          textAlign: 'center', cursor: 'pointer',
+        }}
+      >
+        <input id="file-input-erp" type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={e => generar(e.target.files[0])} />
+        {uploading ? <div style={{ color: 'var(--green)', fontSize: 12 }}>⟳ Generando archivo corregido...</div> :
+          <div style={{ fontSize: 11, color: 'var(--mut)' }}>Hacé click para elegir el export de Importación Masiva</div>}
+      </div>
+      {corregidas !== null && (
+        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--green)' }}>
+          ✓ Descargado — {corregidas} fila(s) tenían una corrección disponible en el maestro y se aplicaron.
+        </div>
+      )}
+      {error && <div style={{ marginTop: 10, fontSize: 11, color: 'var(--red)' }}>✗ {error}</div>}
     </div>
   )
 }
