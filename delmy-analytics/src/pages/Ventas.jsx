@@ -343,9 +343,102 @@ function ComparativaAnualChart({ data, anioActual, anioAnterior }) {
 // Clic en una barra o fila fija ese valor como filtro (reemplaza, no acumula —
 // cambiar de familia no tiene sentido si se mantenía una categoría de la
 // familia anterior seleccionada) y limpia los niveles de abajo en la cascada.
-function NivelCascada({ nivel, label, filtroKey, filters, setFilters, nivelesAbajo, qs, colorBarra }) {
-  const { data } = useFetch(`/api/ventas/ranking-nivel?nivel=${nivel}${qs}`, [qs])
+// ─── Indicador dedicado — se inserta en cada salto de la cascada ──────────────
+// Réplica completa del panel de Comparativa Interanual de arriba (trimestre/
+// mes/día con zoom), pero acotado al valor puntual que se acaba de clickear
+// (Familia/Categoría/Marca puntual). Auto-contenido: cada instancia tiene su
+// propio estado de vista y de selección de días, no interfiere con las demás.
+function IndicadorDedicado({ titulo, qs }) {
+  const [vista, setVista] = useState('trimestre')
+  const [diasSel, setDiasSel] = useState([])
+  const [anclaDia, setAnclaDia] = useState(null)
+  const [diasDeshab, setDiasDeshab] = useState([])
+
+  const { data: comparativa } = useFetch(`/api/ventas/comparativa-anual${qs}`, [qs])
+  const { data: comparativaDia } = useFetch(vista === 'dia' ? `/api/ventas/comparativa-dia${qs}` : null, [qs, vista])
+  const qsFechas = diasSel.length > 0 ? `${qs}${qs ? '&' : '?'}fechas=${diasSel.join(',')}` : null
+  const { data: detalleDias } = useFetch(qsFechas, [qsFechas])
+
+  if (!comparativa || !comparativa.anioActual) return null
+
+  return (
+    <section style={{ marginTop: 20, marginLeft: 18, paddingLeft: 18, borderLeft: `3px solid ${D.orange}` }}>
+      <Panel style={{ background: '#FFFBF8' }}>
+        <PanelTitle right={<ToggleGroup options={[['trimestre','Trimestre'],['mes','Mes'],['dia','Día']]} value={vista} onChange={setVista} />}>
+          📌 {titulo}
+        </PanelTitle>
+        <div style={{ fontSize: 11.5, color: D.inkSoft, marginBottom: 12 }}>
+          {comparativa.anioActual} vs. {comparativa.anioAnterior} — dedicado a esta selección puntual, no afecta ni depende de lo demás.
+        </div>
+        {vista !== 'dia' ? (
+          <ComparativaAnualChart
+            data={vista === 'trimestre' ? comparativa.trimestre : comparativa.mes}
+            anioActual={comparativa.anioActual}
+            anioAnterior={comparativa.anioAnterior}
+          />
+        ) : (
+          <>
+            <ComparativaDiaChart
+              data={comparativaDia}
+              seleccionados={diasSel}
+              anclaDia={anclaDia}
+              deshabilitados={diasDeshab}
+              onDayClick={(fecha, idx, e) => {
+                if (e.altKey) { setDiasDeshab(prev => prev.includes(fecha) ? prev.filter(f => f !== fecha) : [...prev, fecha]); return }
+                if (e.shiftKey && anclaDia !== null) {
+                  const [desde, hasta] = [anclaDia, fecha].sort()
+                  setDiasSel(comparativaDia.filter(d => d.fecha >= desde && d.fecha <= hasta && !diasDeshab.includes(d.fecha)).map(d => d.fecha))
+                } else if (e.ctrlKey || e.metaKey) {
+                  setDiasSel(prev => prev.includes(fecha) ? prev.filter(f => f !== fecha) : [...prev, fecha])
+                  setAnclaDia(fecha)
+                } else {
+                  setDiasSel([fecha]); setAnclaDia(fecha)
+                }
+              }}
+            />
+            {diasSel.length > 0 && (
+              <DetalleDiasPanel dias={diasSel} detalle={detalleDias} onLimpiar={() => { setDiasSel([]); setAnclaDia(null) }} />
+            )}
+          </>
+        )}
+      </Panel>
+    </section>
+  )
+}
+
+const METRICAS = {
+  facturacion: { campo: 'facturacion', label: 'Ventas $', fmt: fmtPeso },
+  unidades: { campo: 'unidades', label: 'Unidades', fmt: fmt },
+  n_ventas: { campo: 'n_ventas', label: 'N° Pedidos', fmt: fmt },
+}
+
+function NivelCascada({ nivel, label, subtitulo, filtroKey, filters, setFilters, nivelesAbajo, qs, colorBarra, metrica }) {
+  const [verExplotado, setVerExplotado] = useState(false) // solo aplica al nivel 'articulo'
+  const usaExplotado = nivel === 'articulo' && verExplotado
+
+  const { data: dataNormal } = useFetch(!usaExplotado ? `/api/ventas/ranking-nivel?nivel=${nivel}${qs}` : null, [qs, usaExplotado])
+  const { data: dataExplotada } = useFetch(usaExplotado ? `/api/articulos/ventas-explotadas${qs}` : null, [qs, usaExplotado])
+
+  const data = useMemo(() => {
+    if (!usaExplotado) return dataNormal
+    if (!dataExplotada) return null
+    const total = dataExplotada.reduce((s, r) => s + Number(r.ventas || 0), 0)
+    let acum = 0
+    return dataExplotada.map(r => {
+      const pct = total > 0 ? (Number(r.ventas) / total) * 100 : 0
+      acum += pct
+      return {
+        valor_nivel: r.codigo, descripcion: r.descripcion, unidades: r.unidades,
+        n_ventas: r.n_ventas, facturacion: r.ventas,
+        pct: Math.round(pct * 10) / 10, pct_acum: Math.round(acum * 10) / 10,
+        semana: null, mes: null, trimestre: null, semestre: null,
+        dias_con_venta: null, dias_con_venta_ult_mes: null, valor_pedido: null,
+      }
+    })
+  }, [usaExplotado, dataNormal, dataExplotada])
+
   const seleccion = filters[filtroKey] || []
+  const cfgM = METRICAS[metrica || 'facturacion']
 
   const seleccionar = (valor) => {
     setFilters(f => {
@@ -363,23 +456,32 @@ function NivelCascada({ nivel, label, filtroKey, filters, setFilters, nivelesAba
   }
 
   if (!data || data.length === 0) return null
+  const ordenada = [...data].sort((a, b) => Number(b[cfgM.campo] ?? b.facturacion) - Number(a[cfgM.campo] ?? a.facturacion))
 
   return (
     <section style={{ marginTop: 34 }}>
       <Panel>
-        <PanelTitle right={seleccion.length > 0 && (
-          <button onClick={limpiar} style={{ fontSize: 11, color: D.orange, background: 'transparent', border: 'none', cursor: 'pointer', fontWeight: 600 }}>
-            ✕ Quitar filtro de {label.toLowerCase()}
-          </button>
-        )}>
-          Ventas por {label}
+        <PanelTitle right={
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            {nivel === 'articulo' && (
+              <ToggleGroup options={[['codigo','Por código'],['real','Real (con combos)']]} value={verExplotado ? 'real' : 'codigo'} onChange={v => setVerExplotado(v === 'real')} />
+            )}
+            {seleccion.length > 0 && (
+              <button onClick={limpiar} style={{ fontSize: 11, color: D.orange, background: 'transparent', border: 'none', cursor: 'pointer', fontWeight: 600 }}>
+                ✕ Quitar filtro de {label.toLowerCase()}
+              </button>
+            )}
+          </div>
+        }>
+          Ventas por {label}{subtitulo && <span style={{ fontSize: 12, color: D.inkSoft, fontWeight: 500, marginLeft: 8 }}>— {subtitulo}</span>}
         </PanelTitle>
         <div style={{ fontSize: 12, color: D.inkSoft, marginBottom: 14 }}>
           Clic en una barra o fila para filtrar {nivelesAbajo.length > 0 ? 'el siguiente nivel' : 'el detalle'}.
+          {usaExplotado && ' Incluye lo vendido "adentro" de combos, sumado al artículo unitario real.'}
         </div>
         <ParetoChart
-          data={data}
-          valueKey="facturacion"
+          data={ordenada}
+          valueKey={cfgM.campo}
           labelKey={nivel === 'articulo' ? 'descripcion' : 'valor_nivel'}
           T={chartT}
           color={colorBarra}
@@ -396,7 +498,7 @@ function NivelCascada({ nivel, label, filtroKey, filters, setFilters, nivelesAba
               </tr>
             </thead>
             <tbody>
-              {data.map(row => (
+              {ordenada.map(row => (
                 <tr
                   key={row.valor_nivel}
                   onClick={() => seleccionar(row.valor_nivel)}
@@ -415,8 +517,8 @@ function NivelCascada({ nivel, label, filtroKey, filters, setFilters, nivelesAba
                   <CeldaPeriodo periodo={row.mes} />
                   <CeldaPeriodo periodo={row.trimestre} />
                   <CeldaPeriodo periodo={row.semestre} />
-                  <td style={{ ...td, textAlign: 'right', color: D.inkSoft }}>{row.dias_con_venta ?? '—'} <span style={{ fontSize: 10 }}>({row.dias_con_venta_ult_mes ?? 0} últ. mes)</span></td>
-                  <td style={{ ...td, textAlign: 'right', color: D.ink }}>{fmtPeso(row.valor_pedido)}</td>
+                  <td style={{ ...td, textAlign: 'right', color: D.inkSoft }}>{row.dias_con_venta ?? '—'} {row.dias_con_venta != null && <span style={{ fontSize: 10 }}>({row.dias_con_venta_ult_mes ?? 0} últ. mes)</span>}</td>
+                  <td style={{ ...td, textAlign: 'right', color: D.ink }}>{row.valor_pedido != null ? fmtPeso(row.valor_pedido) : '—'}</td>
                 </tr>
               ))}
             </tbody>
@@ -468,11 +570,17 @@ export default function Ventas({ filters, setFilters, T }) {
   const [vista, setVista] = useState('dia')
   const [vistaComparativa, setVistaComparativa] = useState('trimestre')
   const [metricaProveedor, setMetricaProveedor] = useState('facturacion')
+  const [metricaCascada, setMetricaCascada] = useState('facturacion')
   const [proveedorHover, setProveedorHover] = useState(null)
   const [diasSeleccionados, setDiasSeleccionados] = useState([]) // array de fechas 'YYYY-MM-DD'
   const [anclaDia, setAnclaDia] = useState(null)
   const [diasDeshabilitados, setDiasDeshabilitados] = useState([])
   const qs = buildQS(filters)
+  // qsGeneral: mismos filtros de arranque (proveedor/fecha/sucursal) pero SIN
+  // familia/categoría/marca — para los paneles "general" de cada nivel, que
+  // siempre muestran el panorama completo sin importar qué se haya clickeado
+  // más arriba en la cascada.
+  const qsGeneral = buildQS({ ...filters, familias: [], categorias: [], marcas: [] })
 
   const { data: porDia } = useFetch(`/api/ventas/por-dia${qs}`, [qs])
   const { data: porMes } = useFetch(`/api/ventas/por-mes${qs}`, [qs])
@@ -764,10 +872,43 @@ export default function Ventas({ filters, setFilters, T }) {
         </section>
 
         {/* ─── Cascada Familia → Categoría → Marca → Artículo ─── */}
-        <NivelCascada nivel="familia"   label="Familia"   filtroKey="familias"   nivelesAbajo={['categorias','marcas']} filters={filters} setFilters={setFilters} qs={qs} colorBarra={D.steel} />
-        <NivelCascada nivel="categoria" label="Categoría" filtroKey="categorias" nivelesAbajo={['marcas']}              filters={filters} setFilters={setFilters} qs={qs} colorBarra={D.purple} />
-        <NivelCascada nivel="marca"     label="Marca"     filtroKey="marcas"     nivelesAbajo={[]}                      filters={filters} setFilters={setFilters} qs={qs} colorBarra={D.amber} />
-        <NivelCascada nivel="articulo"  label="Artículo"  filtroKey="__articulo_no_filtra__" nivelesAbajo={[]}          filters={filters} setFilters={setFilters} qs={qs} colorBarra={D.orange} />
+        {/* El panel "general" de cada nivel usa qsGeneral (fijo, nunca cambia */}
+        {/* por lo que se clickee) — el "filtrado" usa qs (acumula selecciones */}
+        {/* de los niveles de arriba). Entre cada salto se inserta el panel */}
+        {/* dedicado completo (día/mes/trimestre + zoom) de lo clickeado. */}
+        <div style={{ marginTop: 34, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 11.5, color: D.inkSoft, fontWeight: 600 }}>Métrica de la cascada:</span>
+          <ToggleGroup options={[['facturacion','Ventas $'],['unidades','Unidades'],['n_ventas','N° Pedidos']]} value={metricaCascada} onChange={setMetricaCascada} />
+        </div>
+
+        <NivelCascada nivel="familia" label="Familia" subtitulo="todas" filtroKey="familias" nivelesAbajo={['categorias','marcas']} filters={filters} setFilters={setFilters} qs={qsGeneral} colorBarra={D.steel} metrica={metricaCascada} />
+
+        {filters.familias.length > 0 && (
+          <>
+            <IndicadorDedicado titulo={`Familia: ${filters.familias[0]}`} qs={qs} />
+
+            <NivelCascada nivel="categoria" label="Categoría" subtitulo="todas" filtroKey="categorias" nivelesAbajo={['marcas']} filters={filters} setFilters={setFilters} qs={qsGeneral} colorBarra={D.purple} metrica={metricaCascada} />
+            <NivelCascada nivel="categoria" label="Categoría" subtitulo={`filtrado por Familia: ${filters.familias[0]}`} filtroKey="categorias" nivelesAbajo={['marcas']} filters={filters} setFilters={setFilters} qs={qs} colorBarra={D.purple} metrica={metricaCascada} />
+
+            {filters.categorias.length > 0 && (
+              <>
+                <IndicadorDedicado titulo={`Categoría: ${filters.categorias[0]}`} qs={qs} />
+
+                <NivelCascada nivel="marca" label="Marca" subtitulo="todas" filtroKey="marcas" nivelesAbajo={[]} filters={filters} setFilters={setFilters} qs={qsGeneral} colorBarra={D.amber} metrica={metricaCascada} />
+                <NivelCascada nivel="marca" label="Marca" subtitulo={`filtrado por Categoría: ${filters.categorias[0]}`} filtroKey="marcas" nivelesAbajo={[]} filters={filters} setFilters={setFilters} qs={qs} colorBarra={D.amber} metrica={metricaCascada} />
+
+                {filters.marcas.length > 0 && (
+                  <>
+                    <IndicadorDedicado titulo={`Marca: ${filters.marcas[0]}`} qs={qs} />
+
+                    <NivelCascada nivel="articulo" label="Artículo" subtitulo="todos" filtroKey="__articulo_no_filtra_g__" nivelesAbajo={[]} filters={filters} setFilters={setFilters} qs={qsGeneral} colorBarra={D.orange} metrica={metricaCascada} />
+                    <NivelCascada nivel="articulo" label="Artículo" subtitulo={`filtrado por Marca: ${filters.marcas[0]}`} filtroKey="__articulo_no_filtra__" nivelesAbajo={[]} filters={filters} setFilters={setFilters} qs={qs} colorBarra={D.orange} metrica={metricaCascada} />
+                  </>
+                )}
+              </>
+            )}
+          </>
+        )}
 
         {/* ─── Detalle diario ─── */}
         {vista === 'dia' && porDia && porDia.length > 0 && (

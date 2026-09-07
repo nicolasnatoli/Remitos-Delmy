@@ -671,6 +671,14 @@ function buildWhere(base, q, col = '') {
       WHERE ${condsMaestro.join(' AND ')}
     )`)
   }
+  // Código de artículo puntual — no necesita el join al maestro, es directo.
+  if (q?.codigos) {
+    const v = splitCsv(q.codigos)
+    if (v.length) {
+      parts.push(`${c}nro_comprobante IN (SELECT DISTINCT vl3.nro_comprobante FROM ventas_lineas vl3 WHERE vl3.codigo = ANY($${n++}))`)
+      params.push(v)
+    }
+  }
   return { where: parts.join(' AND '), params }
 }
 
