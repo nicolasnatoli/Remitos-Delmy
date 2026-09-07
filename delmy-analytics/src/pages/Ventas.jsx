@@ -416,7 +416,7 @@ function NivelCascada({ nivel, label, subtitulo, filtroKey, filters, setFilters,
   const [verExplotado, setVerExplotado] = useState(false) // solo aplica al nivel 'articulo'
   const usaExplotado = nivel === 'articulo' && verExplotado
 
-  const { data: dataNormal } = useFetch(!usaExplotado ? `/api/ventas/ranking-nivel?nivel=${nivel}${qs}` : null, [qs, usaExplotado])
+  const { data: dataNormal } = useFetch(!usaExplotado ? `/api/ventas/ranking-nivel?nivel=${nivel}${qs.replace('?', '&')}` : null, [qs, usaExplotado])
   const { data: dataExplotada } = useFetch(usaExplotado ? `/api/articulos/ventas-explotadas${qs}` : null, [qs, usaExplotado])
 
   const data = useMemo(() => {

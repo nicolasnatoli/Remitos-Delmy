@@ -95,7 +95,7 @@ export function LineChart({ data, valueKey, labelKey, color = '#f0c040', height 
 // ─── Donut Chart ──────────────────────────────────────────────────────────────
 export function DonutChart({ data, valueKey, labelKey, colors, T, size = 180 }) {
   if (!data || data.length === 0) return <Empty T={T} />
-  const total = data.reduce((s, d) => s + (d[valueKey] || 0), 0)
+  const total = data.reduce((s, d) => s + (Number(d[valueKey]) || 0), 0)
   if (total === 0) return <Empty T={T} />
 
   const cx = size / 2, cy = size / 2
@@ -103,7 +103,8 @@ export function DonutChart({ data, valueKey, labelKey, colors, T, size = 180 }) 
   let angle = -Math.PI / 2
 
   const slices = data.map((d, i) => {
-    const pct = (d[valueKey] || 0) / total
+    const valor = Number(d[valueKey]) || 0
+    const pct = valor / total
     const a = pct * 2 * Math.PI
     const x1 = cx + R * Math.cos(angle), y1 = cy + R * Math.sin(angle)
     angle += a
@@ -115,7 +116,7 @@ export function DonutChart({ data, valueKey, labelKey, colors, T, size = 180 }) 
       path: `M${x1},${y1} A${R},${R},0,${large},1,${x2},${y2} L${xi2},${yi2} A${r},${r},0,${large},0,${xi1},${yi1} Z`,
       color: colors ? colors[i % colors.length] : '#f0c040',
       label: d[labelKey], pct: Math.round(pct * 100),
-      val: d[valueKey]
+      val: valor
     }
   })
 
