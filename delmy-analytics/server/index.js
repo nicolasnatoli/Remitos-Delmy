@@ -106,6 +106,13 @@ async function initDB() {
     `)
     await client.query(`CREATE INDEX IF NOT EXISTS idx_am_proveedor ON articulos_maestro(proveedor)`)
     await client.query(`CREATE INDEX IF NOT EXISTS idx_am_familia   ON articulos_maestro(familia)`)
+    // Temporada — clasificación adicional del artículo, igual mecanismo que
+    // Familia/Categoría/Marca (manual, editable). Todavía NO calcula
+    // estadísticas acotadas a fechas de temporada — eso depende del
+    // calendario de temporadas (fechas por temporada), que se define aparte
+    // más adelante. Por ahora es solo la etiqueta.
+    await client.query(`ALTER TABLE articulos_maestro ADD COLUMN IF NOT EXISTS temporada TEXT`)
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_am_temporada ON articulos_maestro(temporada)`)
     // Combo → componente(s). Un combo puede tener 1 solo tipo de artículo
     // adentro (el caso más común, "pack de N") o varios distintos mezclados.
     // codigo_combo es el mismo código que aparece en ventas_lineas cuando se
@@ -717,17 +724,42 @@ function calcularEstadisticasPeriodo(porFecha) {
       finBucket = restarDias(inicioBucket, 1)
       if (finBucket < minDate) break
     }
-    if (buckets.length === 0) return { promedio: null, ultimo: null, variacionPct: null }
+    if (buckets.length === 0) return { promedio: null, mediana: null, moda: null, ultimo: null, variacionPct: null }
     const ultimo = buckets[buckets.length - 1]
     const previos = buckets.slice(0, -1)
     const promedio = previos.length > 0 ? previos.reduce((a, b) => a + b, 0) / previos.length : null
     const variacionPct = promedio && promedio > 0 ? Math.round(((ultimo - promedio) / promedio) * 1000) / 10 : null
-    return { promedio: promedio !== null ? Math.round(promedio) : null, ultimo: Math.round(ultimo), variacionPct }
+
+    let mediana = null
+    if (previos.length > 0) {
+      const ordenados = [...previos].sort((a, b) => a - b)
+      const mid = Math.floor(ordenados.length / 2)
+      mediana = ordenados.length % 2 === 1 ? ordenados[mid] : (ordenados[mid - 1] + ordenados[mid]) / 2
+    }
+
+    let moda = null
+    if (previos.length > 1) {
+      const frecuencia = new Map()
+      let maxFrecuencia = 1
+      for (const v of previos) { const f = (frecuencia.get(v) || 0) + 1; frecuencia.set(v, f); if (f > maxFrecuencia) maxFrecuencia = f }
+      if (maxFrecuencia > 1) {
+        const modas = [...frecuencia.entries()].filter(([, f]) => f === maxFrecuencia).map(([v]) => Number(v))
+        moda = modas.sort((a, b) => a - b)[0]
+      }
+    }
+
+    return {
+      promedio: promedio !== null ? Math.round(promedio) : null,
+      mediana: mediana !== null ? Math.round(mediana) : null,
+      moda: moda !== null ? Math.round(moda) : null,
+      ultimo: Math.round(ultimo),
+      variacionPct,
+    }
   }
 
   return {
     dias_con_venta: diasConVenta, dias_con_venta_ult_mes: diasConVentaUltMes,
-    semana: stats(7), mes: stats(30), trimestre: stats(90), semestre: stats(180),
+    semana: stats(7), quincena: stats(15), mes: stats(30), trimestre: stats(90), semestre: stats(180),
   }
 }
 
@@ -918,7 +950,8 @@ app.get('/api/maestro/opciones', async (req, res) => {
       SELECT
         array_agg(DISTINCT familia)  FILTER (WHERE familia  IS NOT NULL) as familias,
         array_agg(DISTINCT categoria) FILTER (WHERE categoria IS NOT NULL) as categorias,
-        array_agg(DISTINCT marca)    FILTER (WHERE marca    IS NOT NULL) as marcas
+        array_agg(DISTINCT marca)    FILTER (WHERE marca    IS NOT NULL) as marcas,
+        array_agg(DISTINCT temporada) FILTER (WHERE temporada IS NOT NULL) as temporadas
       FROM articulos_maestro
     `)
     const row = r.rows[0]
@@ -926,6 +959,7 @@ app.get('/api/maestro/opciones', async (req, res) => {
       familias: (row.familias || []).sort(),
       categorias: (row.categorias || []).sort(),
       marcas: (row.marcas || []).sort(),
+      temporadas: (row.temporadas || []).sort(),
     })
   } catch (err) { res.status(500).json({ error: err.message }) }
 })
@@ -933,24 +967,25 @@ app.get('/api/maestro/opciones', async (req, res) => {
 // ─── Clasificación manual — código a código, SIN proveedor a propósito ────────
 // Para los códigos huérfanos (sin match en ningún reporte de OC/Stock
 // Disponible) donde no se conoce o no importa el proveedor, pero sí se puede
-// decidir a mano Familia/Categoría/Marca para que dejen de contar como
-// "sin clasificar". Mismo upsert que la carga automática — nunca pisa un
+// decidir a mano Familia/Categoría/Marca/Temporada para que dejen de contar
+// como "sin clasificar". Mismo upsert que la carga automática — nunca pisa un
 // proveedor que ya exista (podría haber quedado de una carga previa parcial).
 app.post('/api/maestro/clasificar-manual', async (req, res) => {
   try {
-    const { codigo, descripcion, familia, categoria, marca } = req.body
+    const { codigo, descripcion, familia, categoria, marca, temporada } = req.body
     if (!codigo) return res.status(400).json({ error: 'Falta código' })
     await pool.query(`
-      INSERT INTO articulos_maestro (codigo, descripcion, familia, categoria, marca, fuente, actualizado)
-      VALUES ($1,$2,$3,$4,$5,'manual',NOW())
+      INSERT INTO articulos_maestro (codigo, descripcion, familia, categoria, marca, temporada, fuente, actualizado)
+      VALUES ($1,$2,$3,$4,$5,$6,'manual',NOW())
       ON CONFLICT (codigo) DO UPDATE SET
         descripcion = COALESCE(articulos_maestro.descripcion, EXCLUDED.descripcion),
         familia     = COALESCE(EXCLUDED.familia,   articulos_maestro.familia),
         categoria   = COALESCE(EXCLUDED.categoria, articulos_maestro.categoria),
         marca       = COALESCE(EXCLUDED.marca,     articulos_maestro.marca),
+        temporada   = COALESCE(EXCLUDED.temporada, articulos_maestro.temporada),
         fuente      = CASE WHEN articulos_maestro.fuente IS NULL THEN 'manual' ELSE articulos_maestro.fuente || '+manual' END,
         actualizado = NOW()
-    `, [codigo, descripcion || null, familia || null, categoria || null, marca || null])
+    `, [codigo, descripcion || null, familia || null, categoria || null, marca || null, temporada || null])
     res.json({ ok: true })
   } catch (err) { res.status(500).json({ error: err.message }) }
 })
@@ -1583,14 +1618,62 @@ app.get('/api/articulos/ventas-explotadas', async (req, res) => {
 
 app.get('/api/articulos/ranking', async (req, res) => {
   try {
-    const { orderBy = 'facturacion', limit = 100 } = req.query
-    const { where, params } = buildWhere(`tipo_comprob IN ('FCB','FCA','RE')`, req.query)
+    const { orderBy = 'facturacion', limit = 100, conEstadisticas } = req.query
+    const { where, params } = buildWhere(`vl.tipo_comprob IN ('FCB','FCA','RE')`, req.query, 'vl')
     const orderMap = { facturacion: 'facturacion DESC', unidades: 'unidades DESC', transacciones: 'n_transacciones DESC', margen: 'margen_pct DESC' }
     const order = orderMap[orderBy] || 'facturacion DESC'
     const r = await pool.query(
-      `SELECT codigo, descripcion, COUNT(*) as n_transacciones, SUM(cantidad) as unidades, AVG(precio_unitario) as precio_promedio, AVG(costo) as costo_promedio, SUM(subtotal_neto) as facturacion, SUM(costo*cantidad) as costo_total, ROUND((SUM(subtotal_neto)-SUM(costo*cantidad))/NULLIF(SUM(subtotal_neto),0)*100,1) as margen_pct, COUNT(DISTINCT sucursal) as n_sucursales FROM ventas_lineas WHERE ${where} GROUP BY codigo, descripcion ORDER BY ${order} LIMIT $${params.length + 1}`,
+      `SELECT vl.codigo, MAX(vl.descripcion) as descripcion, MAX(am.familia) as familia, MAX(am.categoria) as categoria,
+         MAX(am.marca) as marca, MAX(am.proveedor) as proveedor, MAX(am.temporada) as temporada,
+         COUNT(*) as n_transacciones, SUM(vl.cantidad) as unidades, AVG(vl.precio_unitario) as precio_promedio,
+         AVG(vl.costo) as costo_promedio, SUM(vl.subtotal_neto) as facturacion, SUM(vl.costo*vl.cantidad) as costo_total,
+         ROUND((SUM(vl.subtotal_neto)-SUM(vl.costo*vl.cantidad))/NULLIF(SUM(vl.subtotal_neto),0)*100,1) as margen_pct,
+         COUNT(DISTINCT vl.sucursal) as n_sucursales
+       FROM ventas_lineas vl
+       LEFT JOIN articulos_maestro am ON am.codigo = vl.codigo
+       WHERE ${where} GROUP BY vl.codigo ORDER BY ${order} LIMIT $${params.length + 1}`,
       [...params, parseInt(limit)]
     )
+
+    if (conEstadisticas !== '1' || r.rows.length === 0) return res.json(r.rows)
+
+    // Estadísticas ricas (semana/quincena/mes/trimestre + promedio/mediana/
+    // moda/último) — solo para los artículos de ESTA página, no para todo el
+    // catálogo, para que esto siga siendo liviano sin importar cuántos
+    // artículos tenga tu catálogo completo.
+    const codigos = r.rows.map(x => x.codigo)
+    const diarioR = await pool.query(
+      `SELECT vl.codigo, vl.fecha::text as fecha, SUM(vl.subtotal_neto) as total
+       FROM ventas_lineas vl WHERE vl.tipo_comprob IN ('FCB','FCA','RE') AND vl.codigo = ANY($1) GROUP BY vl.codigo, vl.fecha`,
+      [codigos]
+    )
+    const diarioPorCodigo = {}
+    for (const d of diarioR.rows) {
+      if (!diarioPorCodigo[d.codigo]) diarioPorCodigo[d.codigo] = {}
+      diarioPorCodigo[d.codigo][d.fecha] = Number(d.total || 0)
+    }
+    const out = r.rows.map(row => ({ ...row, ...calcularEstadisticasPeriodo(diarioPorCodigo[row.codigo] || {}) }))
+    res.json(out)
+  } catch (err) { res.status(500).json({ error: err.message }) }
+})
+
+// ─── Ranking de combos vendidos (no artículos unitarios) ──────────────────────
+// Lista los códigos que son combos (existen en combos_componentes) con sus
+// ventas — para la "Vista de Combos" separada de la de Artículos.
+app.get('/api/articulos/combos-ranking', async (req, res) => {
+  try {
+    const { where, params } = buildWhere(`vl.tipo_comprob IN ('FCB','FCA','RE')`, req.query, 'vl')
+    const r = await pool.query(`
+      SELECT vl.codigo, MAX(cc.descripcion_combo) as descripcion,
+        COUNT(DISTINCT cc.codigo_componente) as n_componentes,
+        SUM(vl.cantidad) as unidades, COUNT(*) as n_transacciones, SUM(vl.subtotal_neto) as facturacion
+      FROM ventas_lineas vl
+      JOIN combos_componentes cc ON cc.codigo_combo = vl.codigo
+      WHERE ${where}
+      GROUP BY vl.codigo
+      ORDER BY facturacion DESC
+      LIMIT 300
+    `, params)
     res.json(r.rows)
   } catch (err) { res.status(500).json({ error: err.message }) }
 })
@@ -1740,12 +1823,16 @@ app.get('/api/articulos/:codigo', async (req, res) => {
     const base = `codigo=$1 AND tipo_comprob IN ('FCB','FCA','RE')`
     const { where, params } = buildWhere(base, req.query)
     const allParams = [req.params.codigo, ...params]
-    const [resumen, porSucursal, porMes] = await Promise.all([
+    const [resumen, porSucursal, porMes, diario] = await Promise.all([
       pool.query(`SELECT codigo, descripcion, SUM(cantidad) as unidades_total, SUM(subtotal_neto) as facturacion_total, SUM(costo*cantidad) as costo_total, AVG(precio_unitario) as precio_promedio, AVG(costo) as costo_promedio, MIN(fecha::text) as primera_venta, MAX(fecha::text) as ultima_venta, COUNT(DISTINCT sucursal) as n_sucursales FROM ventas_lineas WHERE ${where} GROUP BY codigo, descripcion`, allParams),
       pool.query(`SELECT sucursal, SUM(cantidad) as unidades, SUM(subtotal_neto) as facturacion FROM ventas_lineas WHERE ${where} GROUP BY sucursal ORDER BY unidades DESC`, allParams),
-      pool.query(`SELECT TO_CHAR(fecha,'YYYY-MM') as mes, SUM(cantidad) as unidades, SUM(subtotal_neto) as facturacion FROM ventas_lineas WHERE ${where} GROUP BY mes ORDER BY mes`, allParams)
+      pool.query(`SELECT TO_CHAR(fecha,'YYYY-MM') as mes, SUM(cantidad) as unidades, SUM(subtotal_neto) as facturacion FROM ventas_lineas WHERE ${where} GROUP BY mes ORDER BY mes`, allParams),
+      pool.query(`SELECT fecha::text as fecha, SUM(subtotal_neto) as total FROM ventas_lineas WHERE ${where} GROUP BY fecha`, allParams),
     ])
-    res.json({ resumen: resumen.rows[0] || null, porSucursal: porSucursal.rows, porMes: porMes.rows })
+    const porFecha = {}
+    for (const d of diario.rows) porFecha[d.fecha] = Number(d.total || 0)
+    const estadisticas = calcularEstadisticasPeriodo(porFecha)
+    res.json({ resumen: resumen.rows[0] || null, porSucursal: porSucursal.rows, porMes: porMes.rows, estadisticas })
   } catch (err) { res.status(500).json({ error: err.message }) }
 })
 

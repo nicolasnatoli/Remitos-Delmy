@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Component } from 'react'
 import Dashboard from './pages/Dashboard.jsx'
 import Ventas from './pages/Ventas.jsx'
 import Articulos from './pages/Articulos.jsx'
@@ -6,6 +6,27 @@ import Sucursales from './pages/Sucursales.jsx'
 import Finanzas from './pages/Finanzas.jsx'
 import Cargas from './pages/Cargas.jsx'
 import { FilterBar } from './components/shared/FilterBar.jsx'
+
+class ErrorBoundary extends Component {
+  constructor(props) { super(props); this.state = { error: null } }
+  static getDerivedStateFromError(error) { return { error } }
+  componentDidCatch(error, info) { console.error('Error atrapado por ErrorBoundary:', error, info) }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ padding: 24, background: '#2a1414', border: '1px solid #f87171', borderRadius: 6, margin: 20, color: '#f87171', fontFamily: 'monospace', fontSize: 12 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>⚠ Se rompió algo al mostrar esta pestaña</div>
+          <div style={{ marginBottom: 12 }}>{String(this.state.error?.message || this.state.error)}</div>
+          <div style={{ color: '#9ca3af', fontSize: 11 }}>{this.state.error?.stack?.split('\n').slice(0, 5).join('\n')}</div>
+          <button onClick={() => this.setState({ error: null })} style={{ marginTop: 12, padding: '6px 14px', background: '#f87171', color: '#1a0a0a', border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 700 }}>
+            Reintentar
+          </button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
 
 const T = {
   bg:'#0c0e14', panel:'#111420', panel2:'#161925',
@@ -97,12 +118,14 @@ export default function App() {
 
       {/* Content */}
       <div style={{ flex: 1, padding: '16px 20px', overflow: 'auto' }}>
-        {tab === 'dashboard'  && <Dashboard  {...pageProps} />}
-        {tab === 'ventas'     && <Ventas      {...pageProps} />}
-        {tab === 'articulos'  && <Articulos   {...pageProps} />}
-        {tab === 'sucursales' && <Sucursales  {...pageProps} />}
-        {tab === 'finanzas'   && <Finanzas    {...pageProps} />}
-        {tab === 'cargas'     && <Cargas       {...pageProps} />}
+        <ErrorBoundary key={tab}>
+          {tab === 'dashboard'  && <Dashboard  {...pageProps} />}
+          {tab === 'ventas'     && <Ventas      {...pageProps} />}
+          {tab === 'articulos'  && <Articulos   {...pageProps} />}
+          {tab === 'sucursales' && <Sucursales  {...pageProps} />}
+          {tab === 'finanzas'   && <Finanzas    {...pageProps} />}
+          {tab === 'cargas'     && <Cargas       {...pageProps} />}
+        </ErrorBoundary>
       </div>
     </div>
   )

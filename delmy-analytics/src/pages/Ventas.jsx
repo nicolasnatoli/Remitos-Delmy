@@ -155,13 +155,18 @@ function ComparativaDiaChart({ data, seleccionados, anclaDia, deshabilitados, on
     e.preventDefault()
     const rect = svgRef.current.getBoundingClientRect()
     const mouseXRatio = Math.min(1, Math.max(0, (e.clientX - rect.left - pad.l) / anchoUtil))
-    const factor = e.deltaY < 0 ? 0.85 : 1.18
+    const factor = e.deltaY < 0 ? 0.72 : 1.32
     let nuevoCount = Math.round(vista.count * factor)
     nuevoCount = Math.max(7, Math.min(mds.length, nuevoCount))
     const diaBajoCursor = vista.start + vista.count * mouseXRatio
     let nuevoStart = Math.round(diaBajoCursor - nuevoCount * mouseXRatio)
     nuevoStart = Math.max(0, Math.min(mds.length - nuevoCount, nuevoStart))
     setVista({ start: nuevoStart, count: nuevoCount })
+  }
+
+  const irAPreset = (dias) => {
+    const count = Math.min(dias, mds.length)
+    setVista({ start: Math.max(0, mds.length - count), count })
   }
 
   const onMouseDown = (e) => {
@@ -188,11 +193,21 @@ function ComparativaDiaChart({ data, seleccionados, anclaDia, deshabilitados, on
         <span>Rueda: zoom · Arrastrar: mover · Clic: elegir día · Ctrl+clic: sumar · Shift+clic: rango · Alt+clic: apagar
           {deshabilitados.length > 0 && <b style={{ color: D.orange }}> · {deshabilitados.length} apagado(s)</b>}
         </span>
-        {zoomedIn && (
-          <button onClick={() => setVista({ start: 0, count: mds.length })} style={{ marginLeft: 'auto', fontSize: 10, padding: '3px 10px', borderRadius: 12, background: D.steelSoft, border: `1px solid ${D.steel}`, color: D.steel, cursor: 'pointer' }}>
-            Ver todo
-          </button>
-        )}
+        <div style={{ display: 'flex', gap: 4, marginLeft: 'auto' }}>
+          {[['1 sem', 7], ['15 días', 15], ['1 mes', 30], ['3 meses', 90]].map(([lbl, dias]) => (
+            <button key={lbl} onClick={() => irAPreset(dias)} style={{
+              fontSize: 10, padding: '3px 9px', borderRadius: 12, cursor: 'pointer',
+              background: vista.count === Math.min(dias, mds.length) ? D.navy : D.steelSoft,
+              color: vista.count === Math.min(dias, mds.length) ? '#fff' : D.steel,
+              border: `1px solid ${vista.count === Math.min(dias, mds.length) ? D.navy : D.steel}`,
+            }}>{lbl}</button>
+          ))}
+          {zoomedIn && (
+            <button onClick={() => setVista({ start: 0, count: mds.length })} style={{ fontSize: 10, padding: '3px 10px', borderRadius: 12, background: D.orangeSoft, border: `1px solid ${D.orange}`, color: D.orange, cursor: 'pointer' }}>
+              Ver todo
+            </button>
+          )}
+        </div>
       </div>
       <svg
         ref={svgRef} width={CHART_W} height={chartH + pad.t + pad.b}
@@ -457,6 +472,31 @@ function NivelCascada({ nivel, label, subtitulo, filtroKey, filters, setFilters,
 
   if (!data || data.length === 0) return null
   const ordenada = [...data].sort((a, b) => Number(b[cfgM.campo] ?? b.facturacion) - Number(a[cfgM.campo] ?? a.facturacion))
+  const totalPanel = ordenada.reduce((s, r) => s + Number(r.facturacion || 0), 0)
+
+  const exportarConEstadisticas = () => {
+    const periodos = ['semana', 'quincena', 'mes', 'trimestre', 'semestre']
+    const filas = ordenada.map(r => {
+      const base = {
+        [label]: nivel === 'articulo' ? r.descripcion : r.valor_nivel,
+        codigo: nivel === 'articulo' ? r.valor_nivel : undefined,
+        unidades: r.unidades, n_ventas: r.n_ventas, facturacion: r.facturacion,
+        pct: r.pct, pct_acum: r.pct_acum,
+        dias_con_venta: r.dias_con_venta, dias_con_venta_ult_mes: r.dias_con_venta_ult_mes,
+        valor_pedido: r.valor_pedido,
+      }
+      for (const p of periodos) {
+        const per = r[p]
+        base[`${p}_ultimo_real`] = per?.ultimo ?? ''
+        base[`${p}_promedio`] = per?.promedio ?? ''
+        base[`${p}_mediana`] = per?.mediana ?? ''
+        base[`${p}_moda`] = per?.moda ?? '(sin repetidos)'
+        base[`${p}_variacion_pct`] = per?.variacionPct ?? ''
+      }
+      return base
+    })
+    exportCSV(filas, `${label.toLowerCase()}_${(subtitulo || 'general').replace(/[:\s]+/g, '_')}_estadisticas.csv`)
+  }
 
   return (
     <section style={{ marginTop: 34 }}>
@@ -471,6 +511,10 @@ function NivelCascada({ nivel, label, subtitulo, filtroKey, filters, setFilters,
                 ✕ Quitar filtro de {label.toLowerCase()}
               </button>
             )}
+            <button
+              onClick={exportarConEstadisticas}
+              style={{ fontSize: 11, padding: '4px 10px', borderRadius: 4, background: D.steelSoft, border: `1px solid ${D.steel}`, color: D.steel, cursor: 'pointer', fontWeight: 600 }}
+            >↓ CSV con estadísticas</button>
           </div>
         }>
           Ventas por {label}{subtitulo && <span style={{ fontSize: 12, color: D.inkSoft, fontWeight: 500, marginLeft: 8 }}>— {subtitulo}</span>}
@@ -478,6 +522,7 @@ function NivelCascada({ nivel, label, subtitulo, filtroKey, filters, setFilters,
         <div style={{ fontSize: 12, color: D.inkSoft, marginBottom: 14 }}>
           Clic en una barra o fila para filtrar {nivelesAbajo.length > 0 ? 'el siguiente nivel' : 'el detalle'}.
           {usaExplotado && ' Incluye lo vendido "adentro" de combos, sumado al artículo unitario real.'}
+          {' '}<b style={{ color: D.ink }}>Total de este panel: {fmtPeso(totalPanel)} · {ordenada.length} {label.toLowerCase()}(s)</b>
         </div>
         <ParetoChart
           data={ordenada}
@@ -566,6 +611,16 @@ function BreadcrumbCascada({ filters, setFilters }) {
   )
 }
 
+function exportCSV(data, filename) {
+  if (!data || data.length === 0) return
+  const keys = Object.keys(data[0])
+  const csv = [keys.join(','), ...data.map(r => keys.map(k => r[k] ?? '').join(','))].join('\n')
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+  a.download = filename
+  a.click()
+}
+
 export default function Ventas({ filters, setFilters, T }) {
   const [vista, setVista] = useState('dia')
   const [vistaComparativa, setVistaComparativa] = useState('trimestre')
@@ -593,16 +648,6 @@ export default function Ventas({ filters, setFilters, T }) {
   const { data: detalleDias } = useFetch(qsFechas ? `/api/ventas/detalle-dias${qsFechas}` : null, [qsFechas])
   const { data: gruposProveedor } = useFetch('/api/proveedores/grupos', [])
   const { data: proveedoresRecientes } = useFetch('/api/proveedores/recientes', [])
-
-  const exportCSV = (data, filename) => {
-    if (!data || data.length === 0) return
-    const keys = Object.keys(data[0])
-    const csv = [keys.join(','), ...data.map(r => keys.map(k => r[k] ?? '').join(','))].join('\n')
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
-    a.download = filename
-    a.click()
-  }
 
   const mesTotals = porMes ? Object.values(
     porMes.reduce((acc, r) => {
@@ -639,9 +684,8 @@ export default function Ventas({ filters, setFilters, T }) {
 
         <BreadcrumbCascada filters={filters} setFilters={setFilters} />
 
-        {/* ─── Filtros de fecha rápidos ─── */}
+        {/* ─── Exportar ─── */}
         <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap', alignItems: 'center' }}>
-          <PresetBtn onClick={() => {}}>Filtrar fechas</PresetBtn>
           <div style={{ flex: 1 }} />
           <button
             onClick={() => exportCSV(
