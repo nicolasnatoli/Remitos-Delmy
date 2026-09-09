@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Usuarios — Depósito Delmy{% endblock %}
+{% block content %}
+<div style="margin-bottom:14px; font-size:14px;">
+  <strong>Usuarios</strong> &nbsp;|&nbsp; <a href="{{ url_for('admin_proveedores') }}">Proveedores</a> &nbsp;|&nbsp; <a href="{{ url_for('admin_ordenes_compra') }}">Órdenes de compra</a>
+</div>
+<h2>Usuarios</h2>
+<div style="display:grid; grid-template-columns: 1fr 320px; gap:20px; align-items:start;">
+  <div class="card">
+    <table>
+      <thead><tr><th>Usuario</th><th>Rol</th><th>Estado</th><th>Creado</th><th></th></tr></thead>
+      <tbody>
+        {% for u in usuarios %}
+        <tr>
+          <td>{{ u.username }}</td>
+          <td>{{ 'Admin' if u.rol == 'admin' else 'Operativo' }}</td>
+          <td><span class="tag {{ 'completado' if u.activo else 'pendiente' }}">{{ 'Activo' if u.activo else 'Dado de baja' }}</span></td>
+          <td>{{ u.creado_en }}</td>
+          <td>
+            {% if u.activo %}
+            <form method="post" action="{{ url_for('admin_usuarios_baja', username=u.username) }}" style="display:inline"
+                  onsubmit="return confirm('¿Dar de baja a {{ u.username }}?');">
+              <button class="btn secundario" type="submit" style="padding:4px 10px;">Dar de baja</button>
+            </form>
+            {% else %}
+            <form method="post" action="{{ url_for('admin_usuarios_alta', username=u.username) }}" style="display:inline">
+              <button class="btn secundario" type="submit" style="padding:4px 10px;">Reactivar</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Nuevo usuario</h3>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    <form method="post">
+      <div class="campo">
+        <label>Usuario</label>
+        <input type="text" name="username" required>
+      </div>
+      <div class="campo">
+        <label>Contraseña</label>
+        <input type="password" name="password" required minlength="6">
+      </div>
+      <div class="campo">
+        <label>Rol</label>
+        <select name="rol">
+          <option value="operativo">Operativo</option>
+          <option value="admin">Admin</option>
+        </select>
+      </div>
+      <button class="btn" type="submit" style="width:100%;">Crear usuario</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

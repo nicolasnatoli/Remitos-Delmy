@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Calendario de recepción — Laboratorio{% endblock %}
+{% block content %}
+<div style="margin-bottom:14px; font-size:14px;">
+  <a href="{{ url_for('admin_laboratorio') }}">🧪 Laboratorio</a> &nbsp;|&nbsp;
+  <a href="{{ url_for('admin_laboratorio_revision_remitos') }}">Revisión de remitos</a> &nbsp;|&nbsp; <strong>Calendario</strong>
+</div>
+
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+  <h2 style="margin:0;">{{ nombre_mes }} {{ anio }}</h2>
+  <div>
+    <a href="?mes={{ mes_anterior }}" class="btn" style="padding:6px 14px; font-size:13px;">&larr; anterior</a>
+    <a href="?mes={{ mes_siguiente }}" class="btn" style="padding:6px 14px; font-size:13px;">siguiente &rarr;</a>
+  </div>
+</div>
+
+<div class="card">
+  <table style="width:100%; table-layout:fixed;">
+    <thead>
+      <tr>
+        <th style="text-align:center;">Lun</th><th style="text-align:center;">Mar</th><th style="text-align:center;">Mié</th>
+        <th style="text-align:center;">Jue</th><th style="text-align:center;">Vie</th><th style="text-align:center;">Sáb</th><th style="text-align:center;">Dom</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for semana in semanas %}
+      <tr>
+        {% for dia in semana %}
+        {% set fecha_iso = '%04d-%02d-%02d' % (anio, mes, dia) if dia else '' %}
+        <td style="vertical-align:top; height:90px; padding:6px; border:1px solid var(--borde); {{ 'background:var(--fondo);' if not dia }}">
+          {% if dia %}
+          <div style="font-weight:700; font-size:13px; {{ 'color:var(--rojo);' if fecha_iso == hoy }}">{{ dia }}</div>
+          {% if fecha_iso in agrupado %}
+          <div style="margin-top:4px;">
+            {% for p in agrupado[fecha_iso][:4] %}
+            <a href="{{ url_for('admin_laboratorio_revision_remito_detalle', remito_id=p.remito_id) }}" style="display:block; font-size:11px; color:var(--azul); text-decoration:none; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ p.proveedor }}">{{ p.proveedor }}</a>
+            {% endfor %}
+            {% if agrupado[fecha_iso]|length > 4 %}
+            <div style="font-size:11px; color:var(--texto-sec);">+{{ agrupado[fecha_iso]|length - 4 }} más</div>
+            {% endif %}
+          </div>
+          {% endif %}
+          {% endif %}
+        </td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

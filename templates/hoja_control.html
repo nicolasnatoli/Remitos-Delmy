@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hoja de control — Remito {{ remito.numeros_remito_txt or remito.id }}</title>
+<style>
+  :root { --azul: #0b3d91; --rojo: #c0392b; --negro: #111111; --borde: #333; }
+  * { box-sizing: border-box; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; color: #111; margin: 0; background: #e5e7eb; }
+  .barra { background: var(--azul); color: #fff; padding: 12px 20px; display:flex; justify-content:space-between; align-items:center; gap:12px; }
+  .barra a { color: #fff; text-decoration: none; }
+  .barra button { background: var(--rojo); color:#fff; border:none; border-radius:6px; padding:8px 16px; cursor:pointer; font-weight:600; }
+  .hoja { width: 210mm; min-height: 290mm; margin: 20px auto; background: #fff; padding: 14mm; }
+  .encabezado { display:flex; justify-content:space-between; align-items:center; border-bottom: 2px solid var(--negro); padding-bottom:10px; margin-bottom:10px; }
+  .encabezado h1 { font-size: 18px; margin:0; }
+  .encabezado img { height: 42px; }
+  .linea-datos { display:flex; gap:26px; flex-wrap:wrap; font-size:12.5px; margin-bottom:16px; padding-bottom:10px; border-bottom:1px solid var(--borde); }
+  .linea-datos span b { color:#555; font-weight:600; margin-right:4px; }
+  table { width:100%; border-collapse: collapse; font-size:12px; }
+  th, td { border: 1px solid var(--borde); padding: 6px 8px; }
+  th { background: #f0f0f0; text-align:left; }
+  td.vacio { min-width: 70px; }
+  tr { page-break-inside: avoid; break-inside: avoid; }
+  thead { display: table-header-group; }
+  .cierre { margin-top: 24px; page-break-inside: avoid; break-inside: avoid; }
+  .tipo-control { display:flex; gap:12px; align-items:center; border:1px solid var(--borde); padding: 10px 14px; margin-bottom:10px; }
+  .observaciones { border:1px solid var(--borde); padding:10px 14px; min-height: 60px; margin-bottom:18px; font-size:12px; }
+  .firma { border-top:1px solid var(--borde); padding-top: 40px; margin-top: 10px; }
+  .firma .linea { border-top: 1px solid #111; width: 60%; margin-top: 4px; padding-top:4px; font-size:12px; }
+  @media print {
+    body { background: #fff; }
+    .barra { display: none; }
+    .hoja { margin:0; padding: 10mm; width:auto; min-height:0; }
+    @page { size: A4 portrait; margin: 0; }
+  }
+</style>
+</head>
+<body>
+  <div class="barra">
+    <a href="{{ url_for('detalle_remito', remito_id=remito.id) }}">&larr; Volver al remito</a>
+    <a href="{{ url_for('revisar_remito', remito_id=remito.id) }}">Volver a revisar</a>
+    <button id="btn-imprimir" onclick="imprimirHoja(this)">Imprimir</button>
+    <a id="link-etiquetas" href="{{ url_for('etiquetas_remito', remito_id=remito.id) }}" target="_blank" style="background:#374151; color:#fff; padding:8px 16px; border-radius:6px; font-weight:600;">Imprimir etiquetas</a>
+  </div>
+
+  <div class="hoja">
+    <div class="encabezado">
+      <h1>Hoja de control de recepción</h1>
+      <img src="{{ url_for('static', filename='logo.png') }}" alt="Delmy" onerror="this.style.display='none'">
+    </div>
+
+    {% set f = remito.creado_en.split(' ')[0].split('-') if remito.creado_en else [] %}
+    <div class="linea-datos">
+      <span><b>Proveedor:</b>{{ remito.proveedor_nombre or '—' }}</span>
+      <span><b>Fecha de ingreso:</b>{{ '%s/%s/%s' % (f[2], f[1], f[0]) if f else '—' }}</span>
+      <span><b>N° remito:</b>{{ remito.numeros_remito_txt or '—' }}</span>
+      <span><b>Bultos / Artículos:</b>{{ remito.cantidad_bultos_declarados if remito.cantidad_bultos_declarados is not none else '—' }} / {{ items|length }}</span>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>No</th><th>Código</th><th>Descripción</th><th>Cant. remito</th>
+          <th>Cant. recibida</th><th>Bulto</th><th>Ubicación</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for it in items %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td>{{ it.codigo_articulo or '' }}</td>
+          <td>{{ it.descripcion or '' }}</td>
+          <td>{{ it.cantidad_remito if it.cantidad_remito is not none else '' }}</td>
+          <td class="vacio"></td>
+          <td class="vacio"></td>
+          <td class="vacio"></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <div class="cierre">
+      <div class="tipo-control">
+        <strong style="font-size:12px;">Tipo de control:</strong>
+        <span style="font-weight:700; font-size:13px;">{{ 'Por bulto' if remito.tipo_control == 'bulto' else ('Por artículo' if remito.tipo_control == 'articulo' else '—') }}</span>
+      </div>
+
+      <div class="recepcion-bultos" style="font-size:13px; margin-bottom:14px;">
+        Recibimos
+        <span style="display:inline-block; min-width:50px; border-bottom:1px solid #111;">&nbsp;</span>
+        de {{ remito.cantidad_bultos_declarados if remito.cantidad_bultos_declarados is not none else '—' }} bultos
+      </div>
+
+      <div class="observaciones">
+        <strong style="font-size:11px; color:#555;">Observaciones</strong>
+      </div>
+
+      <div class="firma">
+        <div class="linea">Firma y aclaración del transportista</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Da una señal visual inmediata al hacer clic: si el diálogo de
+    // impresión del sistema tarda en aparecer o se abre detrás de la
+    // ventana, el botón igual muestra que el click se registró.
+    function imprimirHoja(boton) {
+      boton.disabled = true;
+      boton.textContent = 'Abriendo impresión…';
+      window.setTimeout(() => window.print(), 50);
+    }
+    window.addEventListener('afterprint', () => {
+      const boton = document.getElementById('btn-imprimir');
+      if (boton) {
+        boton.disabled = false;
+        boton.textContent = 'Imprimir';
+      }
+      // No navega sola a etiquetas: hacerlo automático con afterprint
+      // terminó interfiriendo con el diálogo de impresión de las etiquetas
+      // (dos impresiones seguidas disparadas por JS confundían al navegador).
+      // En cambio, resalta el botón para que el siguiente paso quede claro.
+      const linkEtiquetas = document.getElementById('link-etiquetas');
+      if (linkEtiquetas) {
+        linkEtiquetas.style.outline = '3px solid #f59e0b';
+        linkEtiquetas.style.outlineOffset = '2px';
+      }
+    });
+  </script>
+</body>
+</html>

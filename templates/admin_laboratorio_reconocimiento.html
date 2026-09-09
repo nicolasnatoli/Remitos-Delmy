@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+{% block title %}Reconocimiento de artículos — Laboratorio{% endblock %}
+{% block content %}
+<div style="margin-bottom:14px; font-size:14px;">
+  <a href="{{ url_for('admin_laboratorio') }}">🧪 Laboratorio</a> &nbsp;|&nbsp; <strong>Reconocimiento de artículos</strong>
+</div>
+<h2>Reconocimiento de artículos</h2>
+<p style="color:var(--texto-sec); font-size:14px; margin-top:-8px;">
+  Elegí el proveedor y subí una foto o PDF de un remito/factura. Se lee con
+  Claude Vision (igual que en la recepción real) y cada artículo detectado
+  se busca en el catálogo de ese proveedor, para ver si existe y coincide.
+  No crea ningún remito ni toca datos reales.
+</p>
+
+{% if cantidad_articulos == 0 %}
+<div class="error">
+  Todavía no importaste el catálogo de artículos —
+  <a href="{{ url_for('admin_laboratorio_articulos') }}" style="text-decoration:underline;">importalo acá</a>
+  para que el matching tenga contra qué comparar.
+</div>
+{% endif %}
+
+<div class="card" style="max-width:640px;">
+  <div class="campo" style="position:relative;">
+    <label>Proveedor</label>
+    <input type="text" id="proveedor_buscar" placeholder="Buscar proveedor..." autocomplete="off">
+    <input type="hidden" id="proveedor_id">
+    <div id="proveedor_lista" style="position:absolute; z-index:10; background:#fff; border:1px solid var(--borde); border-radius:8px; width:100%; max-height:220px; overflow:auto; display:none; box-shadow:0 4px 14px rgba(0,0,0,.1);"></div>
+  </div>
+
+  <div class="campo">
+    <label>Foto o PDF del remito/factura</label>
+    <input type="file" id="archivo" accept="image/*,application/pdf">
+  </div>
+  <button class="btn" id="btn-analizar" type="button">Analizar</button>
+  <span id="estado" style="display:block; margin-top:10px; font-size:13.5px; color:var(--texto-sec);"></span>
+</div>
+
+<div id="resultado" style="display:none; margin-top:20px;">
+  <div class="card" style="margin-bottom:16px;">
+    <h3 style="margin-top:0;">Encabezado detectado</h3>
+    <table>
+      <tr><th style="width:180px;">N° de remito</th><td id="r-numero">—</td></tr>
+      <tr><th>Fecha</th><td id="r-fecha">—</td></tr>
+      <tr><th>Método de lectura</th><td id="r-metodo">—</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Artículos detectados (<span id="r-cantidad">0</span>)</h3>
+    <table>
+      <thead>
+        <tr><th>#</th><th>Código leído</th><th>Descripción leída</th><th>Cant.</th><th>Catálogo</th></tr>
+      </thead>
+      <tbody id="r-items"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const buscarInput = document.getElementById('proveedor_buscar');
+const proveedorIdInput = document.getElementById('proveedor_id');
+const lista = document.getElementById('proveedor_lista');
+
+buscarInput.addEventListener('input', async () => {
+  proveedorIdInput.value = '';
+  const q = buscarInput.value.trim();
+  if (q.length < 1) { lista.style.display = 'none'; return; }
+  const resp = await fetch('/api/proveedores?q=' + encodeURIComponent(q));
+  const datos = await resp.json();
+  lista.innerHTML = '';
+  if (!datos.length) { lista.style.display = 'none'; return; }
+  datos.forEach(p => {
+    const item = document.createElement('div');
+    item.textContent = p.nombre;
+    item.style.padding = '8px 12px';
+    item.style.cursor = 'pointer';
+    item.addEventListener('mouseenter', () => item.style.background = 'var(--fondo)');
+    item.addEventListener('mouseleave', () => item.style.background = '#fff');
+    item.addEventListener('click', () => {
+      buscarInput.value = p.nombre;
+      proveedorIdInput.value = p.id;
+      lista.style.display = 'none';
+    });
+    lista.appendChild(item);
+  });
+  lista.style.display = 'block';
+});
+document.addEventListener('click', (e) => {
+  if (e.target !== buscarInput) lista.style.display = 'none';
+});
+
+const inputArchivo = document.getElementById('archivo');
+const btn = document.getElementById('btn-analizar');
+const estado = document.getElementById('estado');
+const resultado = document.getElementById('resultado');
+
+const ETIQUETAS_ESTADO = {
+  codigo_proveedor_exacto: { texto: 'Coincide (cód. proveedor)', clase: 'completado' },
+  codigo_exacto: { texto: 'Coincide (cód. interno)', clase: 'completado' },
+  codigo_en_descripcion: { texto: 'Coincide (código en la descripción)', clase: 'completado' },
+  codigo_exacto_descripcion_distinta: { texto: 'Código OK, descripción distinta', clase: 'pendiente' },
+  codigo_parcial: { texto: 'Código parcial', clase: 'manual' },
+  descripcion_similar: { texto: 'Recomendado por descripción', clase: 'manual' },
+  recomendacion_baja_confianza: { texto: 'Sin coincidencia confiable', clase: 'recepcionado' },
+  no_encontrado: { texto: 'No encontrado', clase: 'recepcionado' },
+};
+
+btn.addEventListener('click', async () => {
+  const archivo = inputArchivo.files[0];
+  if (!archivo) { alert('Elegí un archivo primero.'); return; }
+
+  btn.disabled = true;
+  estado.textContent = 'Leyendo con Claude Vision... puede tardar unos segundos.';
+  resultado.style.display = 'none';
+
+  try {
+    const formData = new FormData();
+    formData.append('archivo', archivo);
+    if (proveedorIdInput.value) formData.append('proveedor_id', proveedorIdInput.value);
+    const resp = await fetch('{{ url_for("admin_laboratorio_reconocimiento_analizar") }}', {
+      method: 'POST',
+      body: formData,
+    });
+    const datos = await resp.json();
+    if (!resp.ok || !datos.ok) {
+      throw new Error(datos.error || 'no se pudo leer el archivo.');
+    }
+
+    document.getElementById('r-numero').textContent = datos.nro_remito || '— (no detectado)';
+    document.getElementById('r-fecha').textContent = datos.fecha_remito || '— (no detectada)';
+    document.getElementById('r-metodo').textContent = datos.metodo_extraccion || '—';
+    document.getElementById('r-cantidad').textContent = datos.items.length;
+
+    const tbody = document.getElementById('r-items');
+    tbody.innerHTML = '';
+    if (!datos.items.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--texto-sec); padding:16px;">No se detectó ningún artículo.</td></tr>';
+    } else {
+      datos.items.forEach((it, i) => {
+        const tag = ETIQUETAS_ESTADO[it.estado] || ETIQUETAS_ESTADO.no_encontrado;
+        let catalogoTxt = '<span class="tag ' + tag.clase + '">' + tag.texto + '</span>';
+        if (it.catalogo_codigo) {
+          catalogoTxt += '<div style="font-size:12px; color:var(--texto-sec); margin-top:3px;">' +
+            escapeHtml(it.catalogo_codigo) + (it.catalogo_descripcion ? ' — ' + escapeHtml(it.catalogo_descripcion) : '') +
+            (it.similitud !== null ? ' (' + Math.round(it.similitud * 100) + '% similar)' : '') + '</div>';
+        } else if (!datos.catalogo_consultado) {
+          catalogoTxt = '<span style="color:var(--texto-sec); font-size:12.5px;">Elegí un proveedor para buscar</span>';
+        }
+        if (it.combo_componentes && it.combo_componentes.length) {
+          catalogoTxt += '<div style="font-size:11.5px; margin-top:4px; padding:5px 7px; background:var(--fondo); border-radius:5px;"><strong>Es un combo de:</strong> ' +
+            it.combo_componentes.map(c => `${c.cantidad} × ${escapeHtml(c.componente_codigo)}`).join(', ') + '</div>';
+        }
+        if (it.candidatos && it.candidatos.length && !it.catalogo_codigo) {
+          catalogoTxt += '<div style="font-size:11.5px; margin-top:4px;"><strong>Candidatos:</strong> ' +
+            it.candidatos.slice(0, 3).map(c => escapeHtml(c.codigo) + (c.cod_art_prov ? ' (prov: ' + escapeHtml(c.cod_art_prov) + ')' : '')).join(', ') + '</div>';
+        }
+        if (it.multiplicador_detectado) {
+          catalogoTxt = '<div style="font-size:11px; color:var(--amarillo); margin-bottom:3px;">⚠ posible x' + it.multiplicador_detectado + ' en la descripción</div>' + catalogoTxt;
+        }
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${i + 1}</td>
+          <td>${it.codigo_articulo ? escapeHtml(it.codigo_articulo) : '—'}</td>
+          <td>${it.descripcion ? escapeHtml(it.descripcion) : '—'}</td>
+          <td>${it.cantidad_remito ?? '—'}</td>
+          <td>${catalogoTxt}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+    resultado.style.display = 'block';
+    estado.textContent = '';
+  } catch (e) {
+    estado.textContent = 'Error: ' + e.message;
+  }
+  btn.disabled = false;
+});
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+</script>
+{% endblock %}

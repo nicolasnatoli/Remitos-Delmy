@@ -1,0 +1,261 @@
+{% extends "base.html" %}
+{% block title %}Ubicaciones — Laboratorio{% endblock %}
+{% block content %}
+<div style="margin-bottom:14px; font-size:14px;">
+  <a href="{{ url_for('admin_laboratorio') }}">🧪 Laboratorio</a> &nbsp;|&nbsp; <strong>Ubicaciones</strong>
+  &nbsp;|&nbsp; <a href="{{ url_for('admin_laboratorio_ubicaciones_cola') }}">Cola de impresión (<span id="contador-cola">{{ cola_ids|length }}</span>)</a>
+</div>
+<h2>Ubicaciones del depósito</h2>
+<p style="color:var(--texto-sec); font-size:14px; margin-top:-8px;">
+  El código de cada nivel es el que escribís, tal cual — no se multiplica ni
+  se transforma. Sirve tanto para el patrón habitual (10/20/30 derecha,
+  15/25/35 izquierda) como para separaciones especiales (12, 14, 17...).
+  Después de agregar, los campos quedan como estaban — solo tenés que tocar
+  el siguiente número y volver a apretar "Agregar".
+</p>
+
+<div class="card" style="margin-bottom:20px;">
+  <h3 style="margin-top:0; font-size:16px;">Agregar ubicación</h3>
+  <div id="form-error" class="error" style="display:none;"></div>
+  <form id="form-agregar" style="display:flex; gap:10px; align-items:end; flex-wrap:wrap;">
+    <div class="campo" style="margin-bottom:0; width:70px;">
+      <label>Pasillo</label>
+      <input type="text" id="c-pasillo" maxlength="2" placeholder="01">
+    </div>
+    <div class="campo" style="margin-bottom:0; width:90px;">
+      <label>Estantería</label>
+      <input type="number" id="c-estanteria" placeholder="10">
+    </div>
+    <div class="campo" style="margin-bottom:0; width:90px;">
+      <label>Altura</label>
+      <input type="number" id="c-altura" placeholder="10">
+    </div>
+    <div class="campo" style="margin-bottom:0; width:90px;">
+      <label>Ubicación</label>
+      <input type="number" id="c-ubicacion" placeholder="10">
+    </div>
+    <div class="campo" style="margin-bottom:0; flex:1; min-width:160px;">
+      <label>Descripción (opcional)</label>
+      <input type="text" id="c-descripcion" placeholder="ej. cajas repostería grandes">
+    </div>
+    <button class="btn" type="submit">Agregar</button>
+  </form>
+  <p id="form-ok" style="display:none; color:var(--verde); font-size:13px; margin:8px 0 0;"></p>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Lista maestra (<span id="contador-lista">{{ ubicaciones|length }}</span>)</h3>
+  <form id="form-cola" method="post" action="{{ url_for('admin_laboratorio_ubicaciones_cola') }}">
+    <input type="hidden" name="accion" value="agregar">
+    <table>
+      <thead>
+        <tr><th><input type="checkbox" id="check-todas" title="Seleccionar todas"></th><th>Código</th><th>Nivel</th><th>Descripción</th><th></th></tr>
+      </thead>
+      <tbody id="tbody-ubicaciones">
+        {% for u in ubicaciones %}
+        <tr data-id="{{ u.id }}">
+          <td><input type="checkbox" name="ubicacion_id" value="{{ u.id }}" {{ 'checked disabled' if u.id in cola_ids }}></td>
+          <td style="font-weight:700;">{{ u.codigo }}</td>
+          <td>{{ u.nivel }}</td>
+          <td>{{ u.descripcion or '—' }}</td>
+          <td style="white-space:nowrap;">
+            <a href="{{ url_for('admin_laboratorio_ubicaciones_etiquetas', ids=u.id) }}" target="_blank" style="font-size:12.5px; margin-right:10px;">Imprimir sola</a>
+            <button type="button" class="btn-eliminar" data-id="{{ u.id }}" data-codigo="{{ u.codigo }}" style="background:none; border:none; color:#b91c1c; cursor:pointer; font-size:12.5px; padding:0;">Eliminar</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p id="sin-ubicaciones" style="text-align:center; color:var(--texto-sec); padding:20px; {{ '' if not ubicaciones else 'display:none;' }}">Todavía no cargaste ninguna ubicación.</p>
+    <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
+      <button class="btn" type="submit">Agregar seleccionadas a la cola</button>
+      <button class="btn" type="button" id="btn-agregar-todas">Agregar TODAS a la cola</button>
+      <button type="button" id="btn-vaciar-cola" style="background:none; border:1px solid var(--borde); border-radius:8px; padding:8px 14px; cursor:pointer; font-size:13.5px;">Vaciar cola de impresión</button>
+      <span style="border-left:1px solid var(--borde); margin:0 4px;"></span>
+      <button type="button" id="btn-borrar-seleccionadas" style="background:none; border:1px solid #fca5a5; color:#b91c1c; border-radius:8px; padding:8px 14px; cursor:pointer; font-size:13.5px;">Borrar seleccionadas de la lista</button>
+      <button type="button" id="btn-borrar-todas" style="background:none; border:1px solid #fca5a5; color:#b91c1c; border-radius:8px; padding:8px 14px; cursor:pointer; font-size:13.5px;">Borrar TODA la lista maestra</button>
+    </div>
+  </form>
+</div>
+
+<script>
+const ETIQUETAS_ELIMINAR = "{{ url_for('admin_laboratorio_ubicaciones_eliminar', ubicacion_id=0) }}".replace('/0/', '/__ID__/');
+const ETIQUETAS_IMPRIMIR = "{{ url_for('admin_laboratorio_ubicaciones_etiquetas') }}";
+
+const campos = {
+  pasillo: document.getElementById('c-pasillo'),
+  estanteria: document.getElementById('c-estanteria'),
+  altura: document.getElementById('c-altura'),
+  ubicacion: document.getElementById('c-ubicacion'),
+  descripcion: document.getElementById('c-descripcion'),
+};
+const errorBox = document.getElementById('form-error');
+const okBox = document.getElementById('form-ok');
+const tbody = document.getElementById('tbody-ubicaciones');
+const contadorLista = document.getElementById('contador-lista');
+const sinUbicaciones = document.getElementById('sin-ubicaciones');
+
+document.getElementById('form-agregar').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  errorBox.style.display = 'none';
+  okBox.style.display = 'none';
+
+  const payload = {
+    pasillo: campos.pasillo.value.trim(),
+    estanteria: campos.estanteria.value.trim(),
+    altura: campos.altura.value.trim(),
+    ubicacion: campos.ubicacion.value.trim(),
+    descripcion: campos.descripcion.value.trim(),
+  };
+
+  try {
+    const resp = await fetch('{{ url_for("admin_laboratorio_ubicaciones_agregar") }}', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const datos = await resp.json();
+    if (!resp.ok || !datos.ok) {
+      errorBox.textContent = datos.error || 'No se pudo agregar.';
+      errorBox.style.display = 'block';
+      return;
+    }
+
+    agregarFila(datos.ubicacion);
+    okBox.textContent = 'Se agregó ' + datos.ubicacion.codigo + '.';
+    okBox.style.display = 'block';
+
+    // Solo se limpia el campo más profundo que se usó — el resto queda
+    // igual para seguir cargando la siguiente posición sin retipear nada.
+    if (payload.ubicacion) campos.ubicacion.value = '';
+    else if (payload.altura) campos.altura.value = '';
+    else if (payload.estanteria) campos.estanteria.value = '';
+    campos.descripcion.value = '';
+    (payload.ubicacion ? campos.ubicacion : payload.altura ? campos.altura : payload.estanteria ? campos.estanteria : campos.pasillo).focus();
+  } catch (err) {
+    errorBox.textContent = 'Error de red: ' + err.message;
+    errorBox.style.display = 'block';
+  }
+});
+
+function agregarFila(u) {
+  sinUbicaciones.style.display = 'none';
+  const tr = document.createElement('tr');
+  tr.dataset.id = u.id;
+  tr.innerHTML = `
+    <td><input type="checkbox" name="ubicacion_id" value="${u.id}"></td>
+    <td style="font-weight:700;">${escapeHtml(u.codigo)}</td>
+    <td>${escapeHtml(u.nivel)}</td>
+    <td>${u.descripcion ? escapeHtml(u.descripcion) : '—'}</td>
+    <td style="white-space:nowrap;">
+      <a href="${ETIQUETAS_IMPRIMIR}?ids=${u.id}" target="_blank" style="font-size:12.5px; margin-right:10px;">Imprimir sola</a>
+      <button type="button" class="btn-eliminar" data-id="${u.id}" data-codigo="${escapeHtml(u.codigo)}" style="background:none; border:none; color:#b91c1c; cursor:pointer; font-size:12.5px; padding:0;">Eliminar</button>
+    </td>
+  `;
+  tbody.prepend(tr);
+  contadorLista.textContent = tbody.children.length;
+}
+
+tbody.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.btn-eliminar');
+  if (!btn) return;
+  if (!confirm(`¿Eliminar la ubicación ${btn.dataset.codigo}? No se puede deshacer.`)) return;
+  const url = ETIQUETAS_ELIMINAR.replace('__ID__', btn.dataset.id);
+  const resp = await fetch(url, { method: 'POST' });
+  if (resp.ok) {
+    btn.closest('tr').remove();
+    contadorLista.textContent = tbody.children.length;
+    if (!tbody.children.length) sinUbicaciones.style.display = 'block';
+  }
+});
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// Seleccionar/deseleccionar todas de un tilde (las ya deshabilitadas por
+// estar en la cola no se tocan).
+document.getElementById('check-todas').addEventListener('change', (e) => {
+  tbody.querySelectorAll('input[type="checkbox"]:not(:disabled)').forEach((chk) => {
+    chk.checked = e.target.checked;
+  });
+});
+
+// Agregar TODAS las de la lista maestra a la cola en un solo paso, sin
+// tener que tildarlas una por una.
+document.getElementById('btn-agregar-todas').addEventListener('click', () => {
+  if (!tbody.children.length) return;
+  tbody.querySelectorAll('input[type="checkbox"]:not(:disabled)').forEach((chk) => { chk.checked = true; });
+  document.getElementById('form-cola').requestSubmit();
+});
+
+// Vaciar la cola de impresión directo desde acá, sin tener que entrar a
+// esa pantalla primero.
+document.getElementById('btn-vaciar-cola').addEventListener('click', async () => {
+  if (!confirm('¿Vaciar toda la cola de impresión?')) return;
+  const fd = new FormData();
+  fd.append('accion', 'vaciar');
+  await fetch('{{ url_for("admin_laboratorio_ubicaciones_cola") }}', { method: 'POST', body: fd });
+  document.querySelectorAll('#tbody-ubicaciones input[type="checkbox"]:disabled').forEach((chk) => {
+    chk.disabled = false;
+    chk.checked = false;
+  });
+  alert('Cola vaciada.');
+});
+
+// --- Borrar de la lista maestra (distinto de vaciar la cola: esto borra
+// las ubicaciones en sí) ---
+
+function quitarFilasDeLaVista(codigosBorrados) {
+  codigosBorrados.forEach((id) => {
+    const fila = tbody.querySelector(`tr[data-id="${id}"]`);
+    if (fila) fila.remove();
+  });
+  contadorLista.textContent = tbody.children.length;
+  if (!tbody.children.length) sinUbicaciones.style.display = 'block';
+}
+
+document.getElementById('btn-borrar-seleccionadas').addEventListener('click', async () => {
+  const marcadas = [...tbody.querySelectorAll('input[type="checkbox"]:checked:not(:disabled)')];
+  if (!marcadas.length) { alert('Primero tildá las ubicaciones que querés borrar.'); return; }
+  if (!confirm(`¿Borrar ${marcadas.length} ubicación(es) de la lista maestra? No se puede deshacer.`)) return;
+
+  const ids = marcadas.map((chk) => chk.value);
+  const resp = await fetch('{{ url_for("admin_laboratorio_ubicaciones_eliminar_multiples") }}', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  });
+  const datos = await resp.json();
+  // Sacamos de la vista las que no quedaron bloqueadas por tener inventario.
+  const bloqueadasSet = new Set();
+  if (datos.bloqueadas && datos.bloqueadas.length) {
+    // datos.bloqueadas son códigos, no ids — buscamos sus filas por código.
+    datos.bloqueadas.forEach((codigo) => {
+      const fila = [...tbody.children].find((tr) => tr.children[1] && tr.children[1].textContent.trim() === codigo);
+      if (fila) bloqueadasSet.add(fila.dataset.id);
+    });
+  }
+  const aQuitar = ids.filter((id) => !bloqueadasSet.has(id));
+  quitarFilasDeLaVista(aQuitar);
+
+  if (datos.bloqueadas && datos.bloqueadas.length) {
+    alert(`Se borraron ${datos.borradas}. Estas NO se borraron porque ya tienen inventario cargado: ${datos.bloqueadas.join(', ')}`);
+  }
+});
+
+document.getElementById('btn-borrar-todas').addEventListener('click', async () => {
+  if (!confirm('¿Borrar TODA la lista maestra de ubicaciones? Esto no se puede deshacer.')) return;
+  if (!confirm('Confirmá de nuevo: se van a borrar todas las ubicaciones (menos las que ya tengan inventario cargado). ¿Seguro?')) return;
+
+  const resp = await fetch('{{ url_for("admin_laboratorio_ubicaciones_eliminar_todas") }}', { method: 'POST' });
+  const datos = await resp.json();
+  if (datos.bloqueadas && datos.bloqueadas.length) {
+    alert(`Se borraron ${datos.borradas}. Estas NO se borraron porque ya tienen inventario cargado: ${datos.bloqueadas.join(', ')}`);
+  }
+  window.location.reload();
+});
+</script>
+{% endblock %}

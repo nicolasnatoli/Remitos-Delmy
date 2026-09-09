@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+{% block title %}Remito {{ remito.numeros_remito_txt or remito.id }} — Depósito Delmy{% endblock %}
+{% block extra_head %}
+<style>
+  .pasos { display:flex; align-items:flex-start; gap:0; margin-bottom:22px; }
+  .paso { display:flex; flex-direction:column; align-items:center; flex:1; text-align:center; position:relative; }
+  .paso .circulo {
+    width:30px; height:30px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+    font-weight:700; font-size:13px; background:var(--fondo); border:2px solid var(--borde); color:var(--texto-sec);
+    margin-bottom:6px; z-index:1;
+  }
+  .paso .linea {
+    position:absolute; top:15px; left:-50%; width:100%; height:2px; background:var(--borde); z-index:0;
+  }
+  .paso:first-child .linea { display:none; }
+  .paso .etiqueta { font-size:12.5px; font-weight:600; color:var(--texto-sec); }
+  .paso .fecha { font-size:11px; color:var(--texto-sec); margin-top:2px; }
+  .paso.hecho .circulo { background:var(--verde); border-color:var(--verde); color:#fff; }
+  .paso.hecho .linea { background:var(--verde); }
+  .paso.hecho .etiqueta { color:var(--texto); }
+  .paso.actual .circulo { background:#1d4ed8; border-color:#1d4ed8; color:#fff; }
+  .paso.actual .etiqueta { color:#1d4ed8; }
+</style>
+{% endblock %}
+{% block content %}
+<p style="margin-bottom:16px;"><a href="{{ url_for('index') }}">&larr; Volver a Inicio</a></p>
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+  <h2 style="margin:0;">Remito {{ remito.numeros_remito_txt or ('#' ~ remito.id) }} — {{ remito.proveedor_nombre or '—' }}</h2>
+  <div style="display:flex; gap:8px;">
+    <span class="tag {{ remito.tag_clase }}">{{ remito.estado_detallado }}</span>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:20px;">
+  <div class="pasos">
+    <div class="paso hecho">
+      <div class="linea"></div>
+      <div class="circulo">✓</div>
+      <div class="etiqueta">Escaneado</div>
+      <div class="fecha">{{ remito.creado_en }}</div>
+    </div>
+    {% set muestra_paso_articulos = remito.tipo_control == 'bulto' %}
+    <div class="paso {{ 'hecho' if remito.estado == 'completado' else 'actual' }}">
+      <div class="linea"></div>
+      <div class="circulo">{{ '✓' if remito.estado == 'completado' else '2' }}</div>
+      <div class="etiqueta">Recepcionado{{ ' por bulto' if muestra_paso_articulos else '' }}</div>
+      <div class="fecha">{{ remito.completado_en or 'pendiente' }}</div>
+    </div>
+    {% if muestra_paso_articulos %}
+    <div class="paso {{ 'hecho' if remito.estado == 'completado' and not remito.articulos_pendientes else ('actual' if remito.estado == 'completado' else '') }}">
+      <div class="linea"></div>
+      <div class="circulo">{{ '✓' if remito.estado == 'completado' and not remito.articulos_pendientes else '3' }}</div>
+      <div class="etiqueta">Control por artículo</div>
+      <div class="fecha">{{ 'cargado' if remito.estado == 'completado' and not remito.articulos_pendientes else 'pendiente' }}</div>
+    </div>
+    {% endif %}
+    <div class="paso {{ 'hecho' if remito.ingresado_sistema_en else ('actual' if remito.estado == 'completado' and not remito.articulos_pendientes else '') }}">
+      <div class="linea"></div>
+      <div class="circulo">{{ '✓' if remito.ingresado_sistema_en else (4 if muestra_paso_articulos else 3) }}</div>
+      <div class="etiqueta">Ingresado al sistema</div>
+      <div class="fecha">{{ remito.ingresado_sistema_en or 'pendiente' }}</div>
+    </div>
+  </div>
+</div>
+
+<div style="display:grid; grid-template-columns: 1fr 1fr; gap:20px; margin-bottom:20px;">
+  <div class="card">
+    <h3 style="margin-top:0;">Datos del remito</h3>
+    <table>
+      <tr><td>Proveedor</td><td>{{ remito.proveedor_nombre or '—' }}</td></tr>
+      <tr><td>N° de remito</td><td>{{ remito.numeros_remito_txt or '—' }}</td></tr>
+      <tr><td>Bultos declarados</td><td>{{ remito.cantidad_bultos_declarados if remito.cantidad_bultos_declarados is not none else '—' }}</td></tr>
+      <tr><td>Creado por</td><td>{{ remito.usuario_creador or '—' }} el {{ remito.creado_en }}</td></tr>
+      {% if remito.estado == 'completado' %}
+      <tr><td>Completado por</td><td>{{ remito.usuario_completo or '—' }} el {{ remito.completado_en }}</td></tr>
+      {% endif %}
+    </table>
+  </div>
+
+  {% if remito.estado == 'completado' %}
+  <div class="card">
+    <h3 style="margin-top:0;">Validación del comprobante</h3>
+    <table>
+      <tr><td>Tipo de control</td><td>{{ 'Por bulto' if remito.tipo_control == 'bulto' else ('Por artículo' if remito.tipo_control == 'articulo' else '—') }}</td></tr>
+      <tr><td>Firma del transportista</td><td>{{ 'Detectada' if remito.firma_detectada else ('No detectada' if remito.firma_detectada is not none else 'No evaluado') }}</td></tr>
+      <tr><td>Confirmación manual</td><td>{{ 'Sí' if remito.confirmado_manualmente else 'No, automática' }}</td></tr>
+      {% if remito.observacion_confirmacion %}
+      <tr><td>Observación</td><td>{{ remito.observacion_confirmacion }}</td></tr>
+      {% endif %}
+      {% if remito.tipo_control == 'bulto' and remito.comprobante_articulos %}
+      <tr><td>Control por artículo</td><td>{{ remito.usuario_articulos_completados or '—' }} el {{ remito.articulos_completados_en }}</td></tr>
+      {% endif %}
+      {% if remito.ingresado_sistema_en %}
+      <tr><td>Ingresado al sistema</td><td>{{ remito.usuario_ingreso_sistema or '—' }} el {{ remito.ingresado_sistema_en }}</td></tr>
+      <tr><td>Orden de compra</td><td>{{ remito.oc_nro_oc or '—' }} ({{ remito.oc_etapa or '—' }})</td></tr>
+      {% endif %}
+    </table>
+    {% if remito.articulos_pendientes %}
+    <div class="error" style="margin-top:14px;">
+      Este proveedor mandó el remito solo con cantidad de bultos. Antes de poder ingresar este remito al sistema,
+      subí la factura, imprimí la hoja de control, controlala y subí esa hoja ya controlada.
+    </div>
+    {% if items %}
+    <a class="btn" style="margin-top:10px; display:block; text-align:center;" href="{{ url_for('control_articulos', remito_id=remito.id) }}">Subir control realizado</a>
+    <a class="btn secundario" style="margin-top:10px; display:block; text-align:center;" href="{{ url_for('hoja_remito', remito_id=remito.id) }}" target="_blank">Ver / imprimir hoja de control</a>
+    <a class="btn secundario" style="margin-top:10px; display:block; text-align:center;" href="{{ url_for('revisar_remito', remito_id=remito.id) }}">Editar artículos</a>
+    {% else %}
+    <a class="btn" style="margin-top:10px; display:block; text-align:center;" href="{{ url_for('revisar_remito', remito_id=remito.id) }}">Cargar artículos</a>
+    {% endif %}
+    {% endif %}
+    {% if not remito.ingresado_sistema_en and not remito.articulos_pendientes %}
+    <a class="btn secundario" style="margin-top:14px; display:block; text-align:center;" href="{{ url_for('ingreso_sistema', remito_id=remito.id) }}">Confirmar ingreso al sistema</a>
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="card" style="display:flex; flex-direction:column; gap:10px; justify-content:center;">
+    <a class="btn" href="{{ url_for('hoja_remito', remito_id=remito.id) }}">Ver / imprimir hoja de control</a>
+    <a class="btn secundario" href="{{ url_for('etiquetas_remito', remito_id=remito.id) }}">Imprimir etiquetas (bultos/artículos)</a>
+    <a class="btn secundario" href="{{ url_for('confirmar_remito', remito_id=remito.id) }}">{{ 'Subir control por bulto' if remito.tipo_control == 'bulto' else 'Subir comprobante final' }}</a>
+  </div>
+  {% endif %}
+</div>
+
+<div class="card" style="margin-bottom:20px;">
+  <h3 style="margin-top:0;">Ítems ({{ items|length }})</h3>
+  <table>
+    <thead><tr><th>No</th><th>Código</th><th>Descripción</th><th>Cant. remito</th></tr></thead>
+    <tbody>
+      {% for it in items %}
+      <tr>
+        <td>{{ it.nro_orden }}</td>
+        <td>{{ it.codigo_articulo or '' }}</td>
+        <td>{{ it.descripcion or '' }}</td>
+        <td>{{ it.cantidad_remito if it.cantidad_remito is not none else '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div style="display:flex; gap:16px; flex-wrap:wrap;">
+  <div class="card" style="flex:1; min-width:280px;">
+    <h3 style="margin-top:0;">Escaneo del remito</h3>
+    {% if remito.tipo_archivo == 'pdf' %}
+    <embed src="{{ url_for('uploads', filename=remito.archivo_original) }}" type="application/pdf" width="100%" height="420">
+    {% else %}
+    <img src="{{ url_for('uploads', filename=remito.archivo_original) }}" style="max-width:100%; border-radius:8px;">
+    {% endif %}
+  </div>
+  {% if remito.comprobante_final %}
+  <div class="card" style="flex:1; min-width:280px;">
+    <h3 style="margin-top:0;">Comprobante firmado</h3>
+    {% if remito.comprobante_final.lower().endswith('.pdf') %}
+    <embed src="{{ url_for('uploads', filename=remito.comprobante_final) }}" type="application/pdf" width="100%" height="420">
+    {% else %}
+    <img src="{{ url_for('uploads', filename=remito.comprobante_final) }}" style="max-width:100%; border-radius:8px;">
+    {% endif %}
+  </div>
+  {% endif %}
+  {% if remito.archivo_articulos %}
+  <div class="card" style="flex:1; min-width:280px;">
+    <h3 style="margin-top:0;">Escaneo de artículos (respaldo)</h3>
+    {% if remito.archivo_articulos.lower().endswith('.pdf') %}
+    <embed src="{{ url_for('uploads', filename=remito.archivo_articulos) }}" type="application/pdf" width="100%" height="420">
+    {% else %}
+    <img src="{{ url_for('uploads', filename=remito.archivo_articulos) }}" style="max-width:100%; border-radius:8px;">
+    {% endif %}
+  </div>
+  {% endif %}
+  {% if remito.comprobante_articulos %}
+  <div class="card" style="flex:1; min-width:280px;">
+    <h3 style="margin-top:0;">Control por artículo (hoja controlada)</h3>
+    {% if remito.comprobante_articulos.lower().endswith('.pdf') %}
+    <embed src="{{ url_for('uploads', filename=remito.comprobante_articulos) }}" type="application/pdf" width="100%" height="420">
+    {% else %}
+    <img src="{{ url_for('uploads', filename=remito.comprobante_articulos) }}" style="max-width:100%; border-radius:8px;">
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+
+{% if remito.estado == 'pendiente' or session.get('rol') == 'admin' %}
+<form method="post" action="{{ url_for('eliminar_remito', remito_id=remito.id) }}" style="margin-top:20px;"
+      onsubmit="return confirm('¿Eliminar este remito? Esta acción no se puede deshacer.');">
+  <button class="btn rojo" type="submit">Eliminar remito</button>
+</form>
+{% endif %}
+{% endblock %}

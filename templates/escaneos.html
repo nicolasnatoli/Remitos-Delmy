@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Escaneos sin asignar — Depósito Delmy{% endblock %}
+{% block content %}
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:8px;">
+    <h2 style="margin:0;">Escaneos sin asignar</h2>
+    <div style="display:flex; gap:10px; align-items:center;">
+      <span id="estado-escanear" style="font-size:13px; color:var(--texto-sec);"></span>
+      <button class="btn" type="button" id="btn-escanear" onclick="escanearAhora()">Escanear ahora</button>
+      <form method="post" action="{{ url_for('escaneos_revisar') }}" style="margin:0;">
+        <button class="btn secundario" type="submit">Revisar mail ahora</button>
+      </form>
+    </div>
+  </div>
+  <p style="color:var(--texto-sec); font-size:13px; margin-top:0; margin-bottom:16px;">
+    "Escanear ahora" usa el escáner conectado a esta PC (necesita tener abierto el programa scanner_bridge.py). También llegan acá los remitos que se manden por mail al escáner de oficina.
+  </p>
+
+  {% if not escaneos %}
+  <p style="color:var(--texto-sec);">No hay escaneos pendientes de asignar.</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>Recibido</th>
+        <th>Remitente</th>
+        <th>Asunto</th>
+        <th>Archivo</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in escaneos %}
+      <tr>
+        <td>{{ e.recibido_en }}</td>
+        <td>{{ e.remitente or '—' }}</td>
+        <td>{{ e.asunto or '—' }}</td>
+        <td><a href="{{ url_for('uploads', filename=e.archivo_nombre) }}" target="_blank">Ver archivo</a></td>
+        <td><a class="btn" href="{{ url_for('escaneos_asignar', escaneo_id=e.id) }}">Asignar a remito</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+<script>
+const _bridge_ip_local = localStorage.getItem('bridge_ip');
+const BRIDGE_URL = _bridge_ip_local ? ('https://' + _bridge_ip_local + ':5055') : '{{ bridge_url }}';
+const BRIDGE_TOKEN = '{{ bridge_token }}';
+
+async function escanearAhora() {
+  const boton = document.getElementById('btn-escanear');
+  const estado = document.getElementById('estado-escanear');
+  boton.disabled = true;
+  estado.textContent = 'Escaneando...';
+  try {
+    const resp = await fetch(BRIDGE_URL + '/escanear', { method: 'POST', headers: { 'Authorization': 'Bearer ' + BRIDGE_TOKEN } });
+    const datos = await resp.json();
+    if (resp.ok && datos.ok) {
+      estado.textContent = 'Listo, actualizando lista...';
+      location.reload();
+      return;
+    }
+    estado.textContent = 'Error: ' + (datos.error || 'no se pudo escanear.');
+  } catch (e) {
+    estado.textContent = 'No se pudo conectar con el programa de escaneo. ¿Está abierto scanner_bridge.py en esta PC?';
+  }
+  boton.disabled = false;
+}
+</script>
+{% endblock %}

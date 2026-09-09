@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Etiquetas — Remito {{ remito.numeros_remito_txt or remito.id }}</title>
+<style>
+  :root {
+    --azul: #0b3d91; --rojo: #c0392b; --negro: #111111;
+    --ancho-etq: 55mm; --alto-etq: 45mm;
+    --tam-numero: 68px; --tam-proveedor: 28px; --tam-fecha: 17px;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; color: #111; margin: 0; background: #e5e7eb; }
+  .barra { background: var(--azul); color: #fff; padding: 12px 20px; display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; }
+  .barra a { color: #fff; text-decoration: none; }
+  .barra button { background: var(--rojo); color:#fff; border:none; border-radius:6px; padding:8px 16px; cursor:pointer; font-weight:600; }
+  .ajuste-tamano { display:flex; align-items:center; gap:8px; font-size:12.5px; flex-wrap:wrap; }
+  .ajuste-tamano input { width:56px; padding:4px 6px; border-radius:4px; border:none; }
+  .tabs { display:flex; gap:8px; padding:12px 20px 0; background:#e5e7eb; }
+  .tabs button { border:none; background:#fff; padding:8px 16px; border-radius:8px 8px 0 0; cursor:pointer; font-weight:600; font-size:13px; color:#555; }
+  .tabs button.activo { background:#fff; color:var(--azul); box-shadow:0 -2px 6px rgba(0,0,0,.06); }
+  .hoja-etiquetas { display:flex; flex-wrap:wrap; gap:4mm; padding:20px; background:#fff; margin:0 20px 20px; }
+  .grupo-oculto { display:none; }
+  .etiqueta {
+    width: var(--ancho-etq); height: var(--alto-etq);
+    border:1px dashed #aaa; padding:3mm;
+    display:flex; flex-direction:column; align-items:center; justify-content:flex-start;
+    text-align:center; overflow:hidden;
+  }
+  .etiqueta .numero-grande { font-size: var(--tam-numero); font-weight:800; line-height:0.95; margin:0; }
+  .etiqueta .proveedor { font-size: var(--tam-proveedor); font-weight:600; line-height:1; margin:0; }
+  .etiqueta .fecha { font-size: var(--tam-fecha); color:#555; line-height:1; margin:0; }
+  @media print {
+    body { background:#fff; }
+    .barra, .tabs { display:none; }
+    .hoja-etiquetas { margin:0; padding:0; gap:0; }
+    .grupo-oculto { display:none !important; }
+    .etiqueta { border:none; page-break-after: always; }
+    @page { size: var(--ancho-etq) var(--alto-etq); margin:0; }
+  }
+</style>
+</head>
+<body>
+  <div class="barra">
+    <a href="{{ url_for('hoja_remito', remito_id=remito.id) }}">&larr; Volver a la hoja de control</a>
+    <div class="ajuste-tamano">
+      Tamaño etiqueta:
+      <input type="number" id="ancho" value="55" min="20" max="150" step="1"> x
+      <input type="number" id="alto" value="45" min="15" max="150" step="1"> mm
+      &nbsp;|&nbsp; Espacio número (%):
+      <input type="number" id="esp-numero" value="70" min="10" max="90" step="5">
+      proveedor (%):
+      <input type="number" id="esp-proveedor" value="20" min="5" max="60" step="5">
+      fecha (%):
+      <input type="number" id="esp-fecha" value="10" min="5" max="60" step="5">
+      <button type="button" onclick="aplicarTamano()">Aplicar</button>
+    </div>
+    <button type="button" onclick="imprimirPDF()">Imprimir</button>
+  </div>
+
+  <div class="tabs">
+    <button type="button" class="activo" onclick="mostrarGrupo('bultos', this)">Etiquetas de bultos ({{ remito.cantidad_bultos_declarados or 0 }})</button>
+    <button type="button" onclick="mostrarGrupo('articulos', this)">Etiquetas de artículos ({{ items|length }})</button>
+  </div>
+
+  <div id="aviso-siguiente" style="display:none; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding:12px 20px; margin:14px 20px 0; background:#eff6ff; border:1px solid #bfdbfe; border-radius:8px; font-size:13.5px; color:#1d4ed8;">
+    <span id="aviso-texto"></span>
+    <a id="aviso-btn" href="{{ url_for('detalle_remito', remito_id=remito.id) }}" style="background:#0b3d91; color:#fff; text-decoration:none; padding:8px 16px; border-radius:6px; font-weight:600; white-space:nowrap;">Ir al remito</a>
+  </div>
+
+  <div class="hoja-etiquetas" id="grupo-bultos">
+    {% for i in range(1, (remito.cantidad_bultos_declarados or 0) + 1) %}
+    <div class="etiqueta">
+      <div class="numero-grande">{{ i }}/{{ remito.cantidad_bultos_declarados }}</div>
+      <div class="proveedor">{{ remito.proveedor_nombre or '—' }}</div>
+      <div class="fecha">{{ fecha_txt }}</div>
+    </div>
+    {% else %}
+    <p style="padding:20px; color:#666;">Este remito no tiene cantidad de bultos declarados.</p>
+    {% endfor %}
+  </div>
+
+  <div class="hoja-etiquetas grupo-oculto" id="grupo-articulos">
+    {% for it in items %}
+    <div class="etiqueta">
+      <div class="numero-grande">N°{{ it.nro_orden }} · {{ it.codigo_articulo or '—' }}</div>
+      <div class="proveedor">{{ remito.proveedor_nombre or '—' }}</div>
+      <div class="fecha">{{ fecha_txt }}</div>
+    </div>
+    {% else %}
+    <p style="padding:20px; color:#666;">Este remito no tiene artículos cargados.</p>
+    {% endfor %}
+  </div>
+
+  <script>
+    let grupoActivo = 'bultos';
+
+    function mostrarGrupo(nombre, boton) {
+      grupoActivo = nombre;
+      document.getElementById('grupo-bultos').classList.toggle('grupo-oculto', nombre !== 'bultos');
+      document.getElementById('grupo-articulos').classList.toggle('grupo-oculto', nombre !== 'articulos');
+      document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('activo'));
+      boton.classList.add('activo');
+      document.getElementById('aviso-siguiente').style.display = 'none';
+    }
+
+    function mostrarAviso(texto, mostrarBotonRemito) {
+      document.getElementById('aviso-texto').textContent = texto;
+      document.getElementById('aviso-btn').style.display = mostrarBotonRemito ? 'inline-block' : 'none';
+      document.getElementById('aviso-siguiente').style.display = 'flex';
+    }
+
+    let ventanaImpresion = null;
+    let sondeoImpresion = null;
+
+    function alTerminarImpresion(grupoImpreso) {
+      const cantidadArticulos = {{ items|length }};
+      if (grupoImpreso === 'bultos') {
+        if (cantidadArticulos > 0) {
+          mostrarGrupo('articulos', document.querySelectorAll('.tabs button')[1]);
+          mostrarAviso('Etiquetas de bultos impresas. Ahora imprimí las de artículo.', false);
+        } else {
+          mostrarAviso('No hay artículos cargados todavía para imprimir etiquetas — podés pasar directo al remito.', true);
+        }
+      } else {
+        mostrarAviso('Etiquetas de artículo impresas.', true);
+      }
+    }
+
+    // El PDF que se imprime calcula el tamaño de letra real buscando el más
+    // grande que entra en el espacio pedido. Acá, en pantalla, solo se
+    // aproxima ese mismo criterio (espacio -> tamaño) para que la vista
+    // previa se acerque a lo que después sale impreso.
+    function aplicarTamano() {
+      const ancho = parseFloat(document.getElementById('ancho').value) || 55;
+      const alto = parseFloat(document.getElementById('alto').value) || 45;
+      const espNumero = parseFloat(document.getElementById('esp-numero').value) || 70;
+      const espProveedor = parseFloat(document.getElementById('esp-proveedor').value) || 20;
+      const espFecha = parseFloat(document.getElementById('esp-fecha').value) || 10;
+
+      document.documentElement.style.setProperty('--ancho-etq', ancho + 'mm');
+      document.documentElement.style.setProperty('--alto-etq', alto + 'mm');
+
+      const MM_A_PX = 3.78; // aprox. a 96dpi, solo para la vista previa
+      const altoUtilPx = Math.max(alto - 6, 5) * MM_A_PX; // resta el padding de 3mm por lado
+      const totalEsp = espNumero + espProveedor + espFecha;
+      const tam = (esp) => Math.round(altoUtilPx * (esp / totalEsp) * 0.9);
+
+      document.documentElement.style.setProperty('--tam-numero', tam(espNumero) + 'px');
+      document.documentElement.style.setProperty('--tam-proveedor', tam(espProveedor) + 'px');
+      document.documentElement.style.setProperty('--tam-fecha', tam(espFecha) + 'px');
+    }
+
+    function parametrosEtiqueta() {
+      return new URLSearchParams({
+        tipo: grupoActivo,
+        ancho: document.getElementById('ancho').value || 55,
+        alto: document.getElementById('alto').value || 45,
+        esp_numero: document.getElementById('esp-numero').value || 70,
+        esp_proveedor: document.getElementById('esp-proveedor').value || 20,
+        esp_fecha: document.getElementById('esp-fecha').value || 10,
+      });
+    }
+
+    function imprimirPDF() {
+      // Se genera un PDF del lado del servidor y se abre directo, en vez de
+      // usar window.print() sobre la página: varias impresoras térmicas de
+      // etiquetas (ej. Xprinter XP-470) no imprimen bien el HTML que manda
+      // el navegador, pero sí funcionan imprimiendo un PDF. Sirve para
+      // impresoras que aparecen en el diálogo nativo de impresión (WiFi/red).
+      const grupoImpreso = grupoActivo;
+      document.getElementById('aviso-siguiente').style.display = 'none';
+      ventanaImpresion = window.open('{{ url_for("etiquetas_remito_imprimir", remito_id=remito.id) }}?' + parametrosEtiqueta(), '_blank');
+      if (sondeoImpresion) clearInterval(sondeoImpresion);
+      // Esa ventana se cierra sola al terminar de imprimir — cuando eso pasa,
+      // se sigue con el próximo paso automáticamente acá.
+      sondeoImpresion = setInterval(() => {
+        if (ventanaImpresion && ventanaImpresion.closed) {
+          clearInterval(sondeoImpresion);
+          alTerminarImpresion(grupoImpreso);
+        }
+      }, 500);
+    }
+
+    aplicarTamano();
+  </script>
+</body>
+</html>

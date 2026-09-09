@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Revisión de remitos — Laboratorio{% endblock %}
+{% block content %}
+<div style="margin-bottom:14px; font-size:14px;">
+  <a href="{{ url_for('admin_laboratorio') }}">🧪 Laboratorio</a> &nbsp;|&nbsp; <strong>Revisión de remitos</strong>
+  &nbsp;|&nbsp; <a href="{{ url_for('admin_laboratorio_revision_calendario') }}">Calendario</a>
+</div>
+<h2>Revisión de remitos reales</h2>
+<p style="color:var(--texto-sec); font-size:14px; margin-top:-8px;">
+  Son los remitos que se escanearon de verdad en la recepción — no una
+  prueba. Entrá a cualquiera para ver si lo detectado coincide con el
+  catálogo y con la orden de compra vinculada.
+</p>
+
+<form method="get" class="card" style="margin-bottom:20px; display:flex; gap:10px; align-items:end; flex-wrap:wrap;">
+  <div class="campo" style="margin-bottom:0;">
+    <label>Desde</label>
+    <input type="date" name="desde" value="{{ desde }}">
+  </div>
+  <div class="campo" style="margin-bottom:0;">
+    <label>Hasta</label>
+    <input type="date" name="hasta" value="{{ hasta }}">
+  </div>
+  <div class="campo" style="margin-bottom:0; flex:1; min-width:180px;">
+    <label>Proveedor o N° de remito</label>
+    <input type="text" name="q" value="{{ q }}" placeholder="Buscar...">
+  </div>
+  <button class="btn" type="submit">Filtrar</button>
+</form>
+
+<div class="card">
+  <table>
+    <thead>
+      <tr><th>Fecha</th><th>Proveedor</th><th>N° remito</th><th>Artículos</th><th>Estado</th><th>OC vinculada</th></tr>
+    </thead>
+    <tbody>
+      {% for r in remitos %}
+      <tr style="cursor:pointer;" onclick="window.location='{{ url_for('admin_laboratorio_revision_remito_detalle', remito_id=r.id) }}'">
+        <td>{{ r.creado_en }}</td>
+        <td>{{ r.proveedor_nombre or '—' }}</td>
+        <td>{{ r.numeros_remito_txt or '—' }}</td>
+        <td>{{ r.cantidad_articulos }}</td>
+        <td><span class="tag {{ r.estado }}">{{ r.estado }}</span></td>
+        <td>{{ 'Sí' if r.orden_compra_id else '—' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" style="text-align:center; color:var(--texto-sec); padding:20px;">No hay remitos en ese rango.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Control por artículo — Depósito Delmy{% endblock %}
+{% block content %}
+<div class="card" style="max-width:520px; margin:0 auto;">
+  <p style="margin-bottom:16px;"><a href="{{ url_for('detalle_remito', remito_id=remito.id) }}">&larr; Volver al remito</a></p>
+  <h2 style="margin-top:0;">Subir control por artículo realizado</h2>
+  <p style="color:var(--texto-sec); font-size:14px;">
+    Después de imprimir la hoja de control con los artículos y controlarla contra la mercadería recibida,
+    subí acá la foto o PDF de esa hoja ya controlada. No hace falta firma del transportista en este paso —
+    alcanza con que quede como respaldo de que el control se hizo.
+  </p>
+  <a class="btn secundario" style="display:block; text-align:center; margin-bottom:16px;" href="{{ url_for('hoja_remito', remito_id=remito.id) }}" target="_blank">Ver / imprimir hoja de control</a>
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+  <form method="post" enctype="multipart/form-data">
+    <div class="campo">
+      <label>Foto o PDF de la hoja ya controlada</label>
+      <input type="file" name="comprobante" accept="image/*,application/pdf" capture="environment" id="comprobante" required>
+      <button type="button" class="btn secundario" id="btn-escanear-pc" style="width:100%; margin-top:8px;" onclick="escanearDesdePC()">Escanear con el escáner de la oficina</button>
+      <span id="estado-escaneo-pc" style="display:block; font-size:12.5px; color:var(--texto-sec); margin-top:4px;"></span>
+      <img id="preview" style="max-width:100%; margin-top:10px; border-radius:8px; display:none;">
+      <embed id="preview-pdf" type="application/pdf" style="width:100%; height:500px; margin-top:10px; border-radius:8px; display:none;">
+    </div>
+    <button class="btn" type="submit" style="width:100%;">Subir y terminar control por artículo</button>
+  </form>
+</div>
+
+<script>
+const _bridge_ip_local = localStorage.getItem('bridge_ip');
+const BRIDGE_URL = _bridge_ip_local ? ('https://' + _bridge_ip_local + ':5055') : '{{ bridge_url }}';
+const BRIDGE_TOKEN = '{{ bridge_token }}';
+
+async function escanearDesdePC() {
+  const boton = document.getElementById('btn-escanear-pc');
+  const estado = document.getElementById('estado-escaneo-pc');
+  boton.disabled = true;
+  estado.textContent = 'Escaneando...';
+  try {
+    const resp = await fetch(BRIDGE_URL + '/escanear-raw?varias_hojas=1', { method: 'POST', headers: { 'Authorization': 'Bearer ' + BRIDGE_TOKEN } });
+    if (!resp.ok) {
+      const datos = await resp.json().catch(() => ({}));
+      throw new Error(datos.error || 'no se pudo escanear.');
+    }
+    const blob = await resp.blob();
+    const nombre = resp.headers.get('X-Nombre-Archivo') || ('escaneo_' + Date.now() + '.jpg');
+    const archivo = new File([blob], nombre, { type: blob.type || 'image/jpeg' });
+    const transferencia = new DataTransfer();
+    transferencia.items.add(archivo);
+    const inputComprobante = document.getElementById('comprobante');
+    inputComprobante.files = transferencia.files;
+    inputComprobante.dispatchEvent(new Event('change'));
+    estado.textContent = 'Escaneo listo.';
+  } catch (e) {
+    estado.textContent = 'No se pudo escanear: ' + e.message + ' ¿Está abierto scanner_bridge.py en esta PC?';
+  }
+  boton.disabled = false;
+}
+
+document.getElementById('comprobante').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  const preview = document.getElementById('preview');
+  const previewPdf = document.getElementById('preview-pdf');
+  preview.style.display = 'none';
+  previewPdf.style.display = 'none';
+  if (!file) return;
+  if (file.type === 'application/pdf') {
+    previewPdf.src = URL.createObjectURL(file);
+    previewPdf.style.display = 'block';
+  } else if (file.type.startsWith('image/')) {
+    preview.src = URL.createObjectURL(file);
+    preview.style.display = 'block';
+  }
+});
+</script>
+{% endblock %}

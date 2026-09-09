@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Ingreso al sistema — Depósito Delmy{% endblock %}
+{% block content %}
+<div class="card" style="max-width:640px; margin:0 auto;">
+  <p style="margin-bottom:16px;"><a href="{{ url_for('detalle_remito', remito_id=remito.id) }}">&larr; Volver al remito</a></p>
+  <h2 style="margin-top:0;">Confirmar ingreso al sistema</h2>
+  <p style="color:var(--texto-sec); font-size:14px;">
+    Todavía no se encontró automáticamente una orden de compra que coincida con este remito
+    (cantidad total de artículos: <strong>{{ total_cantidad if total_cantidad is not none else '—' }}</strong>).
+    Elegí a mano la orden de compra que corresponde, si ya está importada.
+  </p>
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+  {% if candidatas %}
+  <form method="post">
+    <table style="margin-bottom:16px;">
+      <thead>
+        <tr><th></th><th>N° OC</th><th>Etapa</th><th>Pedido</th><th>Recibido</th><th>Pendiente</th></tr>
+      </thead>
+      <tbody>
+        {% for oc in candidatas %}
+        <tr>
+          <td><input type="radio" name="orden_compra_id" value="{{ oc.id }}" required></td>
+          <td>{{ oc.nro_oc }}</td>
+          <td>{{ oc.etapa or '—' }}</td>
+          <td>{{ oc.cantidad_pedida if oc.cantidad_pedida is not none else '—' }}</td>
+          <td>{{ oc.cantidad_recibida if oc.cantidad_recibida is not none else '—' }}</td>
+          <td>{{ oc.cantidad_pendiente if oc.cantidad_pendiente is not none else '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <button class="btn" type="submit" style="width:100%;">Vincular orden de compra elegida</button>
+  </form>
+  {% else %}
+  <p style="color:var(--texto-sec); font-size:13px;">
+    Todavía no hay ninguna orden de compra importada para este proveedor. Pedile al admin que importe el reporte actualizado desde Configuración → Órdenes de compra.
+  </p>
+  {% endif %}
+</div>
+{% endblock %}

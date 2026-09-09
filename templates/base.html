@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Depósito Delmy{% endblock %}</title>
+<style>
+  :root {
+    --azul: #0b3d91;
+    --azul-osc: #082a66;
+    --rojo: #c0392b;
+    --negro: #111111;
+    --blanco: #ffffff;
+    --fondo: #f2f4f7;
+    --borde: #e2e5ea;
+    --verde: #16a34a;
+    --verde-bg: #dcfce7;
+    --amarillo: #d97706;
+    --amarillo-bg: #fef3c7;
+    --texto: #1a1a1a;
+    --texto-sec: #6b7280;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    background: var(--fondo);
+    color: var(--texto);
+  }
+  a { color: inherit; text-decoration: none; }
+  header.top {
+    background: linear-gradient(135deg, var(--azul) 0%, var(--azul-osc) 100%);
+    color: var(--blanco);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    height: 62px;
+    box-shadow: 0 2px 10px rgba(11,61,145,.25);
+    position: relative;
+  }
+  header.top::after {
+    content: "";
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: 3px;
+    background: var(--rojo);
+  }
+  header.top .marca {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 700;
+    font-size: 18px;
+  }
+  header.top .marca img { height: 32px; }
+  header.top nav {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    font-size: 14px;
+  }
+  header.top nav a { opacity: .9; }
+  header.top nav a:hover { opacity: 1; text-decoration: underline; }
+  .config-menu { position: relative; display: flex; align-items: center; }
+  .config-menu .icono-btn {
+    background: transparent;
+    border: none;
+    color: var(--blanco);
+    font-size: 19px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: .9;
+    padding: 6px 8px;
+    border-radius: 6px;
+  }
+  .config-menu .icono-btn:hover { opacity: 1; background: rgba(255,255,255,.12); }
+  .config-dropdown {
+    display: none;
+    position: absolute;
+    right: 0;
+    top: 38px;
+    background: var(--blanco);
+    color: var(--texto);
+    border-radius: 10px;
+    box-shadow: 0 10px 28px rgba(0,0,0,.2);
+    min-width: 190px;
+    padding: 6px;
+    z-index: 50;
+  }
+  .config-dropdown.abierto { display: block; }
+  .config-dropdown a {
+    display: block;
+    padding: 9px 12px;
+    border-radius: 6px;
+    font-size: 14px;
+  }
+  .config-dropdown a:hover { background: var(--fondo); text-decoration: none; }
+  .config-dropdown .separador { height: 1px; background: var(--borde); margin: 6px 4px; }
+  .page {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 24px 20px 60px;
+  }
+  .card {
+    background: var(--blanco);
+    border: 1px solid var(--borde);
+    border-radius: 12px;
+    padding: 20px;
+    box-shadow: 0 2px 10px rgba(0,0,0,.05);
+  }
+  .btn {
+    display: inline-block;
+    background: var(--azul);
+    color: var(--blanco);
+    border: none;
+    border-radius: 8px;
+    padding: 10px 18px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .btn:hover { background: var(--azul-osc); }
+  .btn.rojo { background: var(--rojo); }
+  .btn.rojo:hover { background: #9c2c20; }
+  .btn.secundario { background: var(--blanco); color: var(--texto); border: 1px solid var(--borde); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  input, select, textarea {
+    font-family: inherit;
+    font-size: 14px;
+    padding: 9px 12px;
+    border: 1px solid var(--borde);
+    border-radius: 8px;
+    width: 100%;
+  }
+  label { font-size: 13px; font-weight: 600; color: var(--texto-sec); display: block; margin-bottom: 4px; }
+  .campo { margin-bottom: 16px; }
+  .error {
+    background: #fff0f0;
+    color: var(--rojo);
+    border: 1px solid #f3c9c4;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 14px;
+    margin-bottom: 16px;
+  }
+  .ok {
+    background: var(--verde-bg);
+    color: #14532d;
+    border: 1px solid #bbf7d0;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 14px;
+    margin-bottom: 16px;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--borde); }
+  th { color: var(--texto-sec); font-weight: 600; font-size: 12px; text-transform: uppercase; }
+  .tag { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .tag.pendiente { background: var(--amarillo-bg); color: var(--amarillo); }
+  .tag.recepcionado { background: #dbeafe; color: #1d4ed8; }
+  .tag.completado { background: var(--verde-bg); color: var(--verde); }
+  .tag.manual { background: #e0e7ff; color: #3730a3; }
+</style>
+{% block extra_head %}{% endblock %}
+</head>
+<body>
+{% if session.get('user') %}
+<header class="top">
+  <div class="marca">
+    <img src="{{ url_for('static', filename='logo.png') }}" alt="" onerror="this.style.display='none'">
+    <span>Depósito Delmy</span>
+  </div>
+  <nav>
+    <a href="{{ url_for('index') }}">Inicio</a>
+    {% if session.get('rol') == 'admin' %}
+    <a href="{{ url_for('admin_laboratorio') }}">🧪 Laboratorio</a>
+    {% endif %}
+    <span style="opacity:.7">{{ session.get('user') }}</span>
+    <div class="config-menu">
+      <button type="button" class="icono-btn" id="btn-config" aria-label="Configuración" title="Configuración">⚙️</button>
+      <div class="config-dropdown" id="config-dropdown">
+        <a href="{{ url_for('cambiar_password') }}">Cambiar contraseña</a>
+        {% if session.get('rol') == 'admin' %}
+        <div class="separador"></div>
+        <a href="{{ url_for('admin_usuarios') }}">Usuarios</a>
+        <a href="{{ url_for('admin_proveedores') }}">Proveedores</a>
+        <a href="{{ url_for('admin_ordenes_compra') }}">Órdenes de compra</a>
+        {% endif %}
+        <div class="separador"></div>
+        <a href="javascript:void(0)" onclick="configurarPcEscaner()">PC del escáner</a>
+        <div class="separador"></div>
+        <a href="{{ url_for('logout') }}">Salir</a>
+      </div>
+    </div>
+  </nav>
+</header>
+{% endif %}
+<div class="page">
+{% block content %}{% endblock %}
+</div>
+<script>
+  // IP de la PC con el escáner conectado — normalmente es la que ya
+  // configuró un admin en el servidor, pero cualquiera puede cambiarla acá
+  // (queda guardada solo en este navegador) para cuando el escáner se
+  // mueve de PC, sin depender de tocar la configuración del servidor.
+  function configurarPcEscaner() {
+    const actual = localStorage.getItem('bridge_ip') || '';
+    const nueva = prompt(
+      'IP de la PC donde está conectado el escáner ahora (dejar vacío para usar la de siempre):',
+      actual
+    );
+    if (nueva === null) return;
+    if (nueva.trim()) {
+      localStorage.setItem('bridge_ip', nueva.trim());
+      alert(
+        'Listo. Antes de escanear, entrá una vez a https://' + nueva.trim() +
+        ':5055/estado desde este navegador y aceptá la advertencia de certificado.'
+      );
+    } else {
+      localStorage.removeItem('bridge_ip');
+      alert('Listo, vuelve a usar la PC configurada por defecto.');
+    }
+  }
+
+  (function () {
+    var btn = document.getElementById('btn-config');
+    var menu = document.getElementById('config-dropdown');
+    if (!btn) return;
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      menu.classList.toggle('abierto');
+    });
+    document.addEventListener('click', function () {
+      menu.classList.remove('abierto');
+    });
+  })();
+</script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+# Dependencias del bridge local de escaneo (scanner_bridge.py).
+# Esto corre en la PC de la oficina, NO en Vercel — no va en requirements.txt
+# del proyecto principal.
+#
+# IMPORTANTE: requiere Python 3.12 (winsdk todavía no tiene versión
+# compatible con Python 3.14, que es la que usa el resto del proyecto).
+# Crear un entorno virtual aparte:
+#   py -3.12 -m venv .venv_bridge
+#   .venv_bridge\Scripts\pip install -r requirements-scanner-bridge.txt
+winsdk
+pymupdf
+cryptography

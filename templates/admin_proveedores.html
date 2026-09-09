@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Proveedores — Depósito Delmy{% endblock %}
+{% block content %}
+<div style="margin-bottom:14px; font-size:14px;">
+  <a href="{{ url_for('admin_usuarios') }}">Usuarios</a> &nbsp;|&nbsp; <strong>Proveedores</strong> &nbsp;|&nbsp; <a href="{{ url_for('admin_ordenes_compra') }}">Órdenes de compra</a>
+</div>
+<h2>Proveedores</h2>
+
+<div class="card" style="margin-bottom:20px;">
+  <h3 style="margin-top:0;">Importar desde Excel</h3>
+  <p style="color:var(--texto-sec); font-size:13px;">
+    Subí el "Listado de Proveedores" exportado del sistema general del negocio (funciona tanto si es un .xls con las columnas "Código de proveedor" / "Razón social" / "Nombre de fantasía", como un .xlsx simple de dos columnas código+nombre).
+  </p>
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  {% if importados is not none %}<div class="ok">Se importaron/actualizaron {{ importados }} proveedores.</div>{% endif %}
+  <form method="post" enctype="multipart/form-data" style="display:flex; gap:10px; align-items:end;">
+    <div class="campo" style="flex:1; margin-bottom:0;">
+      <label>Archivo del listado (.xls o .xlsx)</label>
+      <input type="file" name="excel" accept=".xlsx,.xlsm,.xls" required>
+    </div>
+    <button class="btn" type="submit">Importar</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Listado actual ({{ proveedores|length }})</h3>
+  <table>
+    <thead><tr><th>Código</th><th>Razón social</th><th>Nombre de fantasía</th><th>Estado</th><th>Actualizado</th></tr></thead>
+    <tbody>
+      {% for p in proveedores %}
+      <tr>
+        <td>{{ p.codigo or '—' }}</td>
+        <td>{{ p.nombre }}</td>
+        <td>{{ p.nombre_fantasia or '—' }}</td>
+        <td><span class="tag {{ 'completado' if p.activo else 'pendiente' }}">{{ 'Activo' if p.activo else 'Inactivo' }}</span></td>
+        <td>{{ p.actualizado_en }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" style="text-align:center; color:var(--texto-sec); padding:20px;">Todavía no se importó ningún proveedor.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

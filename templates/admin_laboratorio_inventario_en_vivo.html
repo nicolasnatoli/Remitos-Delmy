@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Inventario en vivo — Laboratorio{% endblock %}
+{% block content %}
+<div style="margin-bottom:14px; font-size:14px;">
+  <a href="{{ url_for('admin_laboratorio_inventario') }}">← Volver a escanear</a>
+</div>
+<h2 style="margin-bottom:4px;">Inventario en vivo</h2>
+<p style="color:var(--texto-sec); font-size:13px; margin-top:0;">Se actualiza sola — no hace falta refrescar.</p>
+
+<div id="sin-actividad" class="card" style="text-align:center; color:var(--texto-sec); padding:30px;">
+  Todavía no hay actividad. En cuanto alguien empiece a escanear en la PC, va a aparecer acá.
+</div>
+
+<div id="contenedor-activos"></div>
+
+<div class="card" style="margin-top:20px;">
+  <h3 style="margin-top:0; font-size:16px;">Últimos guardados</h3>
+  <table>
+    <thead><tr><th>Código</th><th>Descripción</th><th>Cant.</th><th>Ubicación</th><th>Usuario</th><th>Hora</th></tr></thead>
+    <tbody id="tbody-recientes"></tbody>
+  </table>
+</div>
+
+<script>
+const PASO_TXT = {
+  ubicacion: 'Eligiendo ubicación...',
+  articulo: 'Buscando artículo...',
+  cantidad: 'Cargando cantidad...',
+  posicion: 'Cargando posición...',
+};
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function segundosDesde(fechaTexto) {
+  // fechaTexto viene como "YYYY-MM-DD HH:MM:SS" en hora Argentina — el
+  // truco del espacio->T es para que el navegador lo pueda parsear. Asume
+  // que el celular también está en huso horario de Argentina (como toda
+  // la operación de Delmy), si no el número puede quedar corrido.
+  const entonces = new Date(fechaTexto.replace(' ', 'T'));
+  const ahora = new Date();
+  return Math.max(0, Math.round((ahora - entonces) / 1000));
+}
+
+async function actualizar() {
+  try {
+    const resp = await fetch('{{ url_for("api_inventario_estado") }}');
+    const datos = await resp.json();
+
+    const contenedor = document.getElementById('contenedor-activos');
+    const sinActividad = document.getElementById('sin-actividad');
+
+    if (!datos.activos.length) {
+      sinActividad.style.display = 'block';
+      contenedor.innerHTML = '';
+    } else {
+      sinActividad.style.display = 'none';
+      contenedor.innerHTML = datos.activos.map(a => `
+        <div class="card" style="margin-bottom:14px; border-left:4px solid var(--azul);">
+          <div style="display:flex; justify-content:space-between; align-items:baseline;">
+            <strong style="font-size:15px;">${escapeHtml(a.usuario)}</strong>
+            <span style="font-size:12px; color:var(--texto-sec);">${escapeHtml(a.ubicacion_codigo || '—')} · hace ${segundosDesde(a.actualizado_en)}s</span>
+          </div>
+          <div style="font-size:22px; font-weight:800; margin:8px 0 4px;">
+            ${a.articulo_codigo ? escapeHtml(a.articulo_codigo) : (PASO_TXT[a.paso] || 'Esperando...')}
+          </div>
+          ${a.articulo_descripcion ? `<div style="color:var(--texto-sec); font-size:14px; margin-bottom:8px;">${escapeHtml(a.articulo_descripcion)}</div>` : ''}
+          <div style="display:flex; gap:20px;">
+            <div><span style="font-size:12px; color:var(--texto-sec);">CANTIDAD</span><br><span style="font-size:20px; font-weight:700;">${a.cantidad ? escapeHtml(a.cantidad) : '—'}</span></div>
+            <div><span style="font-size:12px; color:var(--texto-sec);">POSICIÓN</span><br><span style="font-size:20px; font-weight:700;">${a.posicion ? escapeHtml(a.posicion) : '—'}</span></div>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    const tbody = document.getElementById('tbody-recientes');
+    tbody.innerHTML = '';
+    datos.recientes.forEach(r => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${escapeHtml(r.codigo_articulo)}</td><td>${r.descripcion ? escapeHtml(r.descripcion) : '—'}</td><td>${r.cantidad}</td><td>${r.ubicacion_codigo ? escapeHtml(r.ubicacion_codigo) : '—'}</td><td>${escapeHtml(r.usuario || '')}</td><td>${r.creado_en}</td>`;
+      tbody.appendChild(tr);
+    });
+  } catch (e) {
+    // si falla una consulta, no pasa nada — se reintenta sola en el próximo ciclo
+  }
+}
+
+actualizar();
+setInterval(actualizar, 2000);
+</script>
+{% endblock %}

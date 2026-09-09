@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Cola de impresión — Ubicaciones{% endblock %}
+{% block content %}
+<div style="margin-bottom:14px; font-size:14px;">
+  <a href="{{ url_for('admin_laboratorio') }}">🧪 Laboratorio</a> &nbsp;|&nbsp;
+  <a href="{{ url_for('admin_laboratorio_ubicaciones') }}">Ubicaciones</a> &nbsp;|&nbsp; <strong>Cola de impresión</strong>
+</div>
+<h2>Cola de impresión</h2>
+<p style="color:var(--texto-sec); font-size:14px; margin-top:-8px;">
+  Estas son las etiquetas que se van a imprimir juntas. Sacar una de acá no
+  la borra de la lista maestra — solo la saca de esta tanda.
+</p>
+
+<div class="card" style="margin-bottom:20px;">
+  <div style="display:flex; gap:10px; align-items:center;">
+    <a href="{{ url_for('admin_laboratorio_ubicaciones_etiquetas') }}" class="btn" style="{{ 'pointer-events:none; opacity:.5;' if not cola }}">Ver e imprimir cola completa ({{ cola|length }})</a>
+    {% if cola %}
+    <form method="post" style="margin:0;">
+      <input type="hidden" name="accion" value="vaciar">
+      <button type="submit" style="background:none; border:1px solid var(--borde); border-radius:8px; padding:8px 14px; cursor:pointer; font-size:13.5px;"
+              onclick="return confirm('¿Vaciar toda la cola?');">Vaciar cola</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <table>
+    <thead>
+      <tr><th>Código</th><th>Nivel</th><th>Descripción</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for u in cola %}
+      <tr>
+        <td style="font-weight:700;">{{ u.codigo }}</td>
+        <td>{{ u.nivel }}</td>
+        <td>{{ u.descripcion or '—' }}</td>
+        <td>
+          <form method="post" style="margin:0;">
+            <input type="hidden" name="accion" value="quitar">
+            <input type="hidden" name="ubicacion_id" value="{{ u.id }}">
+            <button type="submit" style="background:none; border:none; color:#b91c1c; cursor:pointer; font-size:12.5px; padding:0;">Quitar</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" style="text-align:center; color:var(--texto-sec); padding:20px;">
+        La cola está vacía — <a href="{{ url_for('admin_laboratorio_ubicaciones') }}">agregá ubicaciones acá</a>.
+      </td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

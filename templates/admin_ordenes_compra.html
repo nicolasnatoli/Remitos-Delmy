@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Órdenes de compra — Depósito Delmy{% endblock %}
+{% block content %}
+<div style="margin-bottom:14px; font-size:14px;">
+  <a href="{{ url_for('admin_usuarios') }}">Usuarios</a> &nbsp;|&nbsp; <a href="{{ url_for('admin_proveedores') }}">Proveedores</a> &nbsp;|&nbsp; <strong>Órdenes de compra</strong>
+</div>
+<h2>Órdenes de compra</h2>
+
+<div class="card" style="margin-bottom:20px;">
+  <h3 style="margin-top:0;">Importar reporte</h3>
+  <p style="color:var(--texto-sec); font-size:13px;">
+    Subí el "Listado de Órdenes de Compra" exportado del sistema general del negocio. Cada vez que se importa, la app intenta cruzar automáticamente los remitos ya controlados (por cantidad de artículos) contra las órdenes con recepción total, y los marca como ingresados al sistema.
+  </p>
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  {% if importados is not none %}
+  <div class="ok">
+    Se importaron/actualizaron {{ importados }} órdenes de compra.
+    {% if vinculados %} Se vincularon automáticamente {{ vinculados }} remito(s) que coincidían.{% endif %}
+  </div>
+  {% endif %}
+  <form method="post" enctype="multipart/form-data" style="display:flex; gap:10px; align-items:end;">
+    <div class="campo" style="flex:1; margin-bottom:0;">
+      <label>Archivo del reporte (.xlsx)</label>
+      <input type="file" name="excel" accept=".xlsx,.xlsm" required>
+    </div>
+    <button class="btn" type="submit">Importar</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Listado actual ({{ ordenes|length }})</h3>
+  <table>
+    <thead>
+      <tr><th>N° OC</th><th>Proveedor</th><th>Etapa</th><th>Pedido</th><th>Recibido</th><th>Pendiente</th><th>Actualizado</th></tr>
+    </thead>
+    <tbody>
+      {% for o in ordenes %}
+      <tr>
+        <td>{{ o.nro_oc }}</td>
+        <td>{{ o.proveedor_nombre }}</td>
+        <td>{{ o.etapa or '—' }}</td>
+        <td>{{ o.cantidad_pedida if o.cantidad_pedida is not none else '—' }}</td>
+        <td>{{ o.cantidad_recibida if o.cantidad_recibida is not none else '—' }}</td>
+        <td>{{ o.cantidad_pendiente if o.cantidad_pendiente is not none else '—' }}</td>
+        <td>{{ o.actualizado_en }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" style="text-align:center; color:var(--texto-sec); padding:20px;">Todavía no se importó ninguna orden de compra.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

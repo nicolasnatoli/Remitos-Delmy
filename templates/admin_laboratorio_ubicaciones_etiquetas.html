@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Etiquetas de ubicaciones</title>
+<style>
+  :root {
+    --azul: #0b3d91; --rojo: #c0392b; --negro: #111111;
+    --ancho-etq: 55mm; --alto-etq: 45mm;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; color: #111; margin: 0; background: #e5e7eb; }
+  .barra { background: var(--azul); color: #fff; padding: 12px 20px; display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; }
+  .barra a { color: #fff; text-decoration: none; }
+  .barra button { background: var(--rojo); color:#fff; border:none; border-radius:6px; padding:8px 16px; cursor:pointer; font-weight:600; }
+  .ajuste-tamano { display:flex; align-items:center; gap:8px; font-size:12.5px; flex-wrap:wrap; }
+  .ajuste-tamano input { width:56px; padding:4px 6px; border-radius:4px; border:none; }
+  .hoja-etiquetas { display:flex; flex-wrap:wrap; gap:4mm; padding:20px; background:#fff; margin:0 20px 20px; }
+  .etiqueta {
+    width: var(--ancho-etq); height: var(--alto-etq);
+    border:1px dashed #aaa; padding:3mm;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2mm;
+    text-align:center; overflow:hidden;
+  }
+  /* Representación aproximada del código de barras para la vista previa en
+     pantalla — NO es escaneable acá (es un patrón de barras decorativo,
+     ancho fijo); el código de barras real y escaneable se genera recién en
+     el PDF, con la librería que sí codifica el valor de verdad. */
+  .barras-preview {
+    width: 90%; height: 16mm; max-height: 40%;
+    display: flex; align-items: stretch; justify-content: center; gap: 1.2px;
+  }
+  .barras-preview span { width: 2px; background: #111; }
+  .barras-preview span:nth-child(3n) { width: 3px; }
+  .barras-preview span:nth-child(5n) { background: transparent; }
+  .etiqueta .codigo-texto { font-size: 22px; font-weight:800; line-height:1.05; margin:0; letter-spacing: 0.5px; }
+  .etiqueta .nivel { font-size: 11px; color:#888; text-transform: uppercase; }
+  @media print {
+    body { background:#fff; }
+    .barra { display:none; }
+    .hoja-etiquetas { margin:0; padding:0; gap:0; }
+    .etiqueta { border:none; page-break-after: always; }
+    @page { size: var(--ancho-etq) var(--alto-etq); margin:0; }
+  }
+</style>
+</head>
+<body>
+  <div class="barra">
+    <a href="{{ url_for('admin_laboratorio_ubicaciones_cola') }}">&larr; Volver a la cola</a>
+    <div class="ajuste-tamano">
+      Tamaño etiqueta:
+      <input type="number" id="ancho" value="55" min="20" max="150" step="1"> x
+      <input type="number" id="alto" value="45" min="15" max="150" step="1"> mm
+      <button type="button" onclick="aplicarTamano()">Aplicar</button>
+    </div>
+    <button type="button" onclick="imprimirPDF()">Imprimir</button>
+    <button type="button" onclick="abrirPDF()">Abrir PDF (Xprinter)</button>
+  </div>
+
+  <div class="hoja-etiquetas">
+    {% for u in ubicaciones %}
+    <div class="etiqueta">
+      <div class="barras-preview">{% for i in range(40) %}<span></span>{% endfor %}</div>
+      <div class="codigo-texto">{{ u.codigo }}</div>
+      <div class="nivel">{{ u.nivel }}{% if u.descripcion %} · {{ u.descripcion }}{% endif %}</div>
+    </div>
+    {% else %}
+    <p style="padding:20px; color:#666;">No hay ubicaciones para imprimir — agregá alguna a la cola primero.</p>
+    {% endfor %}
+  </div>
+
+  <script>
+    function parametrosEtiqueta() {
+      const p = new URLSearchParams({
+        ancho: document.getElementById('ancho').value || 55,
+        alto: document.getElementById('alto').value || 45,
+      });
+      {% if ids %}p.set('ids', '{{ ids }}');{% endif %}
+      return p;
+    }
+
+    function aplicarTamano() {
+      const ancho = parseFloat(document.getElementById('ancho').value) || 55;
+      const alto = parseFloat(document.getElementById('alto').value) || 45;
+      document.documentElement.style.setProperty('--ancho-etq', ancho + 'mm');
+      document.documentElement.style.setProperty('--alto-etq', alto + 'mm');
+    }
+
+    function imprimirPDF() {
+      window.open('{{ url_for("admin_laboratorio_ubicaciones_imprimir") }}?' + parametrosEtiqueta(), '_blank');
+    }
+
+    function abrirPDF() {
+      window.open('{{ url_for("admin_laboratorio_ubicaciones_pdf") }}?' + parametrosEtiqueta(), '_blank');
+    }
+  </script>
+</body>
+</html>

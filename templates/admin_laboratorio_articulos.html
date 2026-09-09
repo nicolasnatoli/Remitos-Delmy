@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Catálogo de artículos — Laboratorio{% endblock %}
+{% block content %}
+<div style="margin-bottom:14px; font-size:14px;">
+  <a href="{{ url_for('admin_laboratorio') }}">🧪 Laboratorio</a> &nbsp;|&nbsp; <strong>Catálogo de artículos</strong>
+  &nbsp;|&nbsp; <a href="{{ url_for('admin_laboratorio_articulos_cargas') }}">Historial de cargas</a>
+  &nbsp;|&nbsp; <a href="{{ url_for('admin_laboratorio_articulos_inconsistencias') }}">Inconsistencias{% if cantidad_inconsistencias %} ({{ cantidad_inconsistencias }}){% endif %}</a>
+  &nbsp;|&nbsp; <a href="{{ url_for('admin_laboratorio_articulos_codigos_barra') }}">Códigos de barra</a>
+  &nbsp;|&nbsp; <a href="{{ url_for('admin_laboratorio_articulos_combos') }}">Combos</a>
+</div>
+<h2>Catálogo de artículos</h2>
+
+<div class="card" style="margin-bottom:20px;">
+  <h3 style="margin-top:0;">Importar catálogo real</h3>
+  <p style="color:var(--texto-sec); font-size:13px;">
+    Subí el export <strong>"...ProveedorUsoRazonSocial.xlsx"</strong> del sistema de
+    gestión (código, proveedor, código del proveedor, costos, familia/categoría).
+    Un código sin proveedor se guarda como combo. Cada importación queda
+    registrada como una carga, con el detalle de qué cambió por artículo y
+    las inconsistencias detectadas — nada se sobrescribe en silencio.
+  </p>
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  {% if resultado %}
+  <div class="ok">
+    Carga #{{ resultado.carga_id }}: {{ resultado.filas }} filas leídas —
+    {{ resultado.nuevos }} nuevos, {{ resultado.actualizados }} actualizados,
+    {{ resultado.sin_cambios }} sin cambios, {{ resultado.inconsistencias }} inconsistencia(s) detectada(s).
+    {% if resultado.inconsistencias %}<a href="{{ url_for('admin_laboratorio_articulos_inconsistencias') }}" style="text-decoration:underline;">Revisarlas</a>.{% endif %}
+  </div>
+  {% endif %}
+  <form method="post" enctype="multipart/form-data" id="form-catalogo" style="display:flex; gap:10px; align-items:end;">
+    <div class="campo" style="flex:1; margin-bottom:0;">
+      <label>Archivo del catálogo (.xlsx)</label>
+      <input type="file" name="excel" id="input-catalogo" accept=".xlsx,.xlsm" required>
+    </div>
+    <button class="btn" type="submit">Importar</button>
+  </form>
+</div>
+<script src="{{ url_for('static', filename='subida_chunks.js') }}"></script>
+<script>conectarFormularioConTrozos('form-catalogo', 'input-catalogo');</script>
+
+<div class="card">
+  <h3 style="margin-top:0;">Últimos artículos ({{ cantidad_articulos }} en total)</h3>
+  <table>
+    <thead>
+      <tr><th>Código</th><th>Descripción</th><th>Proveedor</th><th>Cód. prov.</th><th>Combo</th><th>Actualizado</th></tr>
+    </thead>
+    <tbody>
+      {% for a in articulos %}
+      <tr>
+        <td>{{ a.codigo }}</td>
+        <td>{{ a.descripcion or '—' }}</td>
+        <td>{{ a.proveedor_nombre or a.proveedor_nombre_original or '—' }}</td>
+        <td>{{ a.cod_art_prov or '—' }}</td>
+        <td>{{ 'Sí' if a.es_combo else '—' }}</td>
+        <td>{{ a.actualizado_en }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" style="text-align:center; color:var(--texto-sec); padding:20px;">Todavía no se importó ningún artículo.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
